@@ -14,6 +14,8 @@ import { verifyTelebirr } from './verifyTelebirr';
 import { verifyDashen } from './verifyDashen';
 import { verifyAbyssinia } from './verifyAbyssinia';
 import { verifyCBEBirr } from './verifyCBEBirr';
+import { verifyAwash } from './verifyAwash';
+import { verifyZemen } from './verifyZemen';
 import logger from '../utils/logger';
 import { extractLegacyCbeUrlData, isNewCbeReference } from '../utils/cbeReference';
 
@@ -32,6 +34,8 @@ export type SmartVerifyProvider =
   | 'DASHEN'
   | 'ABYSSINIA'
   | 'MPESA'
+  | 'AWASH'
+  | 'ZEMEN'
   | 'IMAGE';
 
 export interface SmartVerifyResult {
@@ -76,7 +80,9 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
   const legacyCbeLink = extractLegacyCbeUrlData(trimmedRef);
 
   // ── Basic length check ──────────────────────────────────────────────────────
-  if (!isNewCBE && !legacyCbeLink && len !== 10 && len !== 12 && len !== 16) {
+  // Allow known lengths (10, 12, 16) + longer references (Awash/Zemen URLs use
+  // variable-length references). Reject obviously invalid short references.
+  if (!isNewCBE && !legacyCbeLink && len < 10) {
     return {
       success: false,
       error: 'Invalid reference length for automatic sorting.',
@@ -215,6 +221,22 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
           };
         }
         return { success: true, data: result, httpStatus: 200, provider: 'TELEBIRR' };
+      }
+    }
+
+    // ── Awash Bank (reference doesn't match known formats — try as fallback) ───
+    // Awash Bank references are variable-length and don't follow a specific
+    // pattern. Try the Awash receipt URL as a fallback before giving up.
+    if (!suffix && !phoneNumber) {
+      const awashResult = await verifyAwash(trimmedRef);
+      if (awashResult.success) {
+        return { success: true, data: awashResult, httpStatus: 200, provider: 'AWASH' };
+      }
+
+      // ── Zemen Bank (same fallback approach) ─────────────────────────────────
+      const zemenResult = await verifyZemen(trimmedRef);
+      if (zemenResult.success) {
+        return { success: true, data: zemenResult, httpStatus: 200, provider: 'ZEMEN' };
       }
     }
 

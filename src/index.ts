@@ -11,6 +11,8 @@ import dashenRouter from './routes/verifyDashenRoute';
 import abyssiniaRouter from './routes/verifyAbyssiniaRoute';
 import cbebirrRouter from './routes/verifyCBEBirrRoute';
 import mpesaRouter from './routes/verifyMpesaRoute';
+import awashRouter from './routes/verifyAwashRoute';
+import zemenRouter from './routes/verifyZemenRoute';
 import universalRouter from './routes/verifyUniversalRoute';
 import batchRouter from './routes/verifyBatch';
 import paymentLinksRouter from './routes/paymentLinks';
@@ -101,6 +103,8 @@ app.use('/verify-dashen', rateLimiter);
 app.use('/verify-abyssinia', rateLimiter);
 app.use('/verify-cbebirr', rateLimiter);
 app.use('/verify-mpesa', rateLimiter);
+app.use('/verify-awash', rateLimiter);
+app.use('/verify-zemen', rateLimiter);
 app.use('/verify-image', rateLimiter);
 
 // Monthly verification quotas (separate from per-minute rate limits)
@@ -114,6 +118,8 @@ app.use('/verify-dashen', verifyQuotaGate);
 app.use('/verify-abyssinia', verifyQuotaGate);
 app.use('/verify-cbebirr', verifyQuotaGate);
 app.use('/verify-mpesa', verifyQuotaGate);
+app.use('/verify-awash', verifyQuotaGate);
+app.use('/verify-zemen', verifyQuotaGate);
 
 // Error handling for JSON parsing - properly typed as an error handler
 const jsonErrorHandler: ErrorRequestHandler = async (err, req, res, next): Promise<void> => {
@@ -134,6 +140,8 @@ app.use('/verify-dashen', dashenRouter);
 app.use('/verify-abyssinia', abyssiniaRouter);
 app.use('/verify-cbebirr', cbebirrRouter);
 app.use('/verify-mpesa', mpesaRouter);
+app.use('/verify-awash', awashRouter);
+app.use('/verify-zemen', zemenRouter);
 app.post('/verify-image', verifyImageGate, verifyImageHandler);
 app.use('/verify-batch', batchRouter);
 app.use('/verify', universalRouter);
@@ -228,6 +236,8 @@ app.get('/', (req: Request, res: Response) => {
             '/verify-abyssinia',
             '/verify-cbebirr',
             '/verify-mpesa',
+            '/verify-awash',
+            '/verify-zemen',
             '/verify',
             '/verify-image',
             '/products',
