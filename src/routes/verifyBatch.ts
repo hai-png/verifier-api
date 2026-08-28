@@ -29,7 +29,7 @@ router.post('/', async (req: Request<{}, {}, BatchBody>, res: Response): Promise
     res.status(402).json({
       success: false,
       error: 'Batch verification is not included in this plan.',
-      upgrade: 'https://veritas.et/dashboard/billing',
+      upgrade: 'https://verify.noveld.com.et/dashboard/billing',
     });
     return;
   }
