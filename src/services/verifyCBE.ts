@@ -1,4 +1,3 @@
-import puppeteer from 'puppeteer';
 import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
 import https from 'https';
@@ -76,55 +75,11 @@ export async function verifyCBELegacy(
         logger.info('✅ Direct fetch success, parsing PDF');
         return await parseCBEReceipt(response.data);
     } catch (directErr: any) {
-        logger.warn('⚠️ Direct fetch failed, falling back to Puppeteer:', directErr.message);
-
-        let browser;
-        try {
-            browser = await puppeteer.launch({
-                headless: true,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--ignore-certificate-errors',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu'
-                ],
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
-            });
-
-            const page = await browser.newPage();
-            let detectedPdfUrl: string | null = null;
-
-            page.on('response', async (response) => {
-                const contentType = response.headers()['content-type'];
-                if (contentType?.includes('pdf')) {
-                    detectedPdfUrl = response.url();
-                    logger.info('🧾 PDF detected:', detectedPdfUrl);
-                }
-            });
-
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-            await new Promise(res => setTimeout(res, 6000));
-            await browser.close();
-
-            if (!detectedPdfUrl) {
-                return { success: false, error: 'No PDF detected via Puppeteer.' };
-            }
-
-            const pdfRes = await axios.get(detectedPdfUrl, {
-                httpsAgent,
-                responseType: 'arraybuffer'
-            });
-
-            return await parseCBEReceipt(pdfRes.data);
-        } catch (puppetErr: any) {
-            logger.error('❌ Puppeteer failed:', puppetErr.message);
-            if (browser) await browser.close();
-            return {
-                success: false,
-                error: `Both direct and Puppeteer failed: ${puppetErr.message}`
-            };
-        }
+        logger.warn('⚠️ Direct fetch failed (Puppeteer fallback removed in selfhosted build):', directErr.message);
+        return {
+            success: false,
+            error: `Direct fetch failed: ${directErr.message}. The Puppeteer fallback was removed to slim the deployment. If this CBE reference is for a legacy receipt, try the new CBE token format (mbreciept.cbe.com.et) instead.`
+        };
     }
 }
 

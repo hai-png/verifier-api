@@ -22,7 +22,7 @@ import { extractLegacyCbeUrlData, isNewCbeReference } from '../utils/cbeReferenc
 
 const router = Router();
 
-const APP_URL = process.env.VERITAS_APP_URL ?? 'https://veritas.et';
+const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
 const MAX_EXPIRES_MINUTES = 1440;
 const VALID_PROVIDERS = ['telebirr', 'cbe', 'dashen', 'abyssinia', 'cbebirr', 'mpesa'] as const;
 

@@ -7,12 +7,7 @@
     "dev": "nodemon --watch src --exec ts-node src/index.ts",
     "build": "prisma generate && tsc",
     "test": "pnpm build && node --test dist/tests/statusMonitorSignature.test.js dist/tests/statusProbeService.test.js",
-    "start": "node dist/index.js",
-    "migrate-api-keys": "ts-node src/utils/migrateApiKeys.ts",
-    "migrate-keys": "ts-node src/utils/migrate-keys.ts",
-    "migrate-user-model": "ts-node src/utils/migrateToUserModel.ts",
-    "migrate-webhook-ownership": "ts-node src/utils/migrateWebhookOwnership.ts",
-    "migrate-remove-wildcard": "ts-node src/utils/migrateRemoveWildcard.ts"
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "Leul Zenebe",
@@ -31,8 +26,6 @@
     "multer": "1.4.5-lts.2",
     "pdf-parse": "^1.1.1",
     "prisma": "^6.8.2",
-    "puppeteer": "^24.8.2",
-    "tesseract.js": "^6.0.1",
     "uuid": "^11.1.0",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0"

@@ -1,47 +1,46 @@
 services:
   - type: web
-    name: verifier-api
+    name: verifier-api-selfhosted
     env: node
-    buildCommand: pnpm install && pnpm build
-    startCommand: pnpm start
+    plan: free  # 512MB RAM, spins down after 15 min inactivity (cold start ~30s)
+    buildCommand: pnpm install --frozen-lockfile && pnpm build
+    startCommand: pnpm prisma migrate deploy && pnpm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: LOG_LEVEL
         value: info
+      # Database (MySQL — TiDB Cloud Serverless free tier recommended)
+      # Set this in the Render dashboard → Environment → Add DATABASE_URL
+      - key: DATABASE_URL
+        sync: false
+      # Admin + dashboard secrets (generate with: openssl rand -hex 32)
+      - key: ADMIN_SECRET
+        sync: false
+      - key: DASHBOARD_SECRET
+        sync: false
+      # Mistral AI (for /verify-image OCR)
+      - key: MISTRAL_API_KEY
+        sync: false
+      # Telebirr proxy (your cPanel-hosted verify.php)
+      - key: FALLBACK_PROXIES
+        sync: false
+      - key: TELEBIRR_PROXY_KEY
+        sync: false
+      - key: SKIP_PRIMARY_VERIFICATION
+        value: "true"
+      # M-Pesa proxy (your cPanel-hosted mpesa.php)
+      - key: MPESA_FALLBACK_URL
+        sync: false
+      - key: MPESA_PROXY_KEY
+        sync: false
+      # App URL
+      - key: VERITAS_APP_URL
+        value: https://verify.noveld.com.et
+      # Redis (optional — only needed for webhook delivery, not for verifications)
+      # If you want webhooks, get free Redis from Upstash and set this:
+      - key: REDIS_URL
+        sync: false
+      # Status monitor (optional)
       - key: STATUS_MONITOR_SECRET
-        sync: false
-      - key: STATUS_PROBE_TELEBIRR_REFERENCE
-        sync: false
-      - key: STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS
-        value: "18000"
-      - key: TELEBIRR_PROXY_LABELS
-        sync: false
-      - key: TELEBIRR_PROXY_TIMEOUT_MS
-        value: "18000"
-      - key: TELEBIRR_HEDGE_DELAY_MS
-        value: "1000"
-      - key: TELEBIRR_PROXY_COOLDOWN_MS
-        value: "60000"
-      - key: TELEBIRR_PROXY_FAILURE_THRESHOLD
-        value: "2"
-      - key: TELEBIRR_MAX_PARALLEL_PROXIES
-        value: "2"
-      - key: TELEBIRR_TOTAL_TIMEOUT_MS
-        value: "20000"
-      - key: STATUS_PROBE_CBE_LEGACY_REFERENCE
-        sync: false
-      - key: STATUS_PROBE_CBE_LEGACY_ACCOUNT_SUFFIX
-        sync: false
-      - key: STATUS_PROBE_CBE_NEW_URL
-        sync: false
-      - key: STATUS_PROBE_CBEBIRR_REFERENCE
-        sync: false
-      - key: STATUS_PROBE_CBEBIRR_PHONE
-        sync: false
-      - key: STATUS_PROBE_DASHEN_REFERENCE
-        sync: false
-      - key: STATUS_PROBE_ABYSSINIA_REFERENCE
-        sync: false
-      - key: STATUS_PROBE_ABYSSINIA_ACCOUNT_SUFFIX
         sync: false

@@ -16,7 +16,7 @@ import logger from '../utils/logger';
 
 const router = Router();
 
-const APP_URL = process.env.VERITAS_APP_URL ?? 'https://veritas.et';
+const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
 const VALID_PROVIDERS = ['telebirr', 'cbe', 'dashen', 'abyssinia', 'cbebirr', 'mpesa'] as const;
 
 type AuthSource = 'DASHBOARD' | 'API_KEY';
