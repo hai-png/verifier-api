@@ -39,6 +39,16 @@ async function main() {
     console.log('[reset-db] (could not drop _prisma_migrations — table may not exist)', e.message);
   }
 
+  // Disable foreign key checks so we can drop tables in any order (avoids
+  // "Cannot drop table X referenced by a foreign key constraint" errors).
+  // Re-enable at the end. This is safe on a fresh database with no data.
+  try {
+    await prisma.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 0');
+    console.log('[reset-db] ✓ Foreign key checks disabled');
+  } catch (e) {
+    console.log('[reset-db] (could not disable FK checks)', e.message);
+  }
+
   // Get all tables in the database
   const tables = await prisma.$queryRawUnsafe(
     "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE()"
@@ -54,6 +64,14 @@ async function main() {
     } catch (e) {
       console.log(`[reset-db] (could not drop ${tableName})`, e.message);
     }
+  }
+
+  // Re-enable foreign key checks
+  try {
+    await prisma.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 1');
+    console.log('[reset-db] ✓ Foreign key checks re-enabled');
+  } catch (e) {
+    console.log('[reset-db] (could not re-enable FK checks)', e.message);
   }
 
   console.log('[reset-db] ✅ Database reset complete. Ready for `prisma db push`.');
