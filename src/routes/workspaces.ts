@@ -292,7 +292,12 @@ router.get('/:id/payments', async (req: Request, res: Response): Promise<void> =
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
     const workspaceId = String(req.params.id);
-    const { name } = req.body as { name?: string };
+    const { name, tier, verificationCredits, imageCredits } = req.body as {
+        name?: string;
+        tier?: string;
+        verificationCredits?: number;
+        imageCredits?: number;
+    };
 
     try {
         const membership = await prisma.membership.findUnique({
@@ -303,10 +308,17 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
             return;
         }
 
+        // Build update data — only update fields that are provided
+        const updateData: any = {};
+        if (name) updateData.name = name.trim();
+        if (tier) updateData.tier = tier;
+        if (typeof verificationCredits === 'number') updateData.verificationCredits = verificationCredits;
+        if (typeof imageCredits === 'number') updateData.imageCredits = imageCredits;
+
         const updated = await prisma.workspace.update({
             where: { id: workspaceId },
-            data: name ? { name: name.trim() } : {},
-            select: { id: true, name: true, tier: true },
+            data: updateData,
+            select: { id: true, name: true, tier: true, verificationCredits: true, imageCredits: true },
         });
 
         res.json({ success: true, workspace: updated });
