@@ -38,7 +38,7 @@ async function verifyWorkspaceAccess(userId: string, workspaceId: string) {
 
 router.get('/:workspaceId/api-keys', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId } = req.params;
+    const { workspaceId } = req.params as { workspaceId: string };
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
@@ -70,7 +70,7 @@ router.get('/:workspaceId/api-keys', async (req: Request, res: Response): Promis
 
 router.post('/:workspaceId/api-keys', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId } = req.params;
+    const { workspaceId } = req.params as { workspaceId: string };
     const { label } = req.body as { label?: string };
 
     try {
@@ -117,7 +117,7 @@ router.post('/:workspaceId/api-keys', async (req: Request, res: Response): Promi
 
 router.delete('/:workspaceId/api-keys/:keyId', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId, keyId } = req.params;
+    const { workspaceId, keyId } = req.params as { workspaceId: string; keyId: string };
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
@@ -142,7 +142,7 @@ router.delete('/:workspaceId/api-keys/:keyId', async (req: Request, res: Respons
 
 router.get('/:workspaceId/payouts', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId } = req.params;
+    const { workspaceId } = req.params as { workspaceId: string };
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
@@ -175,7 +175,7 @@ router.get('/:workspaceId/payouts', async (req: Request, res: Response): Promise
 
 router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId } = req.params;
+    const { workspaceId } = req.params as { workspaceId: string };
     const { label, accountHolderName, type, account, providersAllowed } = req.body as {
         label?: string;
         accountHolderName?: string;
@@ -218,7 +218,7 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
 
 router.delete('/:workspaceId/payouts/:payoutId', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId, payoutId } = req.params;
+    const { workspaceId, payoutId } = req.params as { workspaceId: string; payoutId: string };
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
@@ -243,7 +243,7 @@ router.delete('/:workspaceId/payouts/:payoutId', async (req: Request, res: Respo
 
 router.get('/:workspaceId/payment-links', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId } = req.params;
+    const { workspaceId } = req.params as { workspaceId: string };
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
@@ -278,7 +278,7 @@ router.get('/:workspaceId/payment-links', async (req: Request, res: Response): P
 
 router.post('/:workspaceId/payment-links', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId } = req.params;
+    const { workspaceId } = req.params as { workspaceId: string };
     const { name, fixedAmount, acceptedProviders, redirectUrl, payoutAccountIds } = req.body as {
         name?: string;
         fixedAmount?: number;
@@ -354,7 +354,7 @@ router.post('/:workspaceId/payment-links', async (req: Request, res: Response): 
 
 router.get('/:workspaceId/webhooks', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId } = req.params;
+    const { workspaceId } = req.params as { workspaceId: string };
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
@@ -385,7 +385,7 @@ router.get('/:workspaceId/webhooks', async (req: Request, res: Response): Promis
 
 router.post('/:workspaceId/webhooks', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId } = req.params;
+    const { workspaceId } = req.params as { workspaceId: string };
     const { url, events } = req.body as { url?: string; events?: string[] };
 
     if (!url || !events || events.length === 0) {
@@ -427,7 +427,7 @@ router.post('/:workspaceId/webhooks', async (req: Request, res: Response): Promi
 
 router.delete('/:workspaceId/webhooks/:webhookId', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const { workspaceId, webhookId } = req.params;
+    const { workspaceId, webhookId } = req.params as { workspaceId: string; webhookId: string };
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);

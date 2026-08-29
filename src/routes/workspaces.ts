@@ -122,7 +122,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const workspaceId = req.params.id;
+    const workspaceId = String(req.params.id);
 
     try {
         // Verify the user has access to this workspace
@@ -182,7 +182,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 
 router.get('/:id/stats', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const workspaceId = req.params.id;
+    const workspaceId = String(req.params.id);
 
     try {
         const membership = await prisma.membership.findUnique({
@@ -249,9 +249,9 @@ router.get('/:id/stats', async (req: Request, res: Response): Promise<void> => {
 
 router.get('/:id/payments', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const workspaceId = req.params.id;
-    const limit = parseInt(req.query.limit as string) || 20;
-    const offset = parseInt(req.query.offset as string) || 0;
+    const workspaceId = String(req.params.id);
+    const limit = parseInt(String(req.query.limit)) || 20;
+    const offset = parseInt(String(req.query.offset)) || 0;
 
     try {
         const membership = await prisma.membership.findUnique({
@@ -291,7 +291,7 @@ router.get('/:id/payments', async (req: Request, res: Response): Promise<void> =
 
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
-    const workspaceId = req.params.id;
+    const workspaceId = String(req.params.id);
     const { name } = req.body as { name?: string };
 
     try {
