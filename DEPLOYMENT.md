@@ -6,10 +6,20 @@ Free-tier deployment of the self-hosted Ethiopian payment verification API.
 ```
 Mobile App → Cloudflare Worker → verifier-api (Render free) → bank/telecom APIs
                                      ↓ (for Telebirr + M-Pesa only)
-                                  PHP proxy (your cPanel on Ethio Telecom)
+                           PHP proxy (Plesk on Ethio Telecom, via subdomain)
                                      ↓
                                   transactioninfo.ethiotelecom.et / m-pesabusiness.safaricom.et
 ```
+
+> **Note on hosting**: These docs assume **Plesk** (not cPanel) hosting on Ethio Telecom. The apex
+> domain `noveld.com.et` runs a separate portfolio site on **Cloudflare Pages**, so the PHP proxies
+> are exposed on a dedicated subdomain (`proxy.noveld.com.et`) that is routed **directly to your
+> Plesk server** (DNS-only, not through Cloudflare — Cloudflare cannot execute PHP).
+
+**DNS layout:**
+- `noveld.com.et` — Cloudflare Pages (portfolio site, proxied)
+- `proxy.noveld.com.et` → `213.55.96.150` (Plesk origin, DNS-only/gray cloud)
+- `verify.noveld.com.et` → verifier-api (Render)
 
 **Cost: $0/month** (all free tiers)
 
@@ -20,8 +30,11 @@ Mobile App → Cloudflare Worker → verifier-api (Render free) → bank/telecom
 - **GitHub account** (to fork/connect this repo)
 - **Render account** (free) — https://render.com
 - **TiDB Cloud account** (free) — https://tidbcloud.com
-- **cPanel hosting on Ethio Telecom** (you already have this — PHP 8+ with cURL)
-- **Domain:** `verify.noveld.com.et` (point this at Render via a CNAME)
+- **Plesk hosting on Ethio Telecom** (PHP 8+ with cURL) — your Plesk server public IP (e.g. `213.55.96.150`)
+- **Cloudflare account** owning `noveld.com.et` (DNS)
+- **Domains:**
+  - `proxy.noveld.com.et` → your Plesk IP (for the PHP proxies)
+  - `verify.noveld.com.et` → Render (via a CNAME)
 
 ---
 
@@ -38,41 +51,71 @@ Mobile App → Cloudflare Worker → verifier-api (Render free) → bank/telecom
 
 ---
 
-## Step 2: Deploy the Telebirr + M-Pesa PHP proxies on your cPanel
+## Step 2: Deploy the Telebirr + M-Pesa PHP proxies on your Plesk
 
-The verifier-api needs these proxies because Telebirr and Safaricom (M-Pesa) block requests from non-Ethiopian IPs. Your cPanel hosting is in Ethiopia, so it can reach them.
+The verifier-api needs these proxies because Telebirr and Safaricom (M-Pesa) block requests from non-Ethiopian IPs. Your Plesk hosting is in Ethiopia, so it can reach them.
 
-### 2a: Upload verify.php (Telebirr proxy)
+### 2a: Point a subdomain at your Plesk server (Cloudflare)
 
-1. Log in to your cPanel (e.g. `https://noveld.com.et:2083`)
-2. Open **File Manager** → `public_html`
-3. Upload the `verify.php` file from this repo to `public_html/verify.php`
-4. Right-click `verify.php` → **Edit**
-5. Find the line:
+Because the apex `noveld.com.et` is on **Cloudflare Pages** (static site, no PHP), the proxies must live
+on a **subdomain routed directly to Plesk**. In Cloudflare → **DNS**, add:
+
+| Type | Name | Value | Proxy status |
+|---|---|---|---|
+| A | `proxy` | `213.55.96.150` (your Plesk IP) | **DNS only** (gray cloud) |
+
+> Use **DNS only**: if it's proxied (orange cloud), Cloudflare will serve the request and PHP never runs.
+> Plesk will need its own SSL certificate for `proxy.noveld.com.et` (Plesk can issue one via Let's Encrypt).
+
+### 2b: Upload verify.php (Telebirr proxy)
+
+1. Log in to Plesk → **Domains** → select `proxy.noveld.com.et`
+2. Open **File Manager** → the subdomain's document root (usually `httpdocs/` or `public_html/`)
+3. Upload the `verify.php` file from this repo there
+4. Edit `verify.php` — set your proxy key (generate one: `openssl rand -hex 24`):
    ```php
-   $TELEBIRR_PROXY_KEY = getenv('TELEBIRR_PROXY_KEY') ?: 'YOUR_SECRET_PROXY_KEY_HERE';
+   $TELEBIRR_PROXY_KEY = 'YOUR_SECRET_PROXY_KEY_HERE';
    ```
-6. Replace `YOUR_SECRET_PROXY_KEY_HERE` with a random key (generate one: `openssl rand -hex 24`)
+   Replace `YOUR_SECRET_PROXY_KEY_HERE` with your random key, e.g.:
    ```php
-   $TELEBIRR_PROXY_KEY = getenv('TELEBIRR_PROXY_KEY') ?: 'YOUR_PROXY_KEY_HERE';
+   $TELEBIRR_PROXY_KEY = '6ba8888f98d36b6f021c9fe13ac61c4ffc493cfce670d200';
    ```
-7. **Save** — your Telebirr proxy URL is: `https://noveld.com.et/verify.php`
+5. In Plesk, make sure SSL is enabled for `proxy.noveld.com.et` (Let's Encrypt)
+6. **Save** — your Telebirr proxy URL is: `https://proxy.noveld.com.et/verify.php`
 
-### 2b: Upload mpesa.php (M-Pesa proxy)
+### 2c: Upload mpesa.php (M-Pesa proxy)
 
-1. Upload `mpesa.php` to `public_html/mpesa.php`
-2. Edit it — find the `$VALID_PROXY_KEY` line and set the same kind of random key
-3. **Save** — your M-Pesa proxy URL is: `https://noveld.com.et/mpesa.php`
+1. Upload `mpesa.php` to the same document root
+2. Edit it — set the `$VALID_PROXY_KEY` line to a random key, e.g.:
+   ```php
+   $VALID_PROXY_KEY = '69c5847b2e8886c4a15a5a804b380b021be33b4d3a11cbd5';
+   ```
+3. **Save** — your M-Pesa proxy URL is: `https://proxy.noveld.com.et/mpesa.php`
 
-### 2c: Test the proxies
+### 2d: Test the proxies
+
+> `verify.php` has **no `?health` route** — that test in older docs is wrong for this code. Test with
+> the `key` + `reference` parameters instead.
 
 ```bash
-# Test Telebirr proxy (should return health info)
-curl "https://noveld.com.et/verify.php?health"
+# Telebirr — wrong/missing key should reject (401)
+curl "https://proxy.noveld.com.et/verify.php?key=WRONG&reference=TEST"
 
-# Test with a real reference (replace REF with a real Telebirr reference)
-curl "https://noveld.com.et/verify.php?key=YOUR_PROXY_KEY_HERE&reference=TESTREF123"
+# Telebirr — correct key reaches Ethio Telecom
+curl "https://proxy.noveld.com.et/verify.php?key=YOUR_TELEBIRR_KEY&reference=TESTREF123"
+
+# M-Pesa — wrong key should reject (401)
+curl "https://proxy.noveld.com.et/mpesa.php?key=WRONG&reference=TEST"
+
+# M-Pesa — correct key reaches Safaricom
+curl "https://proxy.noveld.com.et/mpesa.php?key=YOUR_MPESA_KEY&reference=TESTREF123"
 ```
+
+What a working proxy looks like:
+
+- Wrong key → `{"success":false,"error":"Unauthorized: Invalid or missing proxy key"}`
+- M-Pesa with a correct-but-nonexistent ref → `{"responseCode":"2032","responseDescription":"The transaction receipt number does not exist."}` (a legit Safaricom reply — the chain works)
+- Telebirr may timeout with `Ethiotelecom is unreachable` if Ethio Telecom's receipt server is down or blocking the Plesk IP — this is a backend/provider issue, not a config problem.
 
 ---
 
@@ -87,10 +130,10 @@ curl "https://noveld.com.et/verify.php?key=YOUR_PROXY_KEY_HERE&reference=TESTREF
    - `ADMIN_SECRET` → `openssl rand -hex 32` (generate + paste)
    - `DASHBOARD_SECRET` → `openssl rand -hex 32` (generate + paste)
    - `MISTRAL_API_KEY` → get from https://console.mistral.ai (free tier available)
-   - `FALLBACK_PROXIES` → `https://noveld.com.et/verify.php?reference=`
-   - `TELEBIRR_PROXY_KEY` → the key you set in verify.php (Step 2a)
-   - `MPESA_FALLBACK_URL` → `https://noveld.com.et/mpesa.php`
-   - `MPESA_PROXY_KEY` → the key you set in mpesa.php (Step 2b)
+   - `FALLBACK_PROXIES` → `https://proxy.noveld.com.et/verify.php?reference=`
+   - `TELEBIRR_PROXY_KEY` → the key you set in verify.php (Step 2b)
+   - `MPESA_FALLBACK_URL` → `https://proxy.noveld.com.et/mpesa.php`
+   - `MPESA_PROXY_KEY` → the key you set in mpesa.php (Step 2c)
    - `REDIS_URL` → (leave empty — not needed for verifications, only for webhooks)
 6. Click **Create Blueprint**
 7. Render will build (5-10 min) + deploy. The URL will be `https://verifier-api-selfhosted.onrender.com`
@@ -210,7 +253,7 @@ curl -X POST https://fitlife-hub-api.hbetseha.workers.dev/api/payments/verify-te
 | **Render** | 750h/month (1 always-on instance), 512MB RAM | Spins down after 15min inactivity → cold start ~30s |
 | **TiDB Cloud** | 5GB storage, 1B request units/month | Read-only when exceeded |
 | **Mistral AI** | Free tier: 50 requests/day (approx) | /verify-image returns 503 |
-| **cPanel hosting** | Depends on your plan | — |
+| **Plesk hosting** | Depends on your plan | — |
 
 For a low-traffic payment verification API (a few hundred verifications/month), these limits are more than sufficient. The main UX impact is the 30s cold start on Render after idle — the first request after 15min of inactivity will be slow.
 
@@ -220,7 +263,7 @@ For a low-traffic payment verification API (a few hundred verifications/month), 
 
 | Provider | Method | Needs Ethiopian IP? |
 |---|---|---|
-| Telebirr | HTML scrape via PHP proxy | ✅ (via your cPanel) |
+| Telebirr | HTML scrape via PHP proxy | ✅ (via Plesk) |
 | CBE (legacy) | PDF fetch | ❌ |
 | CBE (new token) | JSON API | ❌ |
 | CBE Birr | PDF fetch | ❌ |
@@ -228,7 +271,7 @@ For a low-traffic payment verification API (a few hundred verifications/month), 
 | Bank of Abyssinia | JSON API | ❌ |
 | Awash Bank | HTML scrape | ❌ |
 | Zemen Bank | PDF fetch | ❌ |
-| M-Pesa | JSON via PHP proxy | ✅ (via your cPanel) |
+| M-Pesa | JSON via PHP proxy | ✅ (via Plesk) |
 | **All other banks** | OCR via Mistral Vision (image upload) | ❌ |
 
 The OCR endpoint (`POST /verify-image`) accepts a receipt screenshot from ANY Ethiopian bank and extracts payer name, amount, date, reference, etc. via Mistral AI Vision. Supported banks include: Cooperative Bank of Oromia, Oromia Bank, Hijra Bank, Amhara Bank, Wegagen, Berhan, Abay, Lion, Bunna, Enat, Gadaa, Tsehay, Orbit, Shabelle, Sinqee.

@@ -22,14 +22,14 @@ services:
       # Mistral AI (for /verify-image OCR)
       - key: MISTRAL_API_KEY
         sync: false
-      # Telebirr proxy (your cPanel-hosted verify.php)
+      # Telebirr proxy (your Plesk-hosted verify.php on proxy.noveld.com.et)
       - key: FALLBACK_PROXIES
         sync: false
       - key: TELEBIRR_PROXY_KEY
         sync: false
       - key: SKIP_PRIMARY_VERIFICATION
         value: "true"
-      # M-Pesa proxy (your cPanel-hosted mpesa.php)
+      # M-Pesa proxy (your Plesk-hosted mpesa.php on proxy.noveld.com.et)
       - key: MPESA_FALLBACK_URL
         sync: false
       - key: MPESA_PROXY_KEY

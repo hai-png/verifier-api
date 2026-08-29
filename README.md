@@ -105,7 +105,7 @@ Due to **regional restrictions** by the Telebirr system and Safaricom M-Pesa, ho
 #### 🛠 Proxy Support:
 
 This project supports secondary fallback verification relays hosted inside Ethiopia. When the primary `verify-telebirr` or `verify-mpesa` fetch fails on your foreign VPS, the server can **fallback to our proxy** to complete the verification.
-A standalone `mpesa.php` file is included in the `.github` / repository root which can be easily hosted on any cheap generic cPanel host inside Ethiopia to act as your own private proxy.
+A standalone `mpesa.php` file is included in the `.github` / repository root which can be easily hosted on any cheap generic Plesk/cPanel host inside Ethiopia to act as your own private proxy.
 
 For best results and full control, clone the repository and **self-host the main Node.js application from inside Ethiopia**.
 
