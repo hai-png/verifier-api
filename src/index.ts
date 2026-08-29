@@ -61,8 +61,18 @@ async function initializeRuntime(): Promise<void> {
         logger.info('Connected to database successfully');
 
         await initializeStatsCache();
-        await startWebhookQueueWorker();
-        await startNotificationQueueWorker();
+
+        // BullMQ queue workers require Redis. When REDIS_URL is unset (e.g. on
+        // Render free tier without a Redis instance), skip the workers gracefully
+        // instead of crashing the app. Verifications work fine without queues —
+        // only webhook + notification delivery is affected.
+        if (process.env.REDIS_URL) {
+            await startWebhookQueueWorker();
+            await startNotificationQueueWorker();
+            logger.info('Webhook + notification queue workers started (Redis connected)');
+        } else {
+            logger.warn('REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.');
+        }
 
         startupState.initializing = false;
         startupState.ready = true;
@@ -195,20 +205,35 @@ app.get('/ready', async (req: Request, res: Response) => {
         checks.database.error = error instanceof Error ? error.message : 'Database readiness check failed.';
     }
 
-    try {
-        const webhookQueue = await getWebhookQueueHealth();
-        checks.webhookQueue.data = webhookQueue;
-        checks.webhookQueue.ready = webhookQueue.configured && webhookQueue.workerRunning && webhookQueue.workerConnected;
-    } catch (error) {
-        checks.webhookQueue.error = error instanceof Error ? error.message : 'Webhook queue readiness check failed.';
-    }
+    // When REDIS_URL is unset (free-tier deploy without Redis), the queue
+    // workers are intentionally not started. Treat this as "not applicable"
+    // (ready=true) rather than "not ready", so /ready returns 200 and Render
+    // doesn't think the service is unhealthy.
+    const redisEnabled = !!process.env.REDIS_URL;
 
-    try {
-        const notificationQueue = await getNotificationQueueHealth();
-        checks.notificationQueue.data = notificationQueue;
-        checks.notificationQueue.ready = notificationQueue.configured && notificationQueue.workerRunning && notificationQueue.workerConnected;
-    } catch (error) {
-        checks.notificationQueue.error = error instanceof Error ? error.message : 'Notification queue readiness check failed.';
+    if (redisEnabled) {
+        try {
+            const webhookQueue = await getWebhookQueueHealth();
+            checks.webhookQueue.data = webhookQueue;
+            checks.webhookQueue.ready = webhookQueue.configured && webhookQueue.workerRunning && webhookQueue.workerConnected;
+        } catch (error) {
+            checks.webhookQueue.error = error instanceof Error ? error.message : 'Webhook queue readiness check failed.';
+        }
+
+        try {
+            const notificationQueue = await getNotificationQueueHealth();
+            checks.notificationQueue.data = notificationQueue;
+            checks.notificationQueue.ready = notificationQueue.configured && notificationQueue.workerRunning && notificationQueue.workerConnected;
+        } catch (error) {
+            checks.notificationQueue.error = error instanceof Error ? error.message : 'Notification queue readiness check failed.';
+        }
+    } else {
+        // No Redis configured — queues are intentionally disabled. Mark as
+        // ready=true so the overall /ready check passes.
+        checks.webhookQueue.ready = true;
+        checks.notificationQueue.ready = true;
+        (checks.webhookQueue as any).data = { configured: false, note: 'REDIS_URL not set — queues disabled' };
+        (checks.notificationQueue as any).data = { configured: false, note: 'REDIS_URL not set — queues disabled' };
     }
 
     const ready =
