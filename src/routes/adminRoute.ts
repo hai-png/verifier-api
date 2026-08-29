@@ -67,6 +67,46 @@ router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, 
     }
 
     try {
+        // For fresh databases with no users/workspaces yet, auto-create a
+        // default workspace + user + membership so the API key has somewhere
+        // to attach. This makes first-time setup possible via the admin API
+        // without needing to run SQL manually.
+        let membership = await prisma.membership.findFirst({
+            where: { userId: owner },
+            orderBy: { createdAt: 'asc' },
+            select: { workspaceId: true },
+        });
+
+        if (!membership) {
+            logger.info(`No workspace found for owner "${owner}" — auto-creating default workspace + user`);
+            const user = await prisma.user.create({
+                data: { id: owner, name: owner, email: `${owner}@selfhosted.local`, role: 'ADMIN' },
+            });
+            const workspace = await prisma.workspace.create({
+                data: {
+                    id: `ws-${owner}`,
+                    name: `${owner} Workspace`,
+                    tier: 'BUSINESS',
+                    verificationCredits: 100000,
+                    verificationCreditsMonthly: 100000,
+                    verificationCreditsResetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+                    paidUntil: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+                    planTermMonths: 12,
+                    imageCredits: 1000,
+                    imageCreditsMonthly: 1000,
+                    grandfathered: true,
+                },
+            });
+            membership = await prisma.membership.create({
+                data: {
+                    userId: user.id,
+                    workspaceId: workspace.id,
+                    role: 'OWNER',
+                },
+            });
+            logger.info(`Auto-created workspace "${workspace.id}" for owner "${owner}"`);
+        }
+
         const { apiKeyRecord, rawKey } = await generateApiKey(owner);
         logger.info(`New API key generated for ${owner}`);
 
