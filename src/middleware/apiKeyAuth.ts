@@ -83,6 +83,9 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
     req.path === '/health' ||
     req.path === '/ready' ||
     req.path.startsWith('/admin') ||
+    req.path.startsWith('/auth') ||          // Session-based auth endpoints
+    req.path.startsWith('/workspaces') ||     // Workspace management (session-authenticated)
+    req.path.startsWith('/dashboard') ||      // Dashboard management routes (session-authenticated)
     /^\/payment-links\/[^/]+\/confirm$/.test(req.path) ||
     /^\/payment-links\/[^/]+\/public$/.test(req.path)
   ) {
