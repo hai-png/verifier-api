@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction, ErrorRequestHandler } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import cookieParser from 'cookie-parser';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -33,6 +34,11 @@ import { verifyWebhookHook } from './middleware/verifyWebhookHook';
 import { getWebhookQueueHealth, startWebhookQueueWorker, stopWebhookQueueWorker } from './queues/webhookQueue';
 import { getNotificationQueueHealth, startNotificationQueueWorker, stopNotificationQueueWorker } from './queues/notificationQueue';
 import { prisma, disconnectPrisma } from './utils/prisma';
+
+// Dashboard-facing routes (session-authenticated, not API-key-authenticated)
+import authRouter from './routes/auth';
+import workspacesRouter from './routes/workspaces';
+import dashboardRouter from './routes/dashboard';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -85,14 +91,24 @@ async function initializeRuntime(): Promise<void> {
     }
 }
 
-app.use(cors());
+app.use(cors({
+    origin: true, // Allow all origins — the dashboard runs on a different domain
+    credentials: true, // Allow cookies for session auth
+}));
 app.use(express.json());
+app.use(cookieParser());
 
 // Add request logging middleware
 app.use(requestLogger);
 
 // Register admin routes BEFORE API key authentication
 app.use('/admin', adminRouter);
+
+// Register dashboard-facing routes (session-authenticated)
+// These must be BEFORE apiKeyAuth so they don't require an x-api-key header
+app.use('/auth', authRouter);
+app.use('/workspaces', workspacesRouter);
+app.use('/dashboard', dashboardRouter);
 
 // Signed status probes bypass customer auth, quotas, records, and delivery hooks.
 app.use('/internal/status', internalStatusRouter);

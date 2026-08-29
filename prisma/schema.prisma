@@ -29,6 +29,8 @@ model Account {
     session_state            String?
     user                     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
     refresh_token_expires_in Int?
+    // Added for self-hosted email/password auth (not part of NextAuth spec)
+    passwordHash             String? @db.Text
 
     @@unique([provider, providerAccountId])
 }
