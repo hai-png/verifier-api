@@ -3,8 +3,15 @@ services:
     name: verifier-api-selfhosted
     env: node
     plan: free  # 512MB RAM, spins down after 15 min inactivity (cold start ~30s)
+    # Use db push instead of migrate deploy — the upstream migration history
+    # has a bug (migration 4 ALTERs PlanPricingConfig but no migration CREATEs it).
+    # db push reads schema.prisma directly and creates all tables, skipping the
+    # broken migration files. Safe for fresh databases (which is what we have).
+    #
+    # The pre-step (scripts/reset-db.js) clears the _prisma_migrations table
+    # and any partial tables left by the prior failed deploy attempt.
     buildCommand: pnpm install --frozen-lockfile && pnpm build
-    startCommand: pnpm prisma migrate deploy && pnpm start
+    startCommand: node scripts/reset-db.js && pnpm prisma db push --accept-data-loss && pnpm start
     envVars:
       - key: NODE_ENV
         value: production

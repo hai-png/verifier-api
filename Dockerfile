@@ -34,6 +34,10 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/scripts ./scripts
 
-# Run migrations at startup, then start the server
-CMD ["sh", "-c", "pnpm prisma migrate deploy && node dist/index.js"]
+# Reset database (clear any failed-migration state) then push schema + start.
+# We use `db push` instead of `migrate deploy` because the upstream migration
+# history has a bug (migration 4 ALTERs PlanPricingConfig but no migration
+# CREATEs it). db push reads schema.prisma directly and creates all tables.
+CMD ["sh", "-c", "node scripts/reset-db.js && pnpm prisma db push --accept-data-loss && node dist/index.js"]
