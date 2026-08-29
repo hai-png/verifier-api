@@ -8,10 +8,10 @@ services:
     # db push reads schema.prisma directly and creates all tables, skipping the
     # broken migration files. Safe for fresh databases (which is what we have).
     #
-    # The pre-step (scripts/reset-db.js) clears the _prisma_migrations table
-    # and any partial tables left by the prior failed deploy attempt.
+    # Apply schema (idempotent — only creates missing tables/columns, preserves existing data)
+    # No reset-db.js — we don't want to wipe data on every deploy.
     buildCommand: pnpm install --frozen-lockfile && pnpm build
-    startCommand: node scripts/reset-db.js && npx prisma db push --accept-data-loss && node dist/index.js
+    startCommand: npx prisma db push --accept-data-loss && node dist/index.js
     envVars:
       - key: NODE_ENV
         value: production
