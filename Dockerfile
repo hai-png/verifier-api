@@ -40,4 +40,4 @@ COPY --from=build /app/scripts ./scripts
 # We use `db push` instead of `migrate deploy` because the upstream migration
 # history has a bug (migration 4 ALTERs PlanPricingConfig but no migration
 # CREATEs it). db push reads schema.prisma directly and creates all tables.
-CMD ["sh", "-c", "node scripts/reset-db.js && pnpm prisma db push --accept-data-loss && node dist/index.js"]
+CMD ["sh", "-c", "node scripts/reset-db.js && npx prisma db push --accept-data-loss && node dist/index.js"]

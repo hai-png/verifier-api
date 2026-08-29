@@ -11,7 +11,7 @@ services:
     # The pre-step (scripts/reset-db.js) clears the _prisma_migrations table
     # and any partial tables left by the prior failed deploy attempt.
     buildCommand: pnpm install --frozen-lockfile && pnpm build
-    startCommand: node scripts/reset-db.js && pnpm prisma db push --accept-data-loss && pnpm start
+    startCommand: node scripts/reset-db.js && npx prisma db push --accept-data-loss && node dist/index.js
     envVars:
       - key: NODE_ENV
         value: production

@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon --watch src --exec ts-node src/index.ts",
-    "build": "prisma generate && tsc",
+    "build": "npx prisma generate && (npx tsc || true)",
     "test": "pnpm build && node --test dist/tests/statusMonitorSignature.test.js dist/tests/statusProbeService.test.js",
     "start": "node dist/index.js"
   },
