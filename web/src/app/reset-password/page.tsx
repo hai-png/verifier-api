@@ -1,8 +1,12 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { CreditCard, Loader2, AlertCircle } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 
 function ResetForm() {
@@ -31,7 +35,7 @@ function ResetForm() {
         method: "POST",
         body: JSON.stringify({ token, password }),
       });
-      router.push("/login?reset=1");
+      router.push("/");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Reset failed.");
     } finally {
@@ -41,54 +45,79 @@ function ResetForm() {
 
   if (!token) {
     return (
-      <div className="narrow">
-        <h1>Reset password</h1>
-        <div className="error">This reset link is invalid (missing token). Please request a new one.</div>
-        <p className="small mt">
-          <Link href="/forgot-password">Request a new link</Link>
-        </p>
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-sm text-destructive">
+              <AlertCircle className="w-4 h-4" />
+              This reset link is invalid (missing token).
+            </div>
+            <div className="text-center text-sm mt-4">
+              <a href="/forgot-password" className="underline">
+                Request a new link
+              </a>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="narrow">
-      <h1>Set a new password</h1>
-      <p className="muted">Choose a new password for your account.</p>
-      <form onSubmit={onSubmit}>
-        <label htmlFor="password">New password (min 8 characters)</label>
-        <input
-          id="password"
-          type="password"
-          autoComplete="new-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          minLength={8}
-        />
-        <label htmlFor="confirm">Confirm new password</label>
-        <input
-          id="confirm"
-          type="password"
-          autoComplete="new-password"
-          value={confirm}
-          onChange={(e) => setConfirm(e.target.value)}
-          required
-        />
-        {error && <div className="error">{error}</div>}
-        <div className="mt">
-          <button type="submit" disabled={busy}>
-            {busy ? "Updating…" : "Update password"}
-          </button>
-        </div>
-      </form>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background to-muted p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader className="text-center">
+          <div className="mx-auto w-12 h-12 bg-primary rounded-xl flex items-center justify-center mb-2">
+            <CreditCard className="w-6 h-6 text-primary-foreground" />
+          </div>
+          <CardTitle className="text-2xl">Set a new password</CardTitle>
+          <CardDescription>Choose a new password for your account.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={onSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="password">New password (min 8 characters)</Label>
+              <Input
+                id="password"
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirm">Confirm new password</Label>
+              <Input
+                id="confirm"
+                type="password"
+                autoComplete="new-password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                required
+              />
+            </div>
+            {error && (
+              <div className="flex items-center gap-2 text-sm text-destructive">
+                <AlertCircle className="w-4 h-4" />
+                {error}
+              </div>
+            )}
+            <Button type="submit" className="w-full" disabled={busy}>
+              {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Update password
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   );
 }
 
 export default function ResetPasswordPage() {
   return (
-    <Suspense fallback={<div className="narrow muted">Loading…</div>}>
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>}>
       <ResetForm />
     </Suspense>
   );
