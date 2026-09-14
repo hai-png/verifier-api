@@ -124,10 +124,20 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
   // ── Public verify proxy auth ───────────────────────────────────────────────
   // The Next.js server can forward public homepage verifications without
   // attributing them to any workspace or API key.
+  // NOTE: x-public-verify-key is DASHBOARD_SECRET — server-side only, never
+  // expose it to browsers. Browser clients must use POST /verify/public.
   const publicVerifyHeader = req.headers['x-public-verify-key'] as string | undefined;
   if (DASHBOARD_SECRET && publicVerifyHeader === DASHBOARD_SECRET && PUBLIC_VERIFY_PATHS.has(req.path)) {
     (req as any).publicVerify = true;
     (req as any).apiKeyData = null;
+    return next();
+  }
+
+  // ── Public routes that skip API key auth ──────────────────────────────────
+  // POST /verify/public is the browser-safe public verification endpoint
+  // (per-IP throttled in-route, no quota, no webhooks). The x-public-verify-key
+  // path above stays server-side only.
+  if (req.path === '/verify/public') {
     return next();
   }
 
