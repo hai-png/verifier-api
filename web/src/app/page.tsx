@@ -1246,13 +1246,13 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
                 </div>
                 <div className="flex items-center gap-2">
                   <code className="text-xs text-muted-foreground hidden md:block">
-                    {API_BASE.replace('api', 'pay')}/{link.id}
+                    {typeof window !== 'undefined' ? `${window.location.origin}/pl/${link.id}` : `/pl/${link.id}`}
                   </code>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => {
-                      navigator.clipboard.writeText(`${API_BASE.replace('api', 'pay')}/${link.id}`)
+                      navigator.clipboard.writeText(`${window.location.origin}/pl/${link.id}`)
                       toast({ title: 'Link copied!' })
                     }}
                   >
@@ -1581,6 +1581,16 @@ function PaymentsTab({ workspaceId }: { workspaceId: string }) {
 
 // ─── Webhooks Tab ───────────────────────────────────────────────────────────
 
+// Must match VALID_EVENTS in the API (src/routes/webhooks.ts) — unknown event
+// names are rejected with 400.
+const WEBHOOK_EVENTS = [
+  'payment_link.paid',
+  'verification.success',
+  'verification.failed',
+  'product.sold_out',
+  'webhook.dead_letter',
+]
+
 function WebhooksTab({ workspaceId }: { workspaceId: string }) {
   const { token } = useAuth()
   const { toast } = useToast()
@@ -1712,7 +1722,7 @@ function WebhooksTab({ workspaceId }: { workspaceId: string }) {
             <div className="space-y-2">
               <Label>Events</Label>
               <div className="flex flex-wrap gap-2">
-                {['payment_link.paid', 'verify.success', 'verify.failed', 'product.sold_out'].map(ev => (
+                {WEBHOOK_EVENTS.map(ev => (
                   <Badge
                     key={ev}
                     variant={form.events.includes(ev) ? 'default' : 'outline'}
@@ -1745,6 +1755,32 @@ function WebhooksTab({ workspaceId }: { workspaceId: string }) {
 // ─── Settings Tab ───────────────────────────────────────────────────────────
 
 function SettingsTab({ workspace }: { workspace: Workspace }) {
+  const { token } = useAuth()
+  const { toast } = useToast()
+  const [name, setName] = useState(workspace.name)
+  const [saving, setSaving] = useState(false)
+
+  const rename = async () => {
+    if (!name.trim() || name.trim() === workspace.name) return
+    setSaving(true)
+    try {
+      const res = await apiFetch(`/workspaces/${workspace.id}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: name.trim() }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        toast({ title: 'Workspace renamed. Refresh to see the new name.' })
+      } else {
+        toast({ title: 'Error', description: data.error, variant: 'destructive' })
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to rename workspace.', variant: 'destructive' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <h2 className="text-xl font-semibold">Settings</h2>
@@ -1756,6 +1792,19 @@ function SettingsTab({ workspace }: { workspace: Workspace }) {
           <div className="flex justify-between"><span className="text-muted-foreground">ID</span><code className="text-sm">{workspace.id}</code></div>
           <div className="flex justify-between"><span className="text-muted-foreground">Tier</span><Badge variant="secondary">{workspace.tier}</Badge></div>
           <div className="flex justify-between"><span className="text-muted-foreground">Created</span><span>{new Date(workspace.createdAt).toLocaleDateString()}</span></div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Rename workspace</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-2">
+            <Input value={name} onChange={e => setName(e.target.value)} placeholder="Workspace name" />
+            <Button onClick={rename} disabled={saving || !name.trim() || name.trim() === workspace.name}>
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+            </Button>
+          </div>
         </CardContent>
       </Card>
       <Card>

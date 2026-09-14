@@ -1,0 +1,3 @@
+# Buyer-facing payment-link URLs (/pl/:id) are served by the /pl SPA page,
+# which reads the link id from the path client-side.
+/pl/*  /pl/  200
