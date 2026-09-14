@@ -275,3 +275,19 @@ For a low-traffic payment verification API (a few hundred verifications/month), 
 | **All other banks** | OCR via Mistral Vision (image upload) | ❌ |
 
 The OCR endpoint (`POST /verify-image`) accepts a receipt screenshot from ANY Ethiopian bank and extracts payer name, amount, date, reference, etc. via Mistral AI Vision. Supported banks include: Cooperative Bank of Oromia, Oromia Bank, Hijra Bank, Amhara Bank, Wegagen, Berhan, Abay, Lion, Bunna, Enat, Gadaa, Tsehay, Orbit, Shabelle, Sinqee.
+
+---
+
+## Dashboard (`web/` → Cloudflare Pages)
+
+The `web/` directory is a static Next.js SPA (login, password reset,
+workspace overview, manual verification, API keys, payouts, payment links,
+webhooks). It calls the Render API with `Authorization: Bearer` tokens.
+
+- **Local:** `cd web && npm install && NEXT_PUBLIC_API_URL=http://localhost:3001 npm run dev`
+- **Deploy:** push to `selfhosted` → `.github/workflows/deploy-web.yml` builds
+  `web/out` and publishes to the `noveld-pay-dashboard` Pages project.
+  Needs repo secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
+- **Custom domain:** CNAME `dashboard.noveld.com.et` → `<project>.pages.dev`.
+- **Important:** the API's `VERITAS_APP_URL` must be the dashboard URL, so
+  password-reset emails link to a real `/reset-password` page.
