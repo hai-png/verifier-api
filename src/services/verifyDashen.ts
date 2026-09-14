@@ -1,6 +1,4 @@
 import axios, { AxiosResponse } from 'axios';
-import pdf from 'pdf-parse';
-import https from 'https';
 import logger from '../utils/logger';
 
 export interface DashenVerifyResult {
@@ -33,34 +31,44 @@ function titleCase(str: string): string {
     return str.toLowerCase().replace(/\b\w/g, char => char.toUpperCase());
 }
 
+/**
+ * Verify a Dashen Bank transaction receipt.
+ *
+ * Receipt URL: https://receipts.dashenbanksc.com/receipt/<reference>
+ * Returns an HTML receipt page (label/value layout). Unknown references get
+ * HTTP 400 + {"message":"Transaction not found"}.
+ */
 export async function verifyDashen(
     transactionReference: string
 ): Promise<DashenVerifyResult> {
-    const url = `https://receipt.dashensuperapp.com/receipt/${transactionReference}`;
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    const url = `https://receipts.dashenbanksc.com/receipt/${transactionReference}`;
     const maxRetries = 5;
     const retryDelay = 2000; // 2 seconds
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             logger.info(`🔎 Fetching Dashen receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
-            const response: AxiosResponse<ArrayBuffer> = await axios.get(url, {
-                httpsAgent,
-                responseType: 'arraybuffer',
+            const response: AxiosResponse<string> = await axios.get(url, {
+                responseType: 'text',
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                    'Accept': 'application/pdf'
+                    'Accept': 'text/html,application/xhtml+xml',
                 },
-                timeout: 60000
+                timeout: 30000,
             });
 
-            logger.info('✅ Dashen receipt fetch success, parsing PDF');
-            return await parseDashenReceipt(response.data);
+            logger.info('✅ Dashen receipt fetch success, parsing HTML');
+            return parseDashenReceipt(response.data, transactionReference);
         } catch (error: any) {
             const isLastAttempt = attempt === maxRetries;
             const status = error.response?.status;
-            
+
             logger.warn(`⚠️ Dashen receipt fetch failed (Attempt ${attempt}/${maxRetries}): ${error.message}`);
+
+            // Unknown/expired references — the host answers 400, no point retrying.
+            if (status === 400) {
+                return { success: false, error: 'Receipt not found. Check the reference and try again.' };
+            }
 
             // If it's the last attempt, return failure
             if (isLastAttempt) {
@@ -84,176 +92,85 @@ export async function verifyDashen(
     };
 }
 
-async function parseDashenReceipt(buffer: ArrayBuffer): Promise<DashenVerifyResult> {
+function decodeEntities(value: string): string {
+    return value
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'");
+}
+
+/** Extract label → value pairs from the receipt HTML. */
+function extractFields(html: string): Record<string, string> {
+    const withoutScripts = html
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ');
+    const text = withoutScripts.replace(/<[^>]+>/g, '|');
+    const parts = text.split('|').map(p => decodeEntities(p).trim()).filter(Boolean);
+    const fields: Record<string, string> = {};
+    for (let i = 0; i + 1 < parts.length; i += 1) {
+        const label = parts[i].replace(/:$/, '').trim();
+        const value = parts[i + 1].trim();
+        if (label && value && !(label in fields)) {
+            fields[label] = value;
+        }
+    }
+    return fields;
+}
+
+function parseAmount(value: string | undefined): number | undefined {
+    if (!value) return undefined;
+    const num = parseFloat(value.replace(/[^0-9.]/g, ''));
+    return isNaN(num) ? undefined : num;
+}
+
+function parseReceiptDate(value: string | undefined): Date | undefined {
+    if (!value) return undefined;
+    // "Sep 5, 2026, 05:56:21 pm" → drop the comma after the year for Date.parse
+    const normalized = value.replace(/(\d{4}),/, '$1');
+    const time = Date.parse(normalized);
+    return isNaN(time) ? undefined : new Date(time);
+}
+
+function parseDashenReceipt(html: string, reference: string): DashenVerifyResult {
     try {
-        logger.info(`📊 PDF buffer size: ${buffer.byteLength} bytes`);
-        
-        const parsed = await pdf(Buffer.from(buffer));
-        const rawText = parsed.text.replace(/\s+/g, ' ').trim();
-        
-        logger.info('📄 Parsing Dashen receipt text');
-        logger.debug(`📝 Raw PDF text length: ${rawText.length} characters`);
-        
-        // Log first and last 500 characters of PDF text for debugging
-        const textPreview = rawText.length > 1000 
-            ? `${rawText.substring(0, 500)}...${rawText.substring(rawText.length - 500)}`
-            : rawText;
-        logger.debug(`🔍 PDF text preview: ${textPreview}`);
-        
-        logger.info('🔎 Starting field extraction with regex patterns...');
+        const data = extractFields(html);
 
-        // Extract sender information
-        logger.debug('👤 Extracting sender information...');
-        const senderNameMatch = rawText.match(/Sender\s*Name\s*:?\s*(.*?)\s+(?:Sender\s*Account|Account)/i);
-        const senderName = senderNameMatch?.[1]?.trim();
-        logger.debug(`👤 Sender name regex result: ${senderNameMatch ? `Found: "${senderName}"` : 'No match'}`);
-        
-        const senderAccountMatch = rawText.match(/Sender\s*Account\s*(?:Number)?\s*:?\s*([A-Z0-9\*\-]+)/i);
-        const senderAccountNumber = senderAccountMatch?.[1]?.trim();
-        logger.debug(`🏦 Sender account regex result: ${senderAccountMatch ? `Found: "${senderAccountNumber}"` : 'No match'}`);
-        
-        // Extract transaction details
-        logger.debug('💳 Extracting transaction details...');
-        const transactionChannelMatch = rawText.match(/Transaction\s*Channel\s*:?\s*(.*?)\s+(?:Service|Type)/i);
-        const transactionChannel = transactionChannelMatch?.[1]?.trim();
-        logger.debug(`💳 Transaction channel regex result: ${transactionChannelMatch ? `Found: "${transactionChannel}"` : 'No match'}`);
-        
-        const serviceTypeMatch = rawText.match(/Service\s*Type\s*:?\s*(.*?)\s+(?:Narrative|Description)/i);
-        const serviceType = serviceTypeMatch?.[1]?.trim();
-        logger.debug(`🔧 Service type regex result: ${serviceTypeMatch ? `Found: "${serviceType}"` : 'No match'}`);
-        
-        const narrativeMatch = rawText.match(/Narrative\s*:?\s*(.*?)\s+(?:Receiver|Phone)/i);
-        const narrative = narrativeMatch?.[1]?.trim();
-        logger.debug(`📝 Narrative regex result: ${narrativeMatch ? `Found: "${narrative}"` : 'No match'}`);
-        
-        // Extract receiver information
-        logger.debug('📞 Extracting receiver information...');
-        const receiverNameMatch = rawText.match(/Receiver\s*Name\s*:?\s*(.*?)\s+(?:Phone|Institution)/i);
-        const receiverName = receiverNameMatch?.[1]?.trim();
-        logger.debug(`📞 Receiver name regex result: ${receiverNameMatch ? `Found: "${receiverName}"` : 'No match'}`);
-        
-        const phoneNoMatch = rawText.match(/Phone\s*(?:No\.?|Number)?\s*:?\s*([\+\d\-\s]+)/i);
-        const phoneNo = phoneNoMatch?.[1]?.trim();
-        logger.debug(`📱 Phone number regex result: ${phoneNoMatch ? `Found: "${phoneNo}"` : 'No match'}`);
-        
-        const institutionNameMatch = rawText.match(/Institution\s*Name\s*:?\s*(.*?)\s+(?:Transaction|Reference)/i);
-        const institutionName = institutionNameMatch?.[1]?.trim();
-        logger.debug(`🏢 Institution name regex result: ${institutionNameMatch ? `Found: "${institutionName}"` : 'No match'}`);
-        
-        // Extract reference numbers
-        logger.debug('🔢 Extracting reference numbers...');
-        const transactionReferenceMatch = rawText.match(/Transaction\s*Reference\s*:?\s*([A-Z0-9\-]+)/i);
-        const transactionReference = transactionReferenceMatch?.[1]?.trim();
-        logger.debug(`🔢 Transaction reference regex result: ${transactionReferenceMatch ? `Found: "${transactionReference}"` : 'No match'}`);
-        
-        const transferReferenceMatch = rawText.match(/Transfer\s*Reference\s*:?\s*([A-Z0-9\-]+)/i);
-        const transferReference = transferReferenceMatch?.[1]?.trim();
-        logger.debug(`🔄 Transfer reference regex result: ${transferReferenceMatch ? `Found: "${transferReference}"` : 'No match'}`);
-        
-        // Extract date
-        logger.debug('📅 Extracting transaction date...');
-        const dateMatch = rawText.match(/Transaction\s*Date\s*(?:&\s*Time)?\s*:?\s*([\d\/\-,: ]+(?:[APM]{2})?)/i);
-        const dateRaw = dateMatch?.[1]?.trim();
-        logger.debug(`📅 Date regex result: ${dateMatch ? `Found: "${dateRaw}"` : 'No match'}`);
-        const transactionDate = dateRaw ? new Date(dateRaw) : undefined;
-        if (dateRaw && transactionDate) {
-            logger.debug(`📅 Parsed date: ${transactionDate.toISOString()}`);
+        const transactionReference = data['Transaction Reference'] || reference;
+        if (!data['Transaction Reference'] && Object.keys(data).length < 5) {
+            return { success: false, error: 'No receipt data found. The reference may be invalid.' };
         }
-        
-        // Extract amounts and fees
-        logger.debug('💰 Extracting amounts and fees...');
-        const transactionAmount = extractAmountWithLogging(rawText, /Transaction\s*Amount\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Transaction Amount');
-        const serviceCharge = extractAmountWithLogging(rawText, /Service\s*Charge\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Service Charge');
-        const exciseTax = extractAmountWithLogging(rawText, /Excise\s*Tax\s*(?:\(15%\))?\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Excise Tax');
-        const vat = extractAmountWithLogging(rawText, /VAT\s*(?:\(15%\))?\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'VAT');
-        const penaltyFee = extractAmountWithLogging(rawText, /Penalty\s*Fee\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Penalty Fee');
-        const incomeTaxFee = extractAmountWithLogging(rawText, /Income\s*Tax\s*Fee\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Income Tax Fee');
-        const interestFee = extractAmountWithLogging(rawText, /Interest\s*Fee\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Interest Fee');
-        const stampDuty = extractAmountWithLogging(rawText, /Stamp\s*Duty\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Stamp Duty');
-        const discountAmount = extractAmountWithLogging(rawText, /Discount\s*Amount\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Discount Amount');
-        const total = extractAmountWithLogging(rawText, /Total\s*(?:ETB|Birr)?\s*([\d,]+\.?\d*)/i, 'Total');
 
-        // Apply title case to names
-        logger.debug('✨ Applying title case formatting...');
-        const formattedSenderName = senderName ? titleCase(senderName) : undefined;
-        const formattedReceiverName = receiverName ? titleCase(receiverName) : undefined;
-        const formattedInstitutionName = institutionName ? titleCase(institutionName) : undefined;
-        
-        logger.debug(`✨ Formatted names - Sender: "${formattedSenderName}", Receiver: "${formattedReceiverName}", Institution: "${formattedInstitutionName}"`);
-
-        // Log final extracted data structure
-        const extractedData = {
-            senderName: formattedSenderName,
-            senderAccountNumber,
-            transactionChannel,
-            serviceType,
-            narrative,
-            receiverName: formattedReceiverName,
-            phoneNo,
-            institutionName: formattedInstitutionName,
+        return {
+            success: true,
+            senderName: data['Sender Name'] ? titleCase(data['Sender Name']) : undefined,
+            senderAccountNumber: data['Sender Account Number'] || data['Sender Account'],
+            transactionChannel: data['Transaction Channel'],
+            serviceType: data['Service Type'],
+            narrative: data['Narrative'],
+            receiverName: data['Receiver Name'] ? titleCase(data['Receiver Name']) : undefined,
+            phoneNo: data['Phone No.'] || data['Phone No'],
+            institutionName: data['Institution Name'],
             transactionReference,
-            transferReference,
-            transactionDate,
-            transactionAmount,
-            serviceCharge,
-            exciseTax,
-            vat,
-            penaltyFee,
-            incomeTaxFee,
-            interestFee,
-            stampDuty,
-            discountAmount,
-            total
+            transferReference: data['Transfer Reference'],
+            transactionDate: parseReceiptDate(data['Transaction Date']),
+            transactionAmount: parseAmount(data['Transaction Amount']),
+            serviceCharge: parseAmount(data['Service Charge']),
+            exciseTax: parseAmount(data['Excise Tax (15%)'] ?? data['Excise Tax']),
+            vat: parseAmount(data['VAT (15%)'] ?? data['VAT']),
+            penaltyFee: parseAmount(data['Penalty Fee']),
+            incomeTaxFee: parseAmount(data['Income Tax Fee']),
+            interestFee: parseAmount(data['Interest Fee']),
+            stampDuty: parseAmount(data['Stamp Duty']),
+            discountAmount: parseAmount(data['Discount Amount']),
+            total: parseAmount(data['Total']),
         };
-        
-        logger.info('📋 Final extracted data structure:', extractedData);
-
-        // Check if we have minimum required fields
-        logger.debug(`🔍 Validation check - Transaction Reference: ${transactionReference ? '✅' : '❌'}, Transaction Amount: ${transactionAmount ? '✅' : '❌'}`);
-        if (transactionReference && transactionAmount) {
-            logger.info('✅ PDF parsing successful - all required fields extracted');
-            return {
-                success: true,
-                ...extractedData
-            };
-        } else {
-            logger.warn('⚠️ PDF parsing failed - missing required fields');
-            logger.warn(`❌ Missing fields: ${!transactionReference ? 'Transaction Reference ' : ''}${!transactionAmount ? 'Transaction Amount' : ''}`);
-            return {
-                success: false,
-                error: 'Could not extract required fields (Transaction Reference and Amount) from PDF.'
-            };
-        }
     } catch (parseErr: any) {
-        logger.error('❌ Dashen PDF parsing failed:', parseErr.message);
-        return { 
-            success: false, 
-            error: 'Error parsing PDF data' 
+        logger.error('❌ Dashen HTML parsing failed:', parseErr.message);
+        return {
+            success: false,
+            error: 'Error parsing receipt data'
         };
-    }
-}
-
-function extractAmount(text: string, regex: RegExp): number | undefined {
-    const match = text.match(regex);
-    if (match && match[1]) {
-        const cleanAmount = match[1].replace(/,/g, '');
-        const amount = parseFloat(cleanAmount);
-        return isNaN(amount) ? undefined : amount;
-    }
-    return undefined;
-}
-
-function extractAmountWithLogging(text: string, regex: RegExp, fieldName: string): number | undefined {
-    const match = text.match(regex);
-    if (match && match[1]) {
-        const rawValue = match[1];
-        const cleanAmount = rawValue.replace(/,/g, '');
-        const amount = parseFloat(cleanAmount);
-        const result = isNaN(amount) ? undefined : amount;
-        logger.debug(`💰 ${fieldName} regex result: Found: "${rawValue}" → Parsed: ${result}`);
-        return result;
-    } else {
-        logger.debug(`💰 ${fieldName} regex result: No match`);
-        return undefined;
     }
 }
