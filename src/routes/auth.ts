@@ -16,6 +16,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import { isResetEmailConfigured, sendPasswordResetEmail } from '../utils/passwordResetEmail';
 
 const router = Router();
 
@@ -328,6 +329,165 @@ router.post('/logout', async (req: Request, res: Response): Promise<void> => {
     }
 
     res.json({ success: true });
+});
+
+// ─── Password reset ──────────────────────────────────────────────────────────
+
+const RESET_TOKEN_TTL_MINUTES = 30;
+const RESET_IDENTIFIER_PREFIX = 'pwreset:';
+
+/** Where the dashboard's reset page lives (the emailed link points here). */
+function resetPageUrl(rawToken: string): string {
+    const base = (process.env.VERITAS_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+    return `${base}/reset-password?token=${rawToken}`;
+}
+
+function hashResetToken(rawToken: string): string {
+    return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+/**
+ * Issue a password-reset token for a user. Any previous outstanding token for
+ * the same user is invalidated (single active token per user). Returns the
+ * RAW token — only its sha256 hash is persisted.
+ *
+ * Exported so /admin/password-reset-link can issue links when email delivery
+ * is not configured (admin-assisted reset).
+ */
+export async function createPasswordResetToken(userId: string): Promise<{ rawToken: string; expiresAt: Date }> {
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const identifier = `${RESET_IDENTIFIER_PREFIX}${userId}`;
+    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000);
+
+    await prisma.$transaction([
+        prisma.verificationToken.deleteMany({ where: { identifier } }),
+        prisma.verificationToken.create({
+            data: { identifier, token: hashResetToken(rawToken), expires: expiresAt },
+        }),
+    ]);
+
+    return { rawToken, expiresAt };
+}
+
+// Simple in-memory throttle so forgot-password can't be used to spam email
+// (or probe accounts by timing). Max 3 requests per email per 15 minutes.
+const forgotThrottle = new Map<string, { count: number; windowStart: number }>();
+const FORGOT_WINDOW_MS = 15 * 60 * 1000;
+const FORGOT_MAX_PER_WINDOW = 3;
+
+function forgotAllowed(email: string): boolean {
+    const now = Date.now();
+    const entry = forgotThrottle.get(email);
+    if (!entry || now - entry.windowStart > FORGOT_WINDOW_MS) {
+        forgotThrottle.set(email, { count: 1, windowStart: now });
+        return true;
+    }
+    entry.count += 1;
+    return entry.count <= FORGOT_MAX_PER_WINDOW;
+}
+
+router.post('/forgot-password', async (req: Request, res: Response): Promise<void> => {
+    const { email } = req.body as { email?: string };
+
+    if (!email || typeof email !== 'string') {
+        res.status(400).json({ success: false, error: 'Email is required.' });
+        return;
+    }
+
+    const uniformResponse = {
+        success: true,
+        message: 'If an account exists for that email, a password reset link has been sent.',
+    };
+
+    const normalizedEmail = email.toLowerCase().trim();
+    if (!forgotAllowed(normalizedEmail)) {
+        res.json(uniformResponse);
+        return;
+    }
+
+    try {
+        const user = await prisma.user.findUnique({
+            where: { email: normalizedEmail },
+            include: {
+                accounts: { where: { provider: 'credentials' }, select: { id: true }, take: 1 },
+            },
+        });
+
+        if (user && user.accounts.length > 0) {
+            const { rawToken } = await createPasswordResetToken(user.id);
+
+            if (isResetEmailConfigured()) {
+                try {
+                    await sendPasswordResetEmail({
+                        to: normalizedEmail,
+                        name: user.name,
+                        resetUrl: resetPageUrl(rawToken),
+                        ttlMinutes: RESET_TOKEN_TTL_MINUTES,
+                    });
+                    logger.info(`Password reset email sent to ${normalizedEmail}`);
+                } catch (emailErr) {
+                    logger.error('Password reset email failed:', emailErr);
+                }
+            } else {
+                logger.warn(
+                    `Password reset requested for ${normalizedEmail} but RESEND_API_KEY is not configured. ` +
+                    'Use POST /admin/password-reset-link (x-admin-key) to issue a link manually.'
+                );
+            }
+        }
+
+        res.json(uniformResponse);
+    } catch (err) {
+        logger.error('Forgot password error:', err);
+        res.json(uniformResponse);
+    }
+});
+
+router.post('/reset-password', async (req: Request, res: Response): Promise<void> => {
+    const { token, password } = req.body as { token?: string; password?: string };
+
+    if (!token || typeof token !== 'string') {
+        res.status(400).json({ success: false, error: 'Reset token is required.' });
+        return;
+    }
+    if (!password || password.length < 8) {
+        res.status(400).json({ success: false, error: 'Password must be at least 8 characters.' });
+        return;
+    }
+
+    try {
+        const record = await prisma.verificationToken.findUnique({
+            where: { token: hashResetToken(token) },
+        });
+
+        if (!record || !record.identifier.startsWith(RESET_IDENTIFIER_PREFIX)) {
+            res.status(400).json({ success: false, error: 'Invalid or expired reset link.' });
+            return;
+        }
+        if (record.expires < new Date()) {
+            await prisma.verificationToken.deleteMany({ where: { token: record.token } });
+            res.status(400).json({ success: false, error: 'Invalid or expired reset link.' });
+            return;
+        }
+
+        const userId = record.identifier.slice(RESET_IDENTIFIER_PREFIX.length);
+        const passwordHash = await bcrypt.hash(password, 10);
+
+        await prisma.$transaction([
+            prisma.verificationToken.deleteMany({ where: { token: record.token } }),
+            prisma.account.updateMany({
+                where: { userId, provider: 'credentials' },
+                data: { passwordHash },
+            }),
+            prisma.session.deleteMany({ where: { userId } }),
+        ]);
+
+        logger.info(`Password reset completed for user ${userId}`);
+        res.json({ success: true, message: 'Password updated. Please log in with your new password.' });
+    } catch (err) {
+        logger.error('Reset password error:', err);
+        res.status(500).json({ success: false, error: 'Failed to reset password.' });
+    }
 });
 
 // ─── Auth middleware for dashboard routes ────────────────────────────────────

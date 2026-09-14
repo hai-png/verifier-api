@@ -669,4 +669,43 @@ router.post(
   },
 );
 
+// ─── Admin-assisted password reset ───────────────────────────────────────────
+router.post('/password-reset-link', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
+    const { email } = req.body as { email?: string };
+
+    if (!email || typeof email !== 'string') {
+        res.status(400).json({ success: false, error: 'Email is required.' });
+        return;
+    }
+
+    try {
+        const user = await prisma.user.findUnique({
+            where: { email: email.toLowerCase().trim() },
+            include: {
+                accounts: { where: { provider: 'credentials' }, select: { id: true }, take: 1 },
+            },
+        });
+
+        if (!user || user.accounts.length === 0) {
+            res.status(404).json({ success: false, error: 'No credentials account found for that email.' });
+            return;
+        }
+
+        const { createPasswordResetToken } = await import('./auth');
+        const { rawToken, expiresAt } = await createPasswordResetToken(user.id);
+        const base = (process.env.VERITAS_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+
+        logger.info(`Admin issued password reset link for ${user.email}`);
+        res.json({
+            success: true,
+            resetUrl: `${base}/reset-password?token=${rawToken}`,
+            expiresAt,
+            note: 'Single-use link. Deliver it to the user through a trusted channel.',
+        });
+    } catch (err) {
+        logger.error('Admin password reset link error:', err);
+        res.status(500).json({ success: false, error: 'Failed to create reset link.' });
+    }
+});
+
 export default router;

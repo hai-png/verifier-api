@@ -19,6 +19,8 @@ import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { requireSession } from './auth';
 import { generateApiKey } from '../middleware/apiKeyAuth';
+import { runSmartVerify } from '../services/verifyUniversal';
+import { getBillingConfig } from '../config/billingConfig';
 
 const router = Router();
 
@@ -445,6 +447,83 @@ router.delete('/:workspaceId/webhooks/:webhookId', async (req: Request, res: Res
     } catch (err) {
         logger.error('Delete webhook error:', err);
         res.status(500).json({ success: false, error: 'Failed to delete webhook.' });
+    }
+});
+
+// ═══ MANUAL VERIFICATION ═════════════════════════════════════════════════════
+router.post('/:workspaceId/verify', async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).userId as string;
+    const { workspaceId } = req.params as { workspaceId: string };
+    const { reference, suffix, phoneNumber } = req.body as {
+        reference?: string;
+        suffix?: string;
+        phoneNumber?: string;
+    };
+
+    if (!reference || typeof reference !== 'string' || !reference.trim()) {
+        res.status(400).json({ success: false, error: 'Missing or invalid reference.' });
+        return;
+    }
+
+    try {
+        const membership = await verifyWorkspaceAccess(userId, workspaceId);
+        if (!membership) {
+            res.status(403).json({ success: false, error: 'Access denied.' });
+            return;
+        }
+
+        const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
+        if (!workspace) {
+            res.status(404).json({ success: false, error: 'Workspace not found.' });
+            return;
+        }
+
+        const billingConfig = await getBillingConfig();
+        const unlimited = workspace.tier === 'BUSINESS' && billingConfig.businessUnlimitedVerifications;
+
+        if (!unlimited) {
+            const updated = await prisma.workspace.updateMany({
+                where: { id: workspaceId, verificationCredits: { gte: 1 } },
+                data: { verificationCredits: { decrement: 1 } },
+            });
+            if (updated.count === 0) {
+                res.status(402).json({
+                    success: false,
+                    error: 'Monthly verification quota reached.',
+                });
+                return;
+            }
+        }
+
+        const result = await runSmartVerify({
+            reference: reference.trim(),
+            suffix: typeof suffix === 'string' ? suffix : undefined,
+            phoneNumber: typeof phoneNumber === 'string' ? phoneNumber : undefined,
+        });
+
+        logger.info(
+            `Dashboard manual verify by ${userId} on workspace ${workspaceId}: ` +
+            `${result.provider ?? 'UNKNOWN'} → ${result.success ? 'success' : `failed (${result.error})`}`
+        );
+
+        if (!result.success) {
+            res.status(result.httpStatus).json({
+                success: false,
+                error: result.error,
+                provider: result.provider,
+                ...(result.details ? { details: result.details } : {}),
+            });
+            return;
+        }
+
+        const data = (result.data as any)?.success !== undefined
+            ? (result.data as any).data ?? result.data
+            : result.data;
+
+        res.json({ success: true, provider: result.provider, data });
+    } catch (err) {
+        logger.error('Dashboard manual verify error:', err);
+        res.status(500).json({ success: false, error: 'Verification failed.' });
     }
 });
 
