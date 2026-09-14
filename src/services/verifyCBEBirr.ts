@@ -50,6 +50,15 @@ export async function verifyCBEBirr(
       return { success: false, error: `Failed to fetch receipt: HTTP ${response.status}` };
     }
 
+    // Unknown references answer HTTP 200 with an HTML error page instead of a
+    // PDF — bail out before PDF parsing with a clear message.
+    const contentType = String(response.headers?.['content-type'] ?? '');
+    const firstBytes = Buffer.from(response.data).subarray(0, 5).toString('utf8');
+    if (!/pdf/i.test(contentType) && firstBytes.trimStart().startsWith('<')) {
+      logger.info('[CBEBirr] Receipt endpoint returned an HTML page — reference not found.');
+      return { success: false, error: 'Receipt not found. Check the receipt number and phone.' };
+    }
+
     // Parse the PDF
     const pdfBuffer = Buffer.from(response.data);
     const pdfData = await pdfParse(pdfBuffer);

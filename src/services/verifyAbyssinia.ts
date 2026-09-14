@@ -78,10 +78,17 @@ export async function verifyAbyssinia(reference: string, suffix: string): Promis
             logger.error('❌ No transaction data found in response body');
             return { success: false, error: 'No transaction data found in response body' };
         }
+
+        // Bogus references come back with header success but a sentinel record.
+        const firstRecord = jsonData.body[0] as Record<string, unknown>;
+        const recordValues = Object.values(firstRecord ?? {}).join(' ');
+        if (/invalid reference number/i.test(recordValues)) {
+            logger.info('Receipt not found (Abyssinia reported an invalid reference).');
+            return { success: false, error: 'Receipt not found. Check the reference and try again.' };
+        }
         
         // Extract the first (and typically only) transaction record
         const transactionData = jsonData.body[0];
-        logger.debug(`📋 Raw transaction data from API:`, JSON.stringify(transactionData, null, 2));
         logger.debug(`🔍 Available fields in transaction data:`, Object.keys(transactionData));
         logger.debug(`📊 Number of fields in transaction: ${Object.keys(transactionData).length}`);
         
