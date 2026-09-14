@@ -25,7 +25,9 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET || 'change-this-secret-key';
 
 // Middleware to check admin authentication
 const checkAdminAuth = (req: Request, res: Response, next: NextFunction) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const rawAdminKey = req.query.adminKey;
+    const normalizedQueryKey = Array.isArray(rawAdminKey) ? rawAdminKey[0] : rawAdminKey;
+    const adminKey = req.headers['x-admin-key'] || normalizedQueryKey;
 
     if (adminKey !== ADMIN_SECRET) {
         return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
@@ -139,7 +141,7 @@ router.get('/webhook-queue-health', checkAdminAuth as RequestHandler, async (_re
 
 // Upgrade/update a single API key's tier or active status
 router.patch('/api-keys/:id', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const { tier, isActive, grandfathered } = req.body as {
         tier?: string;
         isActive?: boolean;
@@ -193,7 +195,7 @@ router.patch('/api-keys/:id', checkAdminAuth as RequestHandler, async (req: Requ
 
 // Adjust image credits for a key — used by billing system and manual admin overrides
 router.post('/api-keys/:id/credits', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const {
         addCredits,
         setMonthly,

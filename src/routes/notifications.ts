@@ -187,7 +187,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
 router.post('/:id/test', async (req: Request, res: Response): Promise<void> => {
   const workspaceId = getWorkspaceId(req);
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
   if (!workspaceId) {
     res.status(400).json({ success: false, error: 'This workspace could not be resolved.' });
@@ -233,7 +233,7 @@ router.post('/:id/test', async (req: Request, res: Response): Promise<void> => {
 
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
   const workspaceId = getWorkspaceId(req);
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
   if (!workspaceId) {
     res.status(400).json({ success: false, error: 'This workspace could not be resolved.' });
@@ -332,7 +332,7 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
 
 router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
   const workspaceId = getWorkspaceId(req);
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
   if (!workspaceId) {
     res.status(400).json({ success: false, error: 'This workspace could not be resolved.' });

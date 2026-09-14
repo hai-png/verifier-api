@@ -259,7 +259,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 // Body: { url?: string, events?: string[], active?: boolean }
 
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const workspaceId = (req as any).apiKeyData?.workspaceId as string | undefined;
   if (!workspaceId) {
     res.status(400).json({
@@ -362,7 +362,7 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
 // ─── POST /webhooks/:id/rotate-secret ─────────────────────────────────────────
 
 router.post('/:id/rotate-secret', async (req: Request, res: Response): Promise<void> => {
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const workspaceId = (req as any).apiKeyData?.workspaceId as string | undefined;
   if (!workspaceId) {
     res.status(400).json({
@@ -410,7 +410,7 @@ router.post('/:id/rotate-secret', async (req: Request, res: Response): Promise<v
 // ─── DELETE /webhooks/:id ─────────────────────────────────────────────────────
 
 router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
   try {
     const webhook = await prisma.webhook.findFirst({
@@ -431,7 +431,7 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
 // ─── GET /webhooks/:id/deliveries ─────────────────────────────────────────────
 
 router.get('/:id/deliveries', async (req: Request, res: Response): Promise<void> => {
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const page = Math.max(1, parseInt(String(req.query.page ?? '1'), 10));
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? String(DELIVERY_PAGE_SIZE)), 10)));
 
@@ -487,7 +487,8 @@ router.get('/:id/deliveries', async (req: Request, res: Response): Promise<void>
 router.post(
   '/:id/retry/:deliveryId',
   async (req: Request, res: Response): Promise<void> => {
-    const { id, deliveryId } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const deliveryId = Array.isArray(req.params.deliveryId) ? req.params.deliveryId[0] : req.params.deliveryId;
 
     try {
       const webhook = await prisma.webhook.findFirst({

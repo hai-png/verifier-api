@@ -227,7 +227,7 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
   try {
     const current = await prisma.payoutAccount.findFirst({
@@ -315,7 +315,7 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
   try {
     const target = await prisma.payoutAccount.findFirst({
