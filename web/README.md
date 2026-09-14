@@ -8,9 +8,13 @@ Cloudflare Pages; talks to the API on Render.
 
 | Route | Purpose | API |
 |---|---|---|
-| `/` | Dashboard SPA: login/signup, workspaces, overview, API keys, payouts, payment links, payments, webhooks, settings | `/auth/*`, `/workspaces/*`, `/dashboard/*` |
+| `/` | Dashboard SPA: login/signup, workspaces, overview, API keys, payouts, payment links, products, payments, webhooks, settings | `/auth/*`, `/workspaces/*`, `/dashboard/*` |
+| `/verify` | Public no-login payment check (throttled) | `POST /verify/public` |
 | `/forgot-password` | Request reset link | `POST /auth/forgot-password` |
 | `/reset-password?token=` | Set new password | `POST /auth/reset-password` |
+| `/docs…` | 16-page API documentation | — |
+| `/changelog` | Release notes (from repo CHANGELOG.md) | — |
+| `/status` | Live service summary | `GET /status/summary` |
 
 ## Local dev
 

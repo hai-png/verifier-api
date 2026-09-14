@@ -21,6 +21,15 @@ import { requireSession } from './auth';
 import { generateApiKey } from '../middleware/apiKeyAuth';
 import { runSmartVerify } from '../services/verifyUniversal';
 import { getBillingConfig } from '../config/billingConfig';
+import {
+    ensureProviderCoverage,
+    getWorkspacePayoutAccounts,
+    normaliseIdList,
+    normaliseOptionalText,
+    normaliseOptionalUrl,
+    normaliseProviders,
+    resolvePositiveInteger,
+} from './products';
 
 const router = Router();
 
@@ -447,6 +456,184 @@ router.delete('/:workspaceId/webhooks/:webhookId', async (req: Request, res: Res
     } catch (err) {
         logger.error('Delete webhook error:', err);
         res.status(500).json({ success: false, error: 'Failed to delete webhook.' });
+    }
+});
+
+// ═══ PRODUCTS ═════════════════════════════════════════════════════════════════
+
+router.get('/:workspaceId/products', async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).userId as string;
+    const { workspaceId } = req.params as { workspaceId: string };
+
+    try {
+        const membership = await verifyWorkspaceAccess(userId, workspaceId);
+        if (!membership) {
+            res.status(403).json({ success: false, error: 'Access denied.' });
+            return;
+        }
+
+        const products = await prisma.product.findMany({
+            where: { workspaceId },
+            select: {
+                id: true,
+                name: true,
+                price: true,
+                active: true,
+                acceptedProviders: true,
+                maxBuyers: true,
+                createdAt: true,
+                payoutAccounts: { select: { id: true, label: true } },
+                _count: { select: { orders: true } },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+
+        res.json({ success: true, products });
+    } catch (err) {
+        logger.error('List products error:', err);
+        res.status(500).json({ success: false, error: 'Failed to list products.' });
+    }
+});
+
+router.post('/:workspaceId/products', async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).userId as string;
+    const { workspaceId } = req.params as { workspaceId: string };
+    const { name, price, acceptedProviders: rawProviders, payoutAccountIds: rawIds, description, maxBuyers } = req.body as {
+        name?: string;
+        price?: number;
+        acceptedProviders?: unknown;
+        payoutAccountIds?: unknown;
+        description?: string;
+        maxBuyers?: number;
+    };
+
+    const trimmedName = typeof name === 'string' ? name.trim() : '';
+    if (!trimmedName) {
+        res.status(400).json({ success: false, error: 'name is required.' });
+        return;
+    }
+    if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
+        res.status(400).json({ success: false, error: 'price must be a positive number.' });
+        return;
+    }
+    const acceptedProviders = normaliseProviders(rawProviders);
+    if (!acceptedProviders) {
+        res.status(400).json({ success: false, error: 'acceptedProviders must be a non-empty array of supported providers.' });
+        return;
+    }
+    const payoutAccountIds = normaliseIdList(rawIds);
+    if (payoutAccountIds.length === 0) {
+        res.status(400).json({ success: false, error: 'At least one payout account is required.' });
+        return;
+    }
+    const cleanDescription = normaliseOptionalText(description);
+    const buyers = resolvePositiveInteger(maxBuyers);
+    if (buyers === 'invalid') {
+        res.status(400).json({ success: false, error: 'maxBuyers must be a positive integer when provided.' });
+        return;
+    }
+
+    try {
+        const membership = await verifyWorkspaceAccess(userId, workspaceId);
+        if (!membership) {
+            res.status(403).json({ success: false, error: 'Access denied.' });
+            return;
+        }
+
+        const payoutAccounts = await getWorkspacePayoutAccounts(workspaceId, payoutAccountIds);
+        if (payoutAccounts.length !== payoutAccountIds.length) {
+            res.status(400).json({ success: false, error: 'One or more payout accounts were not found.' });
+            return;
+        }
+        const coverageError = ensureProviderCoverage(acceptedProviders, payoutAccounts);
+        if (coverageError) {
+            res.status(400).json({ success: false, error: coverageError });
+            return;
+        }
+
+        const product = await prisma.$transaction(async (tx) => {
+            const created = await tx.product.create({
+                data: {
+                    workspaceId,
+                    name: trimmedName,
+                    description: cleanDescription,
+                    price,
+                    acceptedProviders,
+                    maxBuyers: buyers,
+                    payoutAccounts: { connect: payoutAccounts.map((a) => ({ id: a.id })) },
+                },
+            });
+            await tx.paymentLink.create({
+                data: {
+                    workspaceId,
+                    productId: created.id,
+                    creatorType: 'DASHBOARD',
+                    name: created.name,
+                    mode: 'PRODUCT',
+                    fixedAmount: created.price,
+                    acceptedProviders,
+                    isDefaultForProduct: true,
+                    payoutAccounts: { connect: payoutAccounts.map((a) => ({ id: a.id })) },
+                },
+            });
+            return created;
+        });
+
+        res.status(201).json({ success: true, product });
+    } catch (err) {
+        logger.error('Create product error:', err);
+        res.status(500).json({ success: false, error: 'Failed to create product.' });
+    }
+});
+
+// ═══ ORDERS ═══════════════════════════════════════════════════════════════════
+
+router.get('/:workspaceId/orders', async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).userId as string;
+    const { workspaceId } = req.params as { workspaceId: string };
+    const rawPage = Array.isArray(req.query.page) ? req.query.page[0] : req.query.page;
+    const rawPageSize = Array.isArray(req.query.pageSize) ? req.query.pageSize[0] : req.query.pageSize;
+    const page = Math.max(1, parseInt(String(rawPage ?? '1'), 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(String(rawPageSize ?? '25'), 10) || 25));
+
+    try {
+        const membership = await verifyWorkspaceAccess(userId, workspaceId);
+        if (!membership) {
+            res.status(403).json({ success: false, error: 'Access denied.' });
+            return;
+        }
+
+        const where = { workspaceId };
+        const [total, orders] = await Promise.all([
+            prisma.order.count({ where }),
+            prisma.order.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip: (page - 1) * pageSize,
+                take: pageSize,
+                select: {
+                    id: true,
+                    buyerName: true,
+                    buyerEmail: true,
+                    reference: true,
+                    provider: true,
+                    amountPaid: true,
+                    status: true,
+                    createdAt: true,
+                    paymentLink: { select: { id: true, name: true } },
+                    product: { select: { id: true, name: true } },
+                },
+            }),
+        ]);
+
+        res.json({
+            success: true,
+            orders,
+            pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
+        });
+    } catch (err) {
+        logger.error('List orders error:', err);
+        res.status(500).json({ success: false, error: 'Failed to list orders.' });
     }
 });
 

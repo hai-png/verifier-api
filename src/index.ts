@@ -24,6 +24,7 @@ import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
 import adminRouter from './routes/adminRoute';
 import internalStatusRouter from './routes/internalStatus';
+import publicStatusRouter from './routes/publicStatus';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
 import { requestLogger, initializeStatsCache } from './middleware/requestLogger';
@@ -112,6 +113,9 @@ app.use('/dashboard', dashboardRouter);
 
 // Signed status probes bypass customer auth, quotas, records, and delivery hooks.
 app.use('/internal/status', internalStatusRouter);
+
+// Public status summary (no auth — liveness + config flags only, no live probes).
+app.use('/status', publicStatusRouter);
 
 // Add API key authentication middleware (will not affect admin routes)
 app.use(apiKeyAuth as express.RequestHandler);

@@ -108,7 +108,7 @@ function getAuthContext(req: Request): {
   return null;
 }
 
-function normaliseProviders(input: unknown): string[] | null {
+export function normaliseProviders(input: unknown): string[] | null {
   if (!Array.isArray(input) || input.length === 0) return null;
   const providers = [...new Set(input.filter((value): value is string => typeof value === 'string').map((value) => value.trim().toLowerCase()))];
   if (providers.length === 0) return null;
@@ -117,7 +117,7 @@ function normaliseProviders(input: unknown): string[] | null {
   return providers;
 }
 
-function ensureProviderCoverage(
+export function ensureProviderCoverage(
   acceptedProviders: string[],
   payoutAccounts: Array<{ providersAllowed: unknown }>,
 ): string | null {
@@ -138,12 +138,12 @@ function ensureProviderCoverage(
   return null;
 }
 
-function normaliseIdList(input: unknown): string[] {
+export function normaliseIdList(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return [...new Set(input.filter((value): value is string => typeof value === 'string' && value.trim() !== ''))];
 }
 
-function normaliseOptionalText(input: unknown): string | null | 'invalid' {
+export function normaliseOptionalText(input: unknown): string | null | 'invalid' {
   if (input === undefined) return null;
   if (input === null) return null;
   if (typeof input !== 'string') return 'invalid';
@@ -151,7 +151,7 @@ function normaliseOptionalText(input: unknown): string | null | 'invalid' {
   return trimmed === '' ? null : trimmed;
 }
 
-function normaliseOptionalUrl(input: unknown): string | null | 'invalid' {
+export function normaliseOptionalUrl(input: unknown): string | null | 'invalid' {
   if (input === undefined) return null;
   if (input === null) return null;
   if (typeof input !== 'string') return 'invalid';
@@ -165,7 +165,7 @@ function normaliseOptionalUrl(input: unknown): string | null | 'invalid' {
   }
 }
 
-function resolvePositiveInteger(input: unknown): number | null | 'invalid' {
+export function resolvePositiveInteger(input: unknown): number | null | 'invalid' {
   if (input === undefined || input === null || input === '') return null;
   if (typeof input !== 'number' || !Number.isFinite(input) || input <= 0) return 'invalid';
   return Math.floor(input);
@@ -208,7 +208,7 @@ function serialiseProduct<T extends {
   };
 }
 
-async function getWorkspacePayoutAccounts(workspaceId: string, ids: string[]) {
+export async function getWorkspacePayoutAccounts(workspaceId: string, ids: string[]) {
   return prisma.payoutAccount.findMany({
     where: {
       workspaceId,

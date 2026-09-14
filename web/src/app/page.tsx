@@ -117,6 +117,18 @@ interface Payment {
   paymentLink?: { name: string }
 }
 
+interface Product {
+  id: string
+  name: string
+  price: number
+  active: boolean
+  acceptedProviders: string[]
+  maxBuyers: number | null
+  createdAt: string
+  payoutAccounts: { id: string; label: string }[]
+  _count?: { orders: number }
+}
+
 interface WorkspaceStats {
   totalRevenue: number
   totalPayments: number
@@ -341,7 +353,7 @@ function Footer() {
     <footer className="border-t bg-card mt-auto">
       <div className="container mx-auto px-4 max-w-7xl py-4 text-center text-sm text-muted-foreground">
         Noveld Pay — Self-hosted Ethiopian Payment Platform ·{' '}
-        <a href="https://verify.noveld.com.et/docs" className="hover:text-foreground underline">
+        <a href="/docs" className="hover:text-foreground underline">
           API Docs
         </a>
       </div>
@@ -679,12 +691,13 @@ function WorkspacePage({
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="grid w-full grid-cols-3 md:grid-cols-7 lg:w-fit">
+        <TabsList className="grid w-full grid-cols-3 md:grid-cols-8 lg:w-fit">
           <TabsTrigger value="overview"><BarChart3 className="w-4 h-4 mr-1" />Overview</TabsTrigger>
           <TabsTrigger value="api-keys"><Key className="w-4 h-4 mr-1" />API Keys</TabsTrigger>
           <TabsTrigger value="payouts"><Wallet className="w-4 h-4 mr-1" />Payouts</TabsTrigger>
           <TabsTrigger value="links"><Link2 className="w-4 h-4 mr-1" />Links</TabsTrigger>
-          <TabsTrigger value="payments"><ShoppingCart className="w-4 h-4 mr-1" />Payments</TabsTrigger>
+          <TabsTrigger value="products"><ShoppingCart className="w-4 h-4 mr-1" />Products</TabsTrigger>
+          <TabsTrigger value="payments"><CreditCard className="w-4 h-4 mr-1" />Payments</TabsTrigger>
           <TabsTrigger value="webhooks"><Webhook className="w-4 h-4 mr-1" />Webhooks</TabsTrigger>
           <TabsTrigger value="settings"><Settings className="w-4 h-4 mr-1" />Settings</TabsTrigger>
         </TabsList>
@@ -700,6 +713,9 @@ function WorkspacePage({
         </TabsContent>
         <TabsContent value="links" className="mt-6">
           <PaymentLinksTab workspaceId={workspaceId} />
+        </TabsContent>
+        <TabsContent value="products" className="mt-6">
+          <ProductsTab workspaceId={workspaceId} />
         </TabsContent>
         <TabsContent value="payments" className="mt-6">
           <PaymentsTab workspaceId={workspaceId} />
@@ -1294,6 +1310,201 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
           <DialogFooter>
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
             <Button onClick={create} disabled={!form.name || form.fixedAmount <= 0}>
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+// ─── Products Tab ─────────────────────────────────────────────────────────────
+
+function ProductsTab({ workspaceId }: { workspaceId: string }) {
+  const { token } = useAuth()
+  const { toast } = useToast()
+  const [products, setProducts] = useState<Product[]>([])
+  const [payouts, setPayouts] = useState<PayoutAccount[]>([])
+  const [loading, setLoading] = useState(true)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [form, setForm] = useState({
+    name: '',
+    price: 299,
+    acceptedProviders: ['telebirr'] as string[],
+    payoutAccountIds: [] as string[],
+    maxBuyers: '',
+  })
+
+  const load = useCallback(() => {
+    Promise.all([
+      apiFetch(`/dashboard/${workspaceId}/products`, token).then(res => res.json()),
+      apiFetch(`/dashboard/${workspaceId}/payouts`, token).then(res => res.json()),
+    ])
+      .then(([pData, payData]) => {
+        if (pData.success) setProducts(pData.products)
+        if (payData.success) setPayouts(payData.payouts)
+      })
+      .finally(() => setLoading(false))
+  }, [token, workspaceId])
+
+  useEffect(() => { load() }, [load])
+
+  const toggleProvider = (id: string) => {
+    setForm({
+      ...form,
+      acceptedProviders: form.acceptedProviders.includes(id)
+        ? form.acceptedProviders.filter(x => x !== id)
+        : [...form.acceptedProviders, id],
+    })
+  }
+
+  const togglePayout = (id: string) => {
+    setForm({
+      ...form,
+      payoutAccountIds: form.payoutAccountIds.includes(id)
+        ? form.payoutAccountIds.filter(x => x !== id)
+        : [...form.payoutAccountIds, id],
+    })
+  }
+
+  const create = async () => {
+    const res = await apiFetch(`/dashboard/${workspaceId}/products`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: form.name,
+        price: form.price,
+        acceptedProviders: form.acceptedProviders,
+        payoutAccountIds: form.payoutAccountIds,
+        maxBuyers: form.maxBuyers === '' ? undefined : parseInt(form.maxBuyers) || undefined,
+      }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      toast({ title: 'Product created! A default payment link was generated.' })
+      setCreateOpen(false)
+      setForm({ name: '', price: 299, acceptedProviders: ['telebirr'], payoutAccountIds: [], maxBuyers: '' })
+      load()
+    } else {
+      toast({ title: 'Error', description: data.error, variant: 'destructive' })
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold">Products</h2>
+        <Button onClick={() => setCreateOpen(true)}>
+          <Plus className="w-4 h-4 mr-2" />
+          New Product
+        </Button>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        Sellable items with a fixed price. Creating a product also generates its default hosted
+        payment link.
+      </p>
+
+      {loading ? (
+        <Loader2 className="w-6 h-6 animate-spin" />
+      ) : products.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            No products yet. Create one to start selling.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-2">
+          {products.map(product => (
+            <Card key={product.id}>
+              <CardContent className="flex items-center justify-between py-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center">
+                    <ShoppingCart className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="font-semibold">{product.name}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {product.price} ETB · {product._count?.orders ?? 0} orders ·{' '}
+                      {product.payoutAccounts.map(a => a.label).join(', ') || 'no payout account'}
+                    </div>
+                    <div className="flex gap-1 mt-1">
+                      {product.acceptedProviders.map(pr => (
+                        <Badge key={pr} variant="secondary" className="text-xs capitalize">{pr}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <Badge variant={product.active ? 'default' : 'secondary'}>
+                  {product.active ? 'active' : 'inactive'}
+                </Badge>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>New Product</DialogTitle>
+            <DialogDescription>A default payment link is generated automatically.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Product Name</Label>
+              <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Monthly Subscription" />
+            </div>
+            <div className="space-y-2">
+              <Label>Price (ETB)</Label>
+              <Input type="number" value={form.price} onChange={e => setForm({ ...form, price: parseInt(e.target.value) || 0 })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Accepted Providers</Label>
+              <div className="flex flex-wrap gap-2">
+                {PROVIDERS.map(p => (
+                  <Badge
+                    key={p.id}
+                    variant={form.acceptedProviders.includes(p.id) ? 'default' : 'outline'}
+                    className="cursor-pointer"
+                    onClick={() => toggleProvider(p.id)}
+                  >
+                    {p.label}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Payout Accounts (one per accepted provider)</Label>
+              {payouts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No payout accounts yet — create one in the Payouts tab first.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {payouts.map(a => (
+                    <Badge
+                      key={a.id}
+                      variant={form.payoutAccountIds.includes(a.id) ? 'default' : 'outline'}
+                      className="cursor-pointer"
+                      onClick={() => togglePayout(a.id)}
+                    >
+                      {a.label}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label>Max buyers (optional)</Label>
+              <Input type="number" value={form.maxBuyers} onChange={e => setForm({ ...form, maxBuyers: e.target.value })} placeholder="Unlimited" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
+            <Button
+              onClick={create}
+              disabled={!form.name || form.price <= 0 || form.payoutAccountIds.length === 0}
+            >
               Create
             </Button>
           </DialogFooter>
