@@ -1,21 +1,16 @@
 # Veritas Dashboard (`web/`)
 
-Client-side dashboard for the verifier-api. Static-exported Next.js SPA,
-deployed to Cloudflare Pages; talks to the API on Render.
+Noveld Pay dashboard SPA (ported from the `noveld` repo's `dashboard` branch —
+code only, no portfolio/media). Static-exported Next.js app, deployed to
+Cloudflare Pages; talks to the API on Render.
 
 ## Pages
 
 | Route | Purpose | API |
 |---|---|---|
-| `/login`, `/signup` | Session auth (Bearer token in localStorage) | `POST /auth/login`, `POST /auth/signup` |
+| `/` | Dashboard SPA: login/signup, workspaces, overview, API keys, payouts, payment links, payments, webhooks, settings | `/auth/*`, `/workspaces/*`, `/dashboard/*` |
 | `/forgot-password` | Request reset link | `POST /auth/forgot-password` |
 | `/reset-password?token=` | Set new password | `POST /auth/reset-password` |
-| `/dashboard` | Workspace overview (credits, keys, links, orders) | `GET /auth/me`, `…/api-keys`, `…/payment-links` |
-| `/dashboard/verify` | Manual payment verification (uses 1 credit) | `POST /dashboard/:ws/verify` |
-| `/dashboard/api-keys` | Create / revoke keys (raw key shown once) | `GET/POST/DELETE …/api-keys` |
-| `/dashboard/payouts` | Payout accounts (one per provider) | `GET/POST/DELETE …/payouts` |
-| `/dashboard/payment-links` | Fixed-amount checkout links | `GET/POST …/payment-links` |
-| `/dashboard/webhooks` | Event webhooks (secret shown once) | `GET/POST/DELETE …/webhooks` |
 
 ## Local dev
 
