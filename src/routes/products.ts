@@ -408,9 +408,11 @@ router.get('/:id/orders', async (req: Request, res: Response): Promise<void> => 
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   try {
     const product = await prisma.product.findFirst({
-      where: { id: req.params.id, workspaceId: auth.workspaceId },
+      where: { id, workspaceId: auth.workspaceId },
       select: { id: true },
     });
 
@@ -420,7 +422,7 @@ router.get('/:id/orders', async (req: Request, res: Response): Promise<void> => 
     }
 
     const orders = await prisma.order.findMany({
-      where: { productId: req.params.id },
+      where: { productId: id },
       orderBy: { createdAt: 'desc' },
       take: 100,
       select: {
@@ -452,9 +454,11 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   try {
     const product = await prisma.product.findFirst({
-      where: { id: req.params.id, workspaceId: auth.workspaceId },
+      where: { id, workspaceId: auth.workspaceId },
       include: productDetailInclude,
     });
 
@@ -477,8 +481,10 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   const existing = await prisma.product.findFirst({
-    where: { id: req.params.id, workspaceId: auth.workspaceId },
+    where: { id, workspaceId: auth.workspaceId },
     include: {
       payoutAccounts: {
         where: { active: true },
@@ -669,9 +675,11 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   try {
     const product = await prisma.product.findFirst({
-      where: { id: req.params.id, workspaceId: auth.workspaceId },
+      where: { id, workspaceId: auth.workspaceId },
       select: { id: true },
     });
 
