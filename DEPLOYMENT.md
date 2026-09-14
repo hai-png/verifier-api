@@ -4,7 +4,7 @@ Free-tier deployment of the self-hosted Ethiopian payment verification API.
 
 **Architecture:**
 ```
-Mobile App → Cloudflare Worker → verifier-api (Render free) → bank/telecom APIs
+Mobile App → Cloudflare Worker →web verifier-api (Render free) → bank/telecom APIs
                                      ↓ (for Telebirr + M-Pesa only)
                            PHP proxy (Plesk on Ethio Telecom, via subdomain)
                                      ↓
