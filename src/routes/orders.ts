@@ -145,10 +145,12 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   try {
     const order = await prisma.order.findFirst({
       where: {
-        id: req.params.id,
+        id,
         workspaceId: auth.workspaceId,
       },
       select: {
@@ -204,10 +206,12 @@ router.post('/:id/resend-email', async (req: Request, res: Response): Promise<vo
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   try {
     const order = await prisma.order.findFirst({
       where: {
-        id: req.params.id,
+        id,
         workspaceId: auth.workspaceId,
       },
       select: {

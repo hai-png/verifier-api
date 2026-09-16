@@ -105,7 +105,7 @@ Due to **regional restrictions** by the Telebirr system and Safaricom M-Pesa, ho
 #### 🛠 Proxy Support:
 
 This project supports secondary fallback verification relays hosted inside Ethiopia. When the primary `verify-telebirr` or `verify-mpesa` fetch fails on your foreign VPS, the server can **fallback to our proxy** to complete the verification.
-A standalone `mpesa.php` file is included in the `.github` / repository root which can be easily hosted on any cheap generic cPanel host inside Ethiopia to act as your own private proxy.
+A standalone `mpesa.php` file is included in the `.github` / repository root which can be easily hosted on any cheap generic Plesk/cPanel host inside Ethiopia to act as your own private proxy.
 
 For best results and full control, clone the repository and **self-host the main Node.js application from inside Ethiopia**.
 
@@ -523,6 +523,7 @@ LOG_LEVEL=info       # or debug, error
 MISTRAL_API_KEY=your_mistral_api_key # Required for image verification
 SKIP_PRIMARY_VERIFICATION=false      # Set to true to bypass primary fetch
 FALLBACK_PROXIES=https://example.et/telebirr?reference=,https://relay.example/telebirr?reference=
+# Bare relay endpoint URLs are also accepted; reference + key are added safely.
 TELEBIRR_PROXY_KEY=your_proxy_key
 # Optional public labels in the same order. Raw relay URLs are never exposed.
 TELEBIRR_PROXY_LABELS=leul.et,Community relay 1

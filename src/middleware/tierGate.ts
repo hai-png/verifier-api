@@ -13,7 +13,7 @@ import {
 import { getBillingConfig, type BillingConfig } from '../config/billingConfig';
 import { isTrustedBillingPaymentVerification } from '../utils/trustedInternalOperation';
 
-const APP_URL = process.env.VERITAS_APP_URL ?? 'https://veritas.et';
+const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

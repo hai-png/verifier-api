@@ -1,11 +1,13 @@
 import express, { Request, Response, NextFunction, ErrorRequestHandler } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import cookieParser from 'cookie-parser';
 
 // Load environment variables from .env file
 dotenv.config();
 
 import CBERouter from './routes/verifyCBERoute';
+import { closeCBEBrowser, getChromeExecutablePath } from './services/verifyCBE';
 import telebirrRouter from './routes/verifyTelebirrRoute';
 import dashenRouter from './routes/verifyDashenRoute';
 import abyssiniaRouter from './routes/verifyAbyssiniaRoute';
@@ -23,6 +25,7 @@ import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
 import adminRouter from './routes/adminRoute';
 import internalStatusRouter from './routes/internalStatus';
+import publicStatusRouter from './routes/publicStatus';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
 import { requestLogger, initializeStatsCache } from './middleware/requestLogger';
@@ -33,6 +36,11 @@ import { verifyWebhookHook } from './middleware/verifyWebhookHook';
 import { getWebhookQueueHealth, startWebhookQueueWorker, stopWebhookQueueWorker } from './queues/webhookQueue';
 import { getNotificationQueueHealth, startNotificationQueueWorker, stopNotificationQueueWorker } from './queues/notificationQueue';
 import { prisma, disconnectPrisma } from './utils/prisma';
+
+// Dashboard-facing routes (session-authenticated, not API-key-authenticated)
+import authRouter from './routes/auth';
+import workspacesRouter from './routes/workspaces';
+import dashboardRouter from './routes/dashboard';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -56,13 +64,54 @@ async function initializeRuntime(): Promise<void> {
     startupState.lastError = null;
 
     try {
+        // Verify Chrome is installed for the legacy CBE fallback. This checks
+        // both system paths and the Puppeteer cache used by Render/Docker.
+        const foundPath = getChromeExecutablePath();
+        if (foundPath) {
+            logger.info(`✅ Chrome/Chromium available for CBE fallback: ${foundPath}`);
+            try {
+                const { execFileSync } = await import('child_process');
+                const version = execFileSync(foundPath, ['--version'], {
+                    encoding: 'utf-8',
+                    timeout: 5000,
+                }).trim();
+                logger.info(`🌐 Chrome/Chromium version: ${version}`);
+            } catch {
+                logger.warn('⚠️ Could not determine Chrome/Chromium version');
+            }
+        } else {
+            logger.warn('⚠️ Chrome/Chromium is unavailable; legacy CBE fallback will return a configuration error.');
+        }
+
+        const telebirrRelayCount = (process.env.FALLBACK_PROXIES || '')
+            .split(',')
+            .map(value => value.trim())
+            .filter(Boolean)
+            .length;
+        logger.info(
+            `Telebirr verification config: primary ${process.env.SKIP_PRIMARY_VERIFICATION === 'true' ? 'disabled' : 'enabled'}, fallback relays ${telebirrRelayCount}`
+        );
+        if (process.env.SKIP_PRIMARY_VERIFICATION === 'true' && telebirrRelayCount === 0) {
+            logger.warn('⚠️ Telebirr primary is disabled but FALLBACK_PROXIES is empty.');
+        }
+
         await prisma.$connect();
         await prisma.$queryRaw`SELECT 1`;
         logger.info('Connected to database successfully');
 
         await initializeStatsCache();
-        await startWebhookQueueWorker();
-        await startNotificationQueueWorker();
+
+        // BullMQ queue workers require Redis. When REDIS_URL is unset (e.g. on
+        // Render free tier without a Redis instance), skip the workers gracefully
+        // instead of crashing the app. Verifications work fine without queues —
+        // only webhook + notification delivery is affected.
+        if (process.env.REDIS_URL) {
+            await startWebhookQueueWorker();
+            await startNotificationQueueWorker();
+            logger.info('Webhook + notification queue workers started (Redis connected)');
+        } else {
+            logger.warn('REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.');
+        }
 
         startupState.initializing = false;
         startupState.ready = true;
@@ -75,8 +124,12 @@ async function initializeRuntime(): Promise<void> {
     }
 }
 
-app.use(cors());
+app.use(cors({
+    origin: true, // Allow all origins — the dashboard runs on a different domain
+    credentials: true, // Allow cookies for session auth
+}));
 app.use(express.json());
+app.use(cookieParser());
 
 // Add request logging middleware
 app.use(requestLogger);
@@ -84,8 +137,17 @@ app.use(requestLogger);
 // Register admin routes BEFORE API key authentication
 app.use('/admin', adminRouter);
 
+// Register dashboard-facing routes (session-authenticated)
+// These must be BEFORE apiKeyAuth so they don't require an x-api-key header
+app.use('/auth', authRouter);
+app.use('/workspaces', workspacesRouter);
+app.use('/dashboard', dashboardRouter);
+
 // Signed status probes bypass customer auth, quotas, records, and delivery hooks.
 app.use('/internal/status', internalStatusRouter);
+
+// Public status summary (no auth — liveness + config flags only, no live probes).
+app.use('/status', publicStatusRouter);
 
 // Add API key authentication middleware (will not affect admin routes)
 app.use(apiKeyAuth as express.RequestHandler);
@@ -195,20 +257,35 @@ app.get('/ready', async (req: Request, res: Response) => {
         checks.database.error = error instanceof Error ? error.message : 'Database readiness check failed.';
     }
 
-    try {
-        const webhookQueue = await getWebhookQueueHealth();
-        checks.webhookQueue.data = webhookQueue;
-        checks.webhookQueue.ready = webhookQueue.configured && webhookQueue.workerRunning && webhookQueue.workerConnected;
-    } catch (error) {
-        checks.webhookQueue.error = error instanceof Error ? error.message : 'Webhook queue readiness check failed.';
-    }
+    // When REDIS_URL is unset (free-tier deploy without Redis), the queue
+    // workers are intentionally not started. Treat this as "not applicable"
+    // (ready=true) rather than "not ready", so /ready returns 200 and Render
+    // doesn't think the service is unhealthy.
+    const redisEnabled = !!process.env.REDIS_URL;
 
-    try {
-        const notificationQueue = await getNotificationQueueHealth();
-        checks.notificationQueue.data = notificationQueue;
-        checks.notificationQueue.ready = notificationQueue.configured && notificationQueue.workerRunning && notificationQueue.workerConnected;
-    } catch (error) {
-        checks.notificationQueue.error = error instanceof Error ? error.message : 'Notification queue readiness check failed.';
+    if (redisEnabled) {
+        try {
+            const webhookQueue = await getWebhookQueueHealth();
+            checks.webhookQueue.data = webhookQueue;
+            checks.webhookQueue.ready = webhookQueue.configured && webhookQueue.workerRunning && webhookQueue.workerConnected;
+        } catch (error) {
+            checks.webhookQueue.error = error instanceof Error ? error.message : 'Webhook queue readiness check failed.';
+        }
+
+        try {
+            const notificationQueue = await getNotificationQueueHealth();
+            checks.notificationQueue.data = notificationQueue;
+            checks.notificationQueue.ready = notificationQueue.configured && notificationQueue.workerRunning && notificationQueue.workerConnected;
+        } catch (error) {
+            checks.notificationQueue.error = error instanceof Error ? error.message : 'Notification queue readiness check failed.';
+        }
+    } else {
+        // No Redis configured — queues are intentionally disabled. Mark as
+        // ready=true so the overall /ready check passes.
+        checks.webhookQueue.ready = true;
+        checks.notificationQueue.ready = true;
+        (checks.webhookQueue as any).data = { configured: false, note: 'REDIS_URL not set — queues disabled' };
+        (checks.notificationQueue as any).data = { configured: false, note: 'REDIS_URL not set — queues disabled' };
     }
 
     const ready =
@@ -257,6 +334,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 // Graceful shutdown
 const gracefulShutdown = async () => {
     logger.info('Shutting down server...');
+    await closeCBEBrowser();
     if (!server) {
         await stopWebhookQueueWorker();
         await stopNotificationQueueWorker();

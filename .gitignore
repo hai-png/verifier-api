@@ -6,3 +6,8 @@ logs/
 # graphify
 graphify-out/
 .graphify*
+*.db
+package-lock.json
+node_modules/
+dist/
+.env

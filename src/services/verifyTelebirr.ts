@@ -86,12 +86,42 @@ function extractReceiptNoRegex(htmlContent: string): string | null {
  * @returns Extracted payment date or null
  */
 function extractDateRegex(htmlContent: string): string | null {
-    // Extract date in format DD-MM-YYYY HH:MM:SS
-    const pattern = /(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2})/;
+    // Extract the formats currently used by Telebirr receipts. Keep this
+    // deliberately permissive because the HTML has changed between releases.
+    const pattern = /(\d{2}[-\/]\d{2}[-\/]\d{4}\s+\d{2}:\d{2}:\d{2})/;
     const match = htmlContent.match(pattern);
     if (match) return match[1].trim();
 
     return null;
+}
+
+function normalizeReceiptText(value: string): string {
+    return value.replace(/[\s\u00a0]+/gu, ' ').trim();
+}
+
+/**
+ * Read a value from the next cell in a receipt row. Unlike the old selector
+ * fallback this tolerates markup inside labels and line breaks inserted by
+ * different Telebirr receipt templates.
+ */
+function extractTableCellValue(htmlContent: string, label: string): string {
+    const $ = cheerio.load(htmlContent);
+    const normalizedLabel = normalizeReceiptText(label).toLowerCase();
+    let value = '';
+
+    $('tr').each((_, row) => {
+        if (value) return;
+        const cells = $(row).find('th, td');
+        cells.each((index, cell) => {
+            if (value || index >= cells.length - 1) return;
+            const cellText = normalizeReceiptText($(cell).text()).toLowerCase();
+            if (cellText.includes(normalizedLabel)) {
+                value = normalizeReceiptText($(cells[index + 1]).text());
+            }
+        });
+    });
+
+    return value;
 }
 
 /**
@@ -145,30 +175,34 @@ function scrapeTelebirrReceipt(html: string): TelebirrReceipt {
         $(selector).next().text().trim();
 
     const getPaymentDate = (): string => {
-        // First try regex extraction
         const regexDate = extractDateRegex(html);
         if (regexDate) return regexDate;
 
-        // Fallback to cheerio
-        return $('.receipttableTd').filter((_, el) => $(el).text().includes("-202")).first().text().trim();
+        const tableDate = getTextWithFallback("የክፍያ ቀን/Payment date");
+        if (tableDate) return tableDate;
+
+        return normalizeReceiptText(
+            $('.receipttableTd').filter((_, el) => /[-\/]202\d/.test($(el).text())).first().text()
+        );
     };
 
     const getReceiptNo = (): string => {
-        // First try regex extraction
         const regexReceiptNo = extractReceiptNoRegex(html);
         if (regexReceiptNo) return regexReceiptNo;
 
-        // Fallback to cheerio
-        return $('td.receipttableTd.receipttableTd2')
-            .eq(1) // second match: the value, not the label
-            .text()
-            .trim();
+        const tableReceiptNo = getTextWithFallback("የክፍያ ቁጥር/Receipt No.");
+        if (tableReceiptNo) return tableReceiptNo;
+
+        return normalizeReceiptText($('td.receipttableTd.receipttableTd2').eq(1).text());
     };
 
     const getSettledAmount = (): string => {
         // First try the enhanced regex approach
         const regexAmount = extractSettledAmountRegex(html);
-        if (regexAmount) return regexAmount;
+        if (regexAmount) return normalizeReceiptText(regexAmount);
+
+        const tableAmount = extractTableCellValue(html, "የተከፈለው መጠን/Settled Amount");
+        if (tableAmount) return tableAmount;
 
         // Fallback to cheerio approach
         let amount = $('td.receipttableTd.receipttableTd2')
@@ -198,7 +232,10 @@ function scrapeTelebirrReceipt(html: string): TelebirrReceipt {
     const getServiceFee = (): string => {
         // First try the enhanced regex approach
         const regexFee = extractServiceFeeRegex(html);
-        if (regexFee) return regexFee;
+        if (regexFee) return normalizeReceiptText(regexFee);
+
+        const tableFee = extractTableCellValue(html, "የአገልግሎት ክፍያ/Service fee");
+        if (tableFee) return tableFee;
 
         // Fallback to cheerio approach - look for service fee but not service fee VAT
         let fee = $('td.receipttableTd1')
@@ -228,19 +265,20 @@ function scrapeTelebirrReceipt(html: string): TelebirrReceipt {
         return fee;
     };
 
-    // Helper function to extract text using regex first, then cheerio
+    // Helper function to extract text using the legacy regex first, then a
+    // row-based extractor that tolerates nested tags and changed whitespace.
     const getTextWithFallback = (labelText: string, cheerioSelector?: string): string => {
-        // Try regex first
         const regexResult = extractWithRegex(html, labelText);
-        if (regexResult) return regexResult;
+        if (regexResult) return normalizeReceiptText(regexResult);
 
-        // Fallback to cheerio if selector provided
+        const tableResult = extractTableCellValue(html, labelText);
+        if (tableResult) return tableResult;
+
         if (cheerioSelector) {
-            return getText(cheerioSelector);
+            return normalizeReceiptText(getText(cheerioSelector));
         }
 
-        // Default cheerio approach
-        return getText(`td:contains("${labelText}")`);
+        return normalizeReceiptText(getText(`td:contains("${labelText}")`));
     };
 
     logger.debug("SERVICE FEE: ", getServiceFee());
@@ -333,7 +371,15 @@ async function fetchFromPrimarySource(reference: string, baseUrl: string): Promi
 
     try {
         logger.info('Attempting to fetch Telebirr receipt from primary source.');
-        const response = await axios.get(url, { timeout: 30000 }); // 30 second timeout to be safe
+        const response = await axios.get(url, {
+            timeout: 30_000,
+            maxRedirects: 5,
+            headers: {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'am-ET,am;q=0.9,en-US;q=0.8,en;q=0.7',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
         logger.debug(`Received response with status: ${response.status}`);
 
         const extractedData = scrapeTelebirrReceipt(response.data);
@@ -394,13 +440,51 @@ interface ProxyFetchOptions {
     relayLabel?: string;
 }
 
+/**
+ * Build a relay URL without relying on callers to include a trailing
+ * `?reference=` placeholder. Both forms are accepted:
+ *   https://proxy.example/verify.php?reference=
+ *   https://proxy.example/verify.php
+ */
+export function buildTelebirrProxyUrl(
+    proxyUrl: string,
+    reference: string,
+    proxyKey = ''
+): string {
+    let parsed: URL;
+    try {
+        parsed = new URL(proxyUrl.trim());
+    } catch {
+        throw new TelebirrVerificationError(
+            'FALLBACK_PROXIES contains an invalid relay URL.',
+            undefined,
+            'domain'
+        );
+    }
+
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+        throw new TelebirrVerificationError(
+            'FALLBACK_PROXIES must contain HTTP or HTTPS relay URLs.',
+            undefined,
+            'domain'
+        );
+    }
+
+    parsed.searchParams.set('reference', reference);
+    if (proxyKey) {
+        parsed.searchParams.set('key', proxyKey);
+    }
+
+    return parsed.toString();
+}
+
 async function fetchFromProxySource(
     reference: string,
     proxyUrl: string,
     options: ProxyFetchOptions = {}
 ): Promise<TelebirrReceipt | null> {
     const proxyKey = options.proxyKey ?? process.env.TELEBIRR_PROXY_KEY ?? '';
-    const url = `${proxyUrl}${reference}${proxyKey ? `&key=${proxyKey}` : ''}`;
+    const url = buildTelebirrProxyUrl(proxyUrl, reference, proxyKey);
     const relayLabel = options.relayLabel ?? 'configured relay';
 
     try {
@@ -408,8 +492,11 @@ async function fetchFromProxySource(
             relay: relayLabel
         });
         const response = await axios.get(url, {
-            timeout: options.timeoutMs ?? 30000,
+            timeout: options.timeoutMs ?? 30_000,
             signal: options.signal,
+            // Parse 4xx JSON responses from the relay so an invalid key is
+            // reported as configuration failure instead of a misleading 404.
+            validateStatus: status => status >= 200 && status < 500,
             headers: {
                 'Accept': 'application/json',
                 'User-Agent': 'VerifierAPI/1.0'
@@ -511,6 +598,10 @@ function safePublicLabel(value: string | undefined): string | null {
     const normalized = value?.trim().replace(/\s+/g, ' ');
     if (!normalized || !/^[A-Za-z0-9 ._-]{1,32}$/.test(normalized)) return null;
     return normalized;
+}
+
+function isProxyConfigurationError(error: TelebirrVerificationError): boolean {
+    return /unauthori[sz]ed|proxy key|not configured|invalid relay|must contain/i.test(error.message);
 }
 
 function defaultProxyLabel(url: string, index: number): string {
@@ -720,7 +811,7 @@ async function verifyWithTelebirrProxyPool(
     let nextToken = 0;
     const inFlight: TelebirrProxyInFlight[] = [];
     let lastTransportError: TelebirrVerificationError | null = null;
-    let sawDomainFailure = false;
+    let lastDomainError: TelebirrVerificationError | null = null;
     let deadlineTimer: NodeJS.Timeout | undefined;
     const deadlinePromise = new Promise<TelebirrProxyPoolEvent>(resolve => {
         deadlineTimer = setTimeout(
@@ -873,13 +964,23 @@ async function verifyWithTelebirrProxyPool(
                 );
                 lastTransportError = event.error;
             } else if (event.failureKind === 'domain') {
-                sawDomainFailure = true;
+                lastDomainError = event.error;
             }
 
             startNextCandidate();
         }
 
-        if (lastTransportError && !sawDomainFailure) {
+        if (lastDomainError) {
+            if (isProxyConfigurationError(lastDomainError)) {
+                // A bad proxy key/configuration is actionable and must not be
+                // hidden behind the route's generic "receipt not found" response.
+                throw lastDomainError;
+            }
+            // A valid relay can still answer that the receipt does not exist;
+            // preserve the established null/404 behavior in that case.
+            return null;
+        }
+        if (lastTransportError) {
             throw lastTransportError;
         }
         return null;
@@ -956,8 +1057,12 @@ export async function verifyTelebirr(reference: string): Promise<TelebirrReceipt
     }
 
     if (proxyDescriptors.length === 0 && skipPrimary) {
-        logger.error("CRITICAL: Primary check skipped, but no FALLBACK_PROXIES defined in .env!");
-        return null;
+        logger.error('CRITICAL: Primary check skipped, but no FALLBACK_PROXIES are configured.');
+        throw new TelebirrVerificationError(
+            'Telebirr verification is not configured: set FALLBACK_PROXIES and TELEBIRR_PROXY_KEY.',
+            undefined,
+            'transport'
+        );
     }
 
     if (proxyDescriptors.length > 0) {

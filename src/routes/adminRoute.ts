@@ -25,7 +25,9 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET || 'change-this-secret-key';
 
 // Middleware to check admin authentication
 const checkAdminAuth = (req: Request, res: Response, next: NextFunction) => {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    const rawAdminKey = req.query.adminKey;
+    const normalizedQueryKey = Array.isArray(rawAdminKey) ? rawAdminKey[0] : rawAdminKey;
+    const adminKey = req.headers['x-admin-key'] || normalizedQueryKey;
 
     if (adminKey !== ADMIN_SECRET) {
         return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
@@ -67,6 +69,46 @@ router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, 
     }
 
     try {
+        // For fresh databases with no users/workspaces yet, auto-create a
+        // default workspace + user + membership so the API key has somewhere
+        // to attach. This makes first-time setup possible via the admin API
+        // without needing to run SQL manually.
+        let membership = await prisma.membership.findFirst({
+            where: { userId: owner },
+            orderBy: { createdAt: 'asc' },
+            select: { workspaceId: true },
+        });
+
+        if (!membership) {
+            logger.info(`No workspace found for owner "${owner}" — auto-creating default workspace + user`);
+            const user = await prisma.user.create({
+                data: { id: owner, name: owner, email: `${owner}@selfhosted.local`, role: 'ADMIN' },
+            });
+            const workspace = await prisma.workspace.create({
+                data: {
+                    id: `ws-${owner}`,
+                    name: `${owner} Workspace`,
+                    tier: 'BUSINESS',
+                    verificationCredits: 100000,
+                    verificationCreditsMonthly: 100000,
+                    verificationCreditsResetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+                    paidUntil: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+                    planTermMonths: 12,
+                    imageCredits: 1000,
+                    imageCreditsMonthly: 1000,
+                    grandfathered: true,
+                },
+            });
+            membership = await prisma.membership.create({
+                data: {
+                    userId: user.id,
+                    workspaceId: workspace.id,
+                    role: 'OWNER',
+                },
+            });
+            logger.info(`Auto-created workspace "${workspace.id}" for owner "${owner}"`);
+        }
+
         const { apiKeyRecord, rawKey } = await generateApiKey(owner);
         logger.info(`New API key generated for ${owner}`);
 
@@ -99,7 +141,7 @@ router.get('/webhook-queue-health', checkAdminAuth as RequestHandler, async (_re
 
 // Upgrade/update a single API key's tier or active status
 router.patch('/api-keys/:id', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const { tier, isActive, grandfathered } = req.body as {
         tier?: string;
         isActive?: boolean;
@@ -153,7 +195,7 @@ router.patch('/api-keys/:id', checkAdminAuth as RequestHandler, async (req: Requ
 
 // Adjust image credits for a key — used by billing system and manual admin overrides
 router.post('/api-keys/:id/credits', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const {
         addCredits,
         setMonthly,
@@ -628,5 +670,44 @@ router.post(
     }
   },
 );
+
+// ─── Admin-assisted password reset ───────────────────────────────────────────
+router.post('/password-reset-link', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
+    const { email } = req.body as { email?: string };
+
+    if (!email || typeof email !== 'string') {
+        res.status(400).json({ success: false, error: 'Email is required.' });
+        return;
+    }
+
+    try {
+        const user = await prisma.user.findUnique({
+            where: { email: email.toLowerCase().trim() },
+            include: {
+                accounts: { where: { provider: 'credentials' }, select: { id: true }, take: 1 },
+            },
+        });
+
+        if (!user || user.accounts.length === 0) {
+            res.status(404).json({ success: false, error: 'No credentials account found for that email.' });
+            return;
+        }
+
+        const { createPasswordResetToken } = await import('./auth');
+        const { rawToken, expiresAt } = await createPasswordResetToken(user.id);
+        const base = (process.env.VERITAS_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+
+        logger.info(`Admin issued password reset link for ${user.email}`);
+        res.json({
+            success: true,
+            resetUrl: `${base}/reset-password?token=${rawToken}`,
+            expiresAt,
+            note: 'Single-use link. Deliver it to the user through a trusted channel.',
+        });
+    } catch (err) {
+        logger.error('Admin password reset link error:', err);
+        res.status(500).json({ success: false, error: 'Failed to create reset link.' });
+    }
+});
 
 export default router;

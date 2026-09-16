@@ -1,50 +1,86 @@
 # ---- base (with pnpm) ----
-FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067 AS base
+# Includes Puppeteer + Chromium for legacy CBE receipt PDF fetching.
+FROM node:24-bookworm-slim AS base
 WORKDIR /app
 
-# Avoid baking secrets into the image. Use Coolify env panel instead.
-# (Remove ARG/ENV for secrets from the Dockerfile.)
+# The official Node image ships Corepack but does not always activate pnpm.
+# Pin the package-manager major used to create pnpm-lock.yaml.
+RUN corepack enable && corepack prepare pnpm@11.0.0 --activate
 
-# System deps you need (puppeteer/chromium libs etc.)
-RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libgbm1 libasound2t64 \
-    libpangocairo-1.0-0 libxss1 libgtk-3-0 libxshmfence1 libglu1 chromium curl wget \
-    && sudo rm -rf /var/lib/apt/lists/*
+# Use the Debian Chromium installed below instead of downloading a second
+# browser into node_modules during pnpm install.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+
+# Install Chromium dependencies for Puppeteer + Chromium browser
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libwayland-client0 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libxss1 \
+    libxtst6 \
+    xdg-utils \
+    chromium \
+    chromium-driver \
+    && rm -rf /var/lib/apt/lists/* \
+    && ls -la /usr/bin/chromium* 2>/dev/null || true \
+    && which chromium 2>/dev/null || true
+
+# Create symlink for Puppeteer
+RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome 2>/dev/null || true
 
 COPY pnpm-lock.yaml package.json pnpm-workspace.yaml* ./
 COPY prisma ./prisma
 
 # ---- deps (install devDeps) ----
 FROM base AS deps
-# Force-install devDependencies regardless of NODE_ENV
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store/v3 \
     pnpm install --frozen-lockfile --prod=false
 
 # ---- build ----
 FROM deps AS build
 COPY . .
-# Generate client & compile TS
 RUN pnpm prisma generate && pnpm build
-# Optionally prune to prod-only for runtime
 RUN pnpm prune --prod
 
 # ---- runtime ----
-FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067 AS runtime
+FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Same system libs as base
-RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libgbm1 libasound2t64 \
-    libpangocairo-1.0-0 libxss1 libgtk-3-0 libxshmfence1 libglu1 chromium curl wget \
-    && sudo rm -rf /var/lib/apt/lists/*
+# Verify chromium is available
+RUN ls -la /usr/bin/chromium* /usr/bin/google-chrome* 2>/dev/null || true \
+    && which chromium 2>/dev/null || true
 
-# Copy only what we need to run
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/scripts ./scripts
 
-# If you run migrations at startup:
-# CMD ["sh", "-c", "pnpm prisma migrate deploy && node dist/index.js"]
-CMD ["node", "dist/index.js"]
+# Apply schema (idempotent — only creates missing tables/columns, preserves data)
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/index.js"]

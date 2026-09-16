@@ -22,7 +22,7 @@ import { extractLegacyCbeUrlData, isNewCbeReference } from '../utils/cbeReferenc
 
 const router = Router();
 
-const APP_URL = process.env.VERITAS_APP_URL ?? 'https://veritas.et';
+const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
 const MAX_EXPIRES_MINUTES = 1440;
 const VALID_PROVIDERS = ['telebirr', 'cbe', 'dashen', 'abyssinia', 'cbebirr', 'mpesa'] as const;
 
@@ -500,8 +500,9 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const paymentLink = await prisma.paymentLink.findFirst({
-      where: { id: req.params.id, workspaceId: auth.workspaceId },
+      where: { id, workspaceId: auth.workspaceId },
       include: {
         product: {
           include: {
@@ -537,8 +538,9 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const existing = await prisma.paymentLink.findFirst({
-    where: { id: req.params.id, workspaceId: auth.workspaceId },
+    where: { id, workspaceId: auth.workspaceId },
     include: {
       product: {
         include: {
@@ -670,8 +672,9 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const existing = await prisma.paymentLink.findFirst({
-    where: { id: req.params.id, workspaceId: auth.workspaceId },
+    where: { id, workspaceId: auth.workspaceId },
     select: { id: true, isDefaultForProduct: true },
   });
 
@@ -690,8 +693,9 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
 
 router.get('/:id/public', async (req: Request, res: Response): Promise<void> => {
   try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const paymentLink = await prisma.paymentLink.findUnique({
-      where: { id: req.params.id },
+      where: { id },
       include: {
         product: {
           include: {
@@ -725,8 +729,9 @@ router.get('/:id/recent-order', async (req: Request, res: Response): Promise<voi
   }
 
   try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const paymentLink = await prisma.paymentLink.findUnique({
-      where: { id: req.params.id },
+      where: { id },
       select: {
         id: true,
         workspaceId: true,
@@ -783,7 +788,7 @@ router.get('/:id/recent-order', async (req: Request, res: Response): Promise<voi
 });
 
 router.post('/:id/confirm', async (req: Request, res: Response): Promise<void> => {
-  const { id } = req.params;
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const {
     reference,
     provider,

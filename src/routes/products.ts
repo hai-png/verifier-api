@@ -16,7 +16,7 @@ import logger from '../utils/logger';
 
 const router = Router();
 
-const APP_URL = process.env.VERITAS_APP_URL ?? 'https://veritas.et';
+const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
 const VALID_PROVIDERS = ['telebirr', 'cbe', 'dashen', 'abyssinia', 'cbebirr', 'mpesa'] as const;
 
 type AuthSource = 'DASHBOARD' | 'API_KEY';
@@ -108,7 +108,7 @@ function getAuthContext(req: Request): {
   return null;
 }
 
-function normaliseProviders(input: unknown): string[] | null {
+export function normaliseProviders(input: unknown): string[] | null {
   if (!Array.isArray(input) || input.length === 0) return null;
   const providers = [...new Set(input.filter((value): value is string => typeof value === 'string').map((value) => value.trim().toLowerCase()))];
   if (providers.length === 0) return null;
@@ -117,7 +117,7 @@ function normaliseProviders(input: unknown): string[] | null {
   return providers;
 }
 
-function ensureProviderCoverage(
+export function ensureProviderCoverage(
   acceptedProviders: string[],
   payoutAccounts: Array<{ providersAllowed: unknown }>,
 ): string | null {
@@ -138,12 +138,12 @@ function ensureProviderCoverage(
   return null;
 }
 
-function normaliseIdList(input: unknown): string[] {
+export function normaliseIdList(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return [...new Set(input.filter((value): value is string => typeof value === 'string' && value.trim() !== ''))];
 }
 
-function normaliseOptionalText(input: unknown): string | null | 'invalid' {
+export function normaliseOptionalText(input: unknown): string | null | 'invalid' {
   if (input === undefined) return null;
   if (input === null) return null;
   if (typeof input !== 'string') return 'invalid';
@@ -151,7 +151,7 @@ function normaliseOptionalText(input: unknown): string | null | 'invalid' {
   return trimmed === '' ? null : trimmed;
 }
 
-function normaliseOptionalUrl(input: unknown): string | null | 'invalid' {
+export function normaliseOptionalUrl(input: unknown): string | null | 'invalid' {
   if (input === undefined) return null;
   if (input === null) return null;
   if (typeof input !== 'string') return 'invalid';
@@ -165,7 +165,7 @@ function normaliseOptionalUrl(input: unknown): string | null | 'invalid' {
   }
 }
 
-function resolvePositiveInteger(input: unknown): number | null | 'invalid' {
+export function resolvePositiveInteger(input: unknown): number | null | 'invalid' {
   if (input === undefined || input === null || input === '') return null;
   if (typeof input !== 'number' || !Number.isFinite(input) || input <= 0) return 'invalid';
   return Math.floor(input);
@@ -208,7 +208,7 @@ function serialiseProduct<T extends {
   };
 }
 
-async function getWorkspacePayoutAccounts(workspaceId: string, ids: string[]) {
+export async function getWorkspacePayoutAccounts(workspaceId: string, ids: string[]) {
   return prisma.payoutAccount.findMany({
     where: {
       workspaceId,
@@ -408,9 +408,11 @@ router.get('/:id/orders', async (req: Request, res: Response): Promise<void> => 
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   try {
     const product = await prisma.product.findFirst({
-      where: { id: req.params.id, workspaceId: auth.workspaceId },
+      where: { id, workspaceId: auth.workspaceId },
       select: { id: true },
     });
 
@@ -420,7 +422,7 @@ router.get('/:id/orders', async (req: Request, res: Response): Promise<void> => 
     }
 
     const orders = await prisma.order.findMany({
-      where: { productId: req.params.id },
+      where: { productId: id },
       orderBy: { createdAt: 'desc' },
       take: 100,
       select: {
@@ -452,9 +454,11 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   try {
     const product = await prisma.product.findFirst({
-      where: { id: req.params.id, workspaceId: auth.workspaceId },
+      where: { id, workspaceId: auth.workspaceId },
       include: productDetailInclude,
     });
 
@@ -477,8 +481,10 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   const existing = await prisma.product.findFirst({
-    where: { id: req.params.id, workspaceId: auth.workspaceId },
+    where: { id, workspaceId: auth.workspaceId },
     include: {
       payoutAccounts: {
         where: { active: true },
@@ -669,9 +675,11 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
   try {
     const product = await prisma.product.findFirst({
-      where: { id: req.params.id, workspaceId: auth.workspaceId },
+      where: { id, workspaceId: auth.workspaceId },
       select: { id: true },
     });
 

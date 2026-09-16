@@ -1,7 +1,8 @@
-import puppeteer from 'puppeteer';
 import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
 import https from 'https';
+import fs from 'fs';
+import puppeteer, { Browser, HTTPResponse, Page } from 'puppeteer';
 import logger from '../utils/logger';
 import { extractLegacyCbeUrlData, extractNewCbeToken } from '../utils/cbeReference';
 
@@ -24,33 +25,308 @@ function titleCase(str: string): string {
 }
 
 interface CBETransactionResponse {
+    success?: boolean;
     id?: string;
     debitAccountHolder?: string;
     debitAccountNo?: string;
     creditAccountHolder?: string;
     creditAccountNo?: string;
-    amountCredited?: string;
+    amountCredited?: string | number;
     dateTimes?: string[];
     paymentDetails?: string[];
+    data?: CBETransactionResponse;
+    message?: string;
 }
 
-function parseAmount(value?: string): number | undefined {
-    const parsed = value ? Number.parseFloat(value) : NaN;
+function parseAmount(value?: string | number): number | undefined {
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : undefined;
+    }
+
+    const parsed = value ? Number.parseFloat(value.replace(/,/g, '')) : NaN;
     return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function mapNewCBEReceipt(data: CBETransactionResponse): VerifyResult {
+function validDate(value?: string): Date | undefined {
+    if (!value) return undefined;
+
+    // Node does not consistently parse the DD/MM/YYYY format printed in CBE
+    // PDFs, especially when the day is greater than 12. Parse it explicitly
+    // before falling back to the built-in parser for ISO responses.
+    const cbeDate = value.match(
+        /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})[,\s]+(\d{1,2}):(\d{2}):(\d{2})\s*([AP]M)$/i
+    );
+    if (cbeDate) {
+        const [, day, month, year, hour, minute, second, meridiem] = cbeDate;
+        let hour24 = Number(hour) % 12;
+        if (meridiem.toUpperCase() === 'PM') hour24 += 12;
+        const date = new Date(
+            Number(year),
+            Number(month) - 1,
+            Number(day),
+            hour24,
+            Number(minute),
+            Number(second)
+        );
+        return Number.isNaN(date.getTime()) ? undefined : date;
+    }
+
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function mapNewCBEReceipt(responseData: CBETransactionResponse): VerifyResult {
+    const data = responseData.data && typeof responseData.data === 'object'
+        ? responseData.data
+        : responseData;
+
+    if (responseData.success === false || data.success === false) {
+        return {
+            success: false,
+            error: responseData.message || 'CBE receipt token was rejected.',
+            statusCode: 404
+        };
+    }
+
+    const amount = parseAmount(data.amountCredited);
+    const date = validDate(data.dateTimes?.[0]);
+
+    if (!data.id || !data.debitAccountHolder || !data.creditAccountHolder || amount === undefined || !date) {
+        return {
+            success: false,
+            error: 'CBE returned an incomplete receipt.',
+            statusCode: 502
+        };
+    }
+
     return {
         success: true,
         payer: data.debitAccountHolder,
         payerAccount: data.debitAccountNo,
         receiver: data.creditAccountHolder,
         receiverAccount: data.creditAccountNo,
-        amount: parseAmount(data.amountCredited),
-        date: data.dateTimes?.[0] ? new Date(data.dateTimes[0]) : undefined,
+        amount,
+        date,
         reference: data.id,
         reason: data.paymentDetails?.join(' ') || null
     };
+}
+
+let browser: Browser | null = null;
+
+export function getChromeExecutablePath(): string | undefined {
+    // Render's native Node runtime does not provide Chrome. Prefer an explicit
+    // path, then Puppeteer's configured cache, and finally common system paths.
+    const possiblePaths = [
+        process.env.PUPPETEER_EXECUTABLE_PATH,
+        process.env.CHROME_BIN,
+        process.env.CHROMIUM_PATH,
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+    ];
+
+    try {
+        const puppeteerPath = puppeteer.executablePath();
+        if (puppeteerPath) possiblePaths.push(puppeteerPath);
+    } catch {
+        // Puppeteer throws when its browser cache is not configured.
+    }
+
+    const cacheDirs = [
+        process.env.PUPPETEER_CACHE_DIR,
+        '/opt/render/.cache/puppeteer',
+        '/root/.cache/puppeteer',
+        `${process.cwd()}/.cache/puppeteer`,
+    ].filter((value): value is string => Boolean(value));
+
+    for (const cacheDir of cacheDirs) {
+        try {
+            if (!fs.existsSync(cacheDir)) continue;
+            const chromeDirs = fs.readdirSync(cacheDir, { withFileTypes: true })
+                .filter(dirent => dirent.isDirectory() && dirent.name.startsWith('chrome'))
+                .map(dirent => dirent.name)
+                .sort()
+                .reverse();
+
+            for (const chromeDir of chromeDirs) {
+                const candidates = [
+                    `${cacheDir}/${chromeDir}/chrome-linux64/chrome`,
+                    `${cacheDir}/${chromeDir}/chrome-linux/chrome`,
+                ];
+                possiblePaths.push(...candidates);
+            }
+        } catch {
+            // Ignore an unreadable cache directory and continue with the other paths.
+        }
+    }
+
+    for (const path of possiblePaths) {
+        if (path && fs.existsSync(path)) {
+            logger.info(`🔍 Found Chrome/Chromium at: ${path}`);
+            return path;
+        }
+    }
+
+    logger.warn(
+        '⚠️ Chrome/Chromium not found. Checked: ' +
+        possiblePaths.filter(Boolean).join(', ')
+    );
+    return undefined;
+}
+
+async function getBrowser(): Promise<Browser> {
+    if (browser && browser.isConnected()) {
+        return browser;
+    }
+
+    const executablePath = getChromeExecutablePath();
+    if (!executablePath) {
+        throw new Error(
+            'Chrome/Chromium is not installed. Deploy the Dockerfile or run "npx puppeteer browsers install chrome" during the Render build.'
+        );
+    }
+
+    const launchOptions = {
+        headless: true,
+        executablePath,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--ignore-certificate-errors',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-extensions',
+            '--disable-default-apps',
+            '--disable-sync',
+            '--disable-translate',
+            '--hide-scrollbars',
+            '--mute-audio',
+        ],
+    };
+
+    logger.info(`🔧 Using Chrome at: ${executablePath}`);
+    // @types/puppeteer 5 is also installed for legacy imports in this project
+    // and conflicts with Puppeteer 22's LaunchOptions type.
+    browser = await puppeteer.launch(launchOptions as any);
+    return browser;
+}
+
+function isPdfBuffer(buffer: Buffer | Uint8Array): boolean {
+    return Buffer.from(buffer).subarray(0, 5).toString('ascii') === '%PDF-';
+}
+
+function responseContentType(response: HTTPResponse): string {
+    return response.headers()['content-type']?.toLowerCase() || '';
+}
+
+function validatePdfBuffer(
+    buffer: Buffer | Uint8Array,
+    status: number,
+    contentType: string,
+    source: string
+): Buffer {
+    if (status >= 400) {
+        throw new Error(`CBE receipt endpoint returned HTTP ${status}`);
+    }
+
+    const normalizedBuffer = Buffer.from(buffer);
+    // Do not trust Content-Type alone. CBE sometimes returns an HTML error page
+    // with HTTP 200, which used to be passed to pdf-parse as if it were a PDF.
+    if (!isPdfBuffer(normalizedBuffer)) {
+        const preview = normalizedBuffer
+            .toString('utf8')
+            .replace(/\s+/g, ' ')
+            .slice(0, 180);
+        throw new Error(
+            `CBE ${source} response was not a PDF (HTTP ${status}, ${contentType || 'unknown content type'}${preview ? `: ${preview}` : ''})`
+        );
+    }
+
+    return normalizedBuffer;
+}
+
+async function waitForPdfResponse(page: Page, timeoutMs: number): Promise<HTTPResponse | null> {
+    return new Promise(resolve => {
+        const timer = setTimeout(() => {
+            page.off('response', onResponse);
+            resolve(null);
+        }, timeoutMs);
+
+        const onResponse = (response: HTTPResponse) => {
+            if (responseContentType(response).includes('pdf')) {
+                clearTimeout(timer);
+                page.off('response', onResponse);
+                resolve(response);
+            }
+        };
+
+        page.on('response', onResponse);
+    });
+}
+
+async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer> {
+    const url = `https://apps.cbe.com.et:100/?id=${encodeURIComponent(fullId)}`;
+    const b = await getBrowser();
+    const page: Page = await b.newPage();
+
+    try {
+        logger.info(`🔎 Puppeteer fetching CBE receipt: ${url}`);
+        await page.setUserAgent(
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        );
+
+        // Install the listener before navigation. If CBE serves the PDF through
+        // a redirect or a small client-side request, this still captures it.
+        const pdfResponsePromise = waitForPdfResponse(page, 15_000);
+        const navigationResponse = await page.goto(url, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30_000,
+        });
+
+        if (navigationResponse) {
+            const navigationBuffer = await navigationResponse.buffer();
+            if (isPdfBuffer(navigationBuffer)) {
+                const buffer = validatePdfBuffer(
+                    navigationBuffer,
+                    navigationResponse.status(),
+                    responseContentType(navigationResponse),
+                    'Puppeteer navigation'
+                );
+                return buffer.buffer.slice(
+                    buffer.byteOffset,
+                    buffer.byteOffset + buffer.byteLength
+                ) as ArrayBuffer;
+            }
+        }
+
+        const pdfResponse = await pdfResponsePromise;
+        if (pdfResponse) {
+            const buffer = await pdfResponse.buffer();
+            if (isPdfBuffer(buffer)) {
+                return buffer.buffer.slice(
+                    buffer.byteOffset,
+                    buffer.byteOffset + buffer.byteLength
+                ) as ArrayBuffer;
+            }
+        }
+
+        const contentType = navigationResponse
+            ? responseContentType(navigationResponse)
+            : 'no response';
+        const htmlPreview = (await page.content())
+            .replace(/\s+/g, ' ')
+            .slice(0, 180);
+        throw new Error(
+            `CBE Puppeteer response was not a PDF (${contentType}).${htmlPreview ? ` Page: ${htmlPreview}` : ''}`
+        );
+    } finally {
+        await page.close();
+    }
 }
 
 export async function verifyCBELegacy(
@@ -58,71 +334,47 @@ export async function verifyCBELegacy(
     accountSuffix: string
 ): Promise<VerifyResult> {
     const fullId = `${reference}${accountSuffix}`;
-    const url = `https://apps.cbe.com.et:100/?id=${fullId}`;
+    const url = `https://apps.cbe.com.et:100/?id=${encodeURIComponent(fullId)}`;
     const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
     try {
-        logger.info(`🔎 Attempting direct fetch: ${url}`);
+        logger.info(`🔎 Attempting direct CBE PDF fetch: ${url}`);
         const response: AxiosResponse<ArrayBuffer> = await axios.get(url, {
             httpsAgent,
             responseType: 'arraybuffer',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Accept': 'application/pdf'
+                'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.1'
             },
-            timeout: 30000
+            timeout: 30_000,
+            validateStatus: status => status >= 200 && status < 500,
         });
 
-        logger.info('✅ Direct fetch success, parsing PDF');
-        return await parseCBEReceipt(response.data);
+        const pdfBuffer = validatePdfBuffer(
+            Buffer.from(response.data),
+            response.status,
+            String(response.headers['content-type'] || ''),
+            'direct'
+        );
+        logger.info('✅ Direct CBE fetch returned a PDF, parsing receipt');
+        return await parseCBEReceipt(pdfBuffer);
     } catch (directErr: any) {
-        logger.warn('⚠️ Direct fetch failed, falling back to Puppeteer:', directErr.message);
+        const directMessage = directErr instanceof Error ? directErr.message : String(directErr);
+        logger.warn(`⚠️ Direct CBE fetch failed, trying Puppeteer fallback: ${directMessage}`);
 
-        let browser;
         try {
-            browser = await puppeteer.launch({
-                headless: true,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--ignore-certificate-errors',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu'
-                ],
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
-            });
-
-            const page = await browser.newPage();
-            let detectedPdfUrl: string | null = null;
-
-            page.on('response', async (response) => {
-                const contentType = response.headers()['content-type'];
-                if (contentType?.includes('pdf')) {
-                    detectedPdfUrl = response.url();
-                    logger.info('🧾 PDF detected:', detectedPdfUrl);
-                }
-            });
-
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-            await new Promise(res => setTimeout(res, 6000));
-            await browser.close();
-
-            if (!detectedPdfUrl) {
-                return { success: false, error: 'No PDF detected via Puppeteer.' };
-            }
-
-            const pdfRes = await axios.get(detectedPdfUrl, {
-                httpsAgent,
-                responseType: 'arraybuffer'
-            });
-
-            return await parseCBEReceipt(pdfRes.data);
-        } catch (puppetErr: any) {
-            logger.error('❌ Puppeteer failed:', puppetErr.message);
-            if (browser) await browser.close();
+            const pdfBuffer = await fetchCBEReceiptWithPuppeteer(fullId);
+            logger.info('✅ Puppeteer CBE fallback returned a PDF, parsing receipt');
+            return await parseCBEReceipt(pdfBuffer);
+        } catch (puppeteerErr: any) {
+            const puppeteerMessage = puppeteerErr instanceof Error
+                ? puppeteerErr.message
+                : String(puppeteerErr);
+            logger.error(`❌ CBE direct and Puppeteer fetches failed. Direct: ${directMessage}. Puppeteer: ${puppeteerMessage}`);
             return {
                 success: false,
-                error: `Both direct and Puppeteer failed: ${puppetErr.message}`
+                error: `CBE receipt could not be fetched. Direct: ${directMessage}. Puppeteer: ${puppeteerMessage}`,
+                statusCode: 502
             };
         }
     }
@@ -130,9 +382,9 @@ export async function verifyCBELegacy(
 
 export async function verifyCBENew(token: string): Promise<VerifyResult> {
     const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-    const url = `https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/${token}`;
+    const url = `https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/${encodeURIComponent(token)}`;
     const maxRetries = 4;
-    const retryDelayMs = 1800;
+    const retryDelayMs = 1_800;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
@@ -147,7 +399,7 @@ export async function verifyCBENew(token: string): Promise<VerifyResult> {
                     'x-app-id': process.env.CBE_APP_ID || 'd1292e42-7400-49de-a2d3-9731caa4c819',
                     'x-app-version': process.env.CBE_APP_VERSION || '0a01980b-9859-1369-8198-59f403820000'
                 },
-                timeout: 15000
+                timeout: 15_000
             });
 
             return mapNewCBEReceipt(response.data);
@@ -163,7 +415,7 @@ export async function verifyCBENew(token: string): Promise<VerifyResult> {
 
             logger.warn(`⚠️ New CBE verification attempt ${attempt}/${maxRetries} failed: ${err.message}`);
 
-            if (statusCode === 404) {
+            if (statusCode === 400 || statusCode === 404) {
                 return {
                     success: false,
                     error: 'Invalid or expired CBE receipt token.',
@@ -209,29 +461,36 @@ export async function verifyCBE(reference: string, accountSuffix?: string): Prom
     return verifyCBELegacy(reference.trim(), accountSuffix.trim());
 }
 
-async function parseCBEReceipt(buffer: ArrayBuffer): Promise<VerifyResult> {
+async function parseCBEReceipt(buffer: ArrayBuffer | Buffer): Promise<VerifyResult> {
     try {
-        const parsed = await pdf(Buffer.from(buffer));
+        const pdfBuffer = Buffer.isBuffer(buffer)
+            ? buffer
+            : Buffer.from(new Uint8Array(buffer));
+        const parsed = await pdf(pdfBuffer);
         const rawText = parsed.text.replace(/\s+/g, ' ').trim();
 
         let payerName = rawText.match(/Payer\s*:?\s*(.*?)\s+Account/i)?.[1]?.trim();
         let receiverName = rawText.match(/Receiver\s*:?\s*(.*?)\s+Account/i)?.[1]?.trim();
-        const accountMatches = [...rawText.matchAll(/Account\s*:?\s*([A-Z0-9]?\*{4}\d{4})/gi)];
-        const payerAccount = accountMatches?.[0]?.[1];
-        const receiverAccount = accountMatches?.[1]?.[1];
+        const accountMatches = [...rawText.matchAll(
+            /Account\s*:?\s*((?:[A-Z0-9]?\*{4}\s*\d{4}|[A-Z0-9][A-Z0-9*.-]{3,29}))/gi
+        )]
+            .map(match => match[1]?.replace(/\s+/g, '').trim())
+            .filter((value): value is string => Boolean(value));
+        const payerAccount = accountMatches[0];
+        const receiverAccount = accountMatches[1];
 
         const reason = rawText.match(/Reason\s*\/\s*Type of service\s*:?\s*(.*?)\s+Transferred Amount/i)?.[1]?.trim();
-        const amountText = rawText.match(/Transferred Amount\s*:?\s*([\d,]+\.\d{2})\s*ETB/i)?.[1];
-        const referenceMatch = rawText.match(/Reference No\.?\s*\(VAT Invoice No\)\s*:?\s*([A-Z0-9]+)/i)?.[1]?.trim();
-        const dateRaw = rawText.match(/Payment Date & Time\s*:?\s*([\d\/,: ]+[APM]{2})/i)?.[1]?.trim();
+        const amountText = rawText.match(/Transferred Amount\s*:?\s*([\d,]+(?:\.\d+)?)\s*ETB/i)?.[1];
+        const referenceMatch = rawText.match(/Reference\s*No\.?\s*(?:\(\s*VAT\s+Invoice\s+No\s*\))?\s*:?\s*([A-Z0-9-]+)/i)?.[1]?.trim();
+        const dateRaw = rawText.match(/Payment Date\s*&\s*Time\s*:?\s*([\d\/,: -]+[APM]{2})/i)?.[1]?.trim();
 
-        const amount = amountText ? parseFloat(amountText.replace(/,/g, '')) : undefined;
-        const date = dateRaw ? new Date(dateRaw) : undefined;
+        const amount = parseAmount(amountText);
+        const date = dateRaw ? validDate(dateRaw) : undefined;
 
         payerName = payerName ? titleCase(payerName) : undefined;
         receiverName = receiverName ? titleCase(receiverName) : undefined;
 
-        if (payerName && payerAccount && receiverName && receiverAccount && amount && date && referenceMatch) {
+        if (payerName && payerAccount && receiverName && receiverAccount && amount !== undefined && date && referenceMatch) {
             return {
                 success: true,
                 payer: payerName,
@@ -243,14 +502,22 @@ async function parseCBEReceipt(buffer: ArrayBuffer): Promise<VerifyResult> {
                 reference: referenceMatch,
                 reason: reason || null
             };
-        } else {
-            return {
-                success: false,
-                error: 'Could not extract all required fields from PDF.'
-            };
         }
+
+        return {
+            success: false,
+            error: 'Could not extract all required fields from the CBE PDF.'
+        };
     } catch (parseErr: any) {
-        logger.error('❌ PDF parsing failed:', parseErr.message);
-        return { success: false, error: 'Error parsing PDF data' };
+        logger.error(`❌ CBE PDF parsing failed: ${parseErr.message}`);
+        return { success: false, error: 'Error parsing CBE PDF data' };
+    }
+}
+
+export async function closeCBEBrowser(): Promise<void> {
+    if (browser && browser.isConnected()) {
+        await browser.close();
+        browser = null;
+        logger.info('🔒 Puppeteer browser closed');
     }
 }

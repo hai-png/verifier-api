@@ -27,7 +27,11 @@ export async function verifyMpesa(
 ): Promise<MpesaVerifyResult> {
     const primaryUrl = `https://m-pesabusiness.safaricom.et/api/receipt/getReceipt?trxNo=${transactionId}`;
     const proxyKey = process.env.MPESA_PROXY_KEY || '';
-    const fallbackUrl = `https://leul.et/mpesa.php?reference=${transactionId}&key=${proxyKey}`;
+    // Configurable fallback URL — defaults to the original leul.et proxy.
+    // Set MPESA_FALLBACK_URL env var to point at your own self-hosted mpesa.php
+    // (e.g. https://your-ethio-hosting.com/mpesa.php)
+    const fallbackBase = process.env.MPESA_FALLBACK_URL || 'https://leul.et/mpesa.php';
+    const fallbackUrl = `${fallbackBase}?reference=${transactionId}&key=${proxyKey}`;
     const skipPrimary = process.env.SKIP_PRIMARY_VERIFICATION === "true";
 
     async function fetchFromUrl(url: string, source: string): Promise<any> {
