@@ -1,6 +1,6 @@
 # ---- base (with pnpm) ----
 # Includes Puppeteer + Chromium for legacy CBE receipt PDF fetching.
-FROM node:20-bookworm-slim AS base
+FROM node:24-bookworm-slim AS base
 WORKDIR /app
 
 # The official Node image ships Corepack but does not always activate pnpm.
