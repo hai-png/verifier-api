@@ -57,19 +57,20 @@ function mapNewCBEReceipt(data: CBETransactionResponse): VerifyResult {
 let browser: Browser | null = null;
 
 function getChromeExecutablePath(): string | undefined {
-    // Common paths where Puppeteer installs Chrome
+    // Common paths where Chromium/Chrome might be installed
     const possiblePaths = [
         process.env.PUPPETEER_EXECUTABLE_PATH,
-        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
-        '/root/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
-        '/usr/bin/google-chrome',
-        '/usr/bin/google-chrome-stable',
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        '/root/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
     ];
 
     for (const path of possiblePaths) {
         if (path && fs.existsSync(path)) {
+            logger.info(`🔍 Found Chrome/Chromium at: ${path}`);
             return path;
         }
     }
@@ -87,6 +88,7 @@ function getChromeExecutablePath(): string | undefined {
             for (const chromeDir of chromeDirs) {
                 const chromePath = `${cacheDir}/${chromeDir}/chrome-linux64/chrome`;
                 if (fs.existsSync(chromePath)) {
+                    logger.info(`🔍 Found Chrome in cache at: ${chromePath}`);
                     return chromePath;
                 }
             }
@@ -95,6 +97,8 @@ function getChromeExecutablePath(): string | undefined {
         // Ignore errors
     }
 
+    // Log all checked paths for debugging
+    logger.warn('⚠️ Chrome/Chromium not found in any known path. Checked: ' + possiblePaths.filter(p => p).join(', '));
     return undefined;
 }
 
@@ -103,7 +107,7 @@ async function getBrowser(): Promise<Browser> {
         return browser;
     }
     const executablePath = getChromeExecutablePath();
-    const launchOptions: LaunchOptions = {
+    const launchOptions: Record<string, unknown> = {
         headless: true,
         args: [
             '--no-sandbox',
