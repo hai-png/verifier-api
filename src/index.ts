@@ -7,6 +7,7 @@ import cookieParser from 'cookie-parser';
 dotenv.config();
 
 import CBERouter from './routes/verifyCBERoute';
+import { closeCBEBrowser } from './services/verifyCBE';
 import telebirrRouter from './routes/verifyTelebirrRoute';
 import dashenRouter from './routes/verifyDashenRoute';
 import abyssiniaRouter from './routes/verifyAbyssiniaRoute';
@@ -302,6 +303,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 // Graceful shutdown
 const gracefulShutdown = async () => {
     logger.info('Shutting down server...');
+    await closeCBEBrowser();
     if (!server) {
         await stopWebhookQueueWorker();
         await stopNotificationQueueWorker();

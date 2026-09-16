@@ -1,11 +1,38 @@
 # ---- base (with pnpm) ----
-# Slimmed for selfhosted build: no Puppeteer, no Chromium libs, no Tesseract.
-# Fits in 256MB RAM (Render free tier / Fly.io free tier).
+# Includes Puppeteer + Chromium for legacy CBE receipt PDF fetching.
 FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067 AS base
 WORKDIR /app
 
-# Only curl is needed (for healthchecks). No Chromium libs since Puppeteer was removed.
-RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends curl \
+# Install Chromium dependencies for Puppeteer
+RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libwayland-client0 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libxss1 \
+    libxtst6 \
+    xdg-utils \
     && sudo rm -rf /var/lib/apt/lists/*
 
 COPY pnpm-lock.yaml package.json pnpm-workspace.yaml* ./
@@ -27,7 +54,35 @@ FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends curl \
+# Install Chromium dependencies for Puppeteer
+RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+    ca-certificates \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libwayland-client0 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libxss1 \
+    libxtst6 \
+    xdg-utils \
     && sudo rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/node_modules ./node_modules
