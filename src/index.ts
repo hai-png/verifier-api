@@ -64,6 +64,22 @@ async function initializeRuntime(): Promise<void> {
     startupState.lastError = null;
 
     try {
+        // Verify Chrome is installed for Puppeteer fallback
+        const fs = await import('fs');
+        const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome';
+        if (fs.existsSync(chromePath)) {
+            logger.info(`✅ Chrome found at: ${chromePath}`);
+            try {
+                const { execSync } = await import('child_process');
+                const version = execSync(`${chromePath} --version`, { encoding: 'utf-8', timeout: 5000 }).trim();
+                logger.info(`🌐 Chrome version: ${version}`);
+            } catch {
+                logger.warn('⚠️ Could not determine Chrome version');
+            }
+        } else {
+            logger.warn(`⚠️ Chrome not found at ${chromePath} - Puppeteer fallback may fail`);
+        }
+
         await prisma.$connect();
         await prisma.$queryRaw`SELECT 1`;
         logger.info('Connected to database successfully');

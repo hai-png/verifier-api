@@ -126,6 +126,9 @@ async function getBrowser(): Promise<Browser> {
         logger.info(`🔧 Using Chrome at: ${executablePath}`);
     } else {
         logger.warn('⚠️ Chrome executable not found in known paths, letting Puppeteer auto-detect');
+        // Don't let Puppeteer auto-detect - it will try to use its own cached version
+        // which requires the specific version to be downloaded
+        throw new Error('Chrome executable not found. Please ensure google-chrome-stable is installed.');
     }
     browser = await puppeteer.launch(launchOptions);
     return browser;
