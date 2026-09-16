@@ -310,6 +310,13 @@ function Header({ onNavigate, currentPage }: { onNavigate: (p: Page) => void; cu
         </button>
 
         <div className="flex items-center gap-2">
+          <a
+            href="/verify/"
+            className="inline-flex items-center rounded-md px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            <CheckCircle2 className="w-4 h-4 mr-2" />
+            Verify
+          </a>
           {currentPage.name === 'workspace' && (
             <Button
               variant="ghost"

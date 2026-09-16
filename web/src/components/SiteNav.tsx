@@ -1,6 +1,6 @@
 import { CreditCard } from "lucide-react";
 
-/** Minimal public-site header for /verify, /docs, /changelog, /status. */
+/** Minimal public-site header for /docs, /changelog, and /status. Verification requires a dashboard session. */
 export default function SiteNav() {
   return (
     <header className="border-b bg-card sticky top-0 z-50">
@@ -12,9 +12,6 @@ export default function SiteNav() {
           Noveld Pay
         </a>
         <nav className="flex items-center gap-1 text-sm font-medium">
-          <a href="/verify" className="px-3 py-2 rounded-md hover:bg-muted">
-            Verify
-          </a>
           <a href="/docs" className="px-3 py-2 rounded-md hover:bg-muted">
             Docs
           </a>

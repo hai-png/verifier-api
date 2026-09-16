@@ -9,7 +9,7 @@ Cloudflare Pages; talks to the API on Render.
 | Route | Purpose | API |
 |---|---|---|
 | `/` | Dashboard SPA: login/signup, workspaces, overview, API keys, payouts, payment links, products, payments, webhooks, settings | `/auth/*`, `/workspaces/*`, `/dashboard/*` |
-| `/verify` | Public no-login payment check (throttled) | `POST /verify/public` |
+| `/verify` | Authenticated dashboard verification for all supported providers | `POST /dashboard/:workspaceId/verify` |
 | `/forgot-password` | Request reset link | `POST /auth/forgot-password` |
 | `/reset-password?token=` | Set new password | `POST /auth/reset-password` |
 | `/docs…` | 16-page API documentation | — |

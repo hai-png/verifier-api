@@ -11,8 +11,8 @@ It allows applications to verify the authenticity and details of payment receipt
 
 ### 🚀 Universal Verification (Smart Router)
 
-- **One endpoint to rule them all:** Verifies transactions from multiple providers (CBE, Telebirr, Dashen, Bank of Abyssinia, CBE Birr) using a single, intelligent endpoint (`POST /verify`). _Note: M-Pesa is currently supported via its dedicated endpoint only._
-- Automatically detects the provider based on the format of the provided `reference` number and accompanying JSON payload.
+- **One endpoint to rule them all:** Verifies transactions from CBE, Telebirr, CBE Birr, Dashen, Bank of Abyssinia, M-Pesa, Awash, and Zemen using a single intelligent endpoint (`POST /verify`) when the reference format is unambiguous.
+- Automatically detects the provider based on the format of the provided `reference` number and accompanying JSON payload. Authenticated dashboard checks can select a provider explicitly when formats overlap, such as Telebirr and M-Pesa.
 - Strictly validates payloads and intelligently delegates to the correct backend service.
 
 ### 🔷 CBE Payment Verification
