@@ -20,8 +20,9 @@ export default function CbeQr() {
 
       <DocH2>Legacy format: FT number + account suffix</DocH2>
       <DocP>
-        Older receipts show an FT reference only. Pair it with the last digits of the receiving
-        account as <code>suffix</code> so the payment can be matched to your payout account:
+        Older receipts show an FT reference only. Pair it with the last 8 digits of the payer&apos;s
+        CBE account (the digits after the <code>1000</code> prefix) as <code>suffix</code>. The
+        suffix is part of CBE&apos;s receipt lookup key:
       </DocP>
       <Code
         code={`curl -X POST ${API_HOST}/verify-cbe \\

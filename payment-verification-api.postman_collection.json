@@ -147,7 +147,7 @@
                 "verify-cbe"
               ]
             },
-            "description": "Verify a legacy CBE FT reference. accountSuffix is REQUIRED for legacy FT references (last 8 digits of the payee account)."
+            "description": "Verify a legacy CBE FT reference. accountSuffix is REQUIRED for bare legacy FT references (the last 8 digits after 1000 in the payer account); full legacy URLs already contain the suffix."
           },
           "response": []
         },

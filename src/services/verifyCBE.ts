@@ -114,6 +114,31 @@ function mapNewCBEReceipt(responseData: CBETransactionResponse): VerifyResult {
 
 let browser: Browser | null = null;
 
+class CBEReceiptNotFoundError extends Error {
+    readonly statusCode = 404;
+
+    constructor() {
+        super('CBE did not find a receipt for that reference and account suffix.');
+        this.name = 'CBEReceiptNotFoundError';
+    }
+}
+
+function isCBEReceiptNotFoundResponse(status: number, buffer: Buffer | Uint8Array): boolean {
+    if (status === 404) return true;
+
+    const body = Buffer.from(buffer).toString('utf8').toLowerCase();
+    return body.includes('you are not allowed to see this data')
+        || body.includes('please check your link');
+}
+
+function notFoundResult(): VerifyResult {
+    return {
+        success: false,
+        error: 'CBE receipt not found. Check the FT reference and use the last 8 digits of the payer account as the suffix.',
+        statusCode: 404
+    };
+}
+
 export function getChromeExecutablePath(): string | undefined {
     // Render's native Node runtime does not provide Chrome. Prefer an explicit
     // path, then Puppeteer's configured cache, and finally common system paths.
@@ -230,11 +255,14 @@ function validatePdfBuffer(
     contentType: string,
     source: string
 ): Buffer {
+    const normalizedBuffer = Buffer.from(buffer);
+    if (isCBEReceiptNotFoundResponse(status, normalizedBuffer)) {
+        throw new CBEReceiptNotFoundError();
+    }
     if (status >= 400) {
         throw new Error(`CBE receipt endpoint returned HTTP ${status}`);
     }
 
-    const normalizedBuffer = Buffer.from(buffer);
     // Do not trust Content-Type alone. CBE sometimes returns an HTML error page
     // with HTTP 200, which used to be passed to pdf-parse as if it were a PDF.
     if (!isPdfBuffer(normalizedBuffer)) {
@@ -290,6 +318,9 @@ async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer
 
         if (navigationResponse) {
             const navigationBuffer = await navigationResponse.buffer();
+            if (isCBEReceiptNotFoundResponse(navigationResponse.status(), navigationBuffer)) {
+                throw new CBEReceiptNotFoundError();
+            }
             if (isPdfBuffer(navigationBuffer)) {
                 const buffer = validatePdfBuffer(
                     navigationBuffer,
@@ -306,13 +337,16 @@ async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer
 
         const pdfResponse = await pdfResponsePromise;
         if (pdfResponse) {
-            const buffer = await pdfResponse.buffer();
-            if (isPdfBuffer(buffer)) {
-                return buffer.buffer.slice(
-                    buffer.byteOffset,
-                    buffer.byteOffset + buffer.byteLength
-                ) as ArrayBuffer;
-            }
+            const buffer = validatePdfBuffer(
+                await pdfResponse.buffer(),
+                pdfResponse.status(),
+                responseContentType(pdfResponse),
+                'Puppeteer response'
+            );
+            return buffer.buffer.slice(
+                buffer.byteOffset,
+                buffer.byteOffset + buffer.byteLength
+            ) as ArrayBuffer;
         }
 
         const contentType = navigationResponse
@@ -360,6 +394,11 @@ export async function verifyCBELegacy(
         return await parseCBEReceipt(pdfBuffer);
     } catch (directErr: any) {
         const directMessage = directErr instanceof Error ? directErr.message : String(directErr);
+        if (directErr instanceof CBEReceiptNotFoundError) {
+            logger.warn(`⚠️ CBE rejected the legacy receipt link: ${directMessage}`);
+            return notFoundResult();
+        }
+
         logger.warn(`⚠️ Direct CBE fetch failed, trying Puppeteer fallback: ${directMessage}`);
 
         try {
@@ -367,6 +406,11 @@ export async function verifyCBELegacy(
             logger.info('✅ Puppeteer CBE fallback returned a PDF, parsing receipt');
             return await parseCBEReceipt(pdfBuffer);
         } catch (puppeteerErr: any) {
+            if (puppeteerErr instanceof CBEReceiptNotFoundError) {
+                logger.warn(`⚠️ CBE rejected the legacy receipt link in Puppeteer: ${puppeteerErr.message}`);
+                return notFoundResult();
+            }
+
             const puppeteerMessage = puppeteerErr instanceof Error
                 ? puppeteerErr.message
                 : String(puppeteerErr);
@@ -445,8 +489,10 @@ export async function verifyCBENew(token: string): Promise<VerifyResult> {
 export async function verifyCBE(reference: string, accountSuffix?: string): Promise<VerifyResult> {
     const legacyLink = extractLegacyCbeUrlData(reference);
     if (legacyLink) {
-        const resolvedSuffix = accountSuffix?.trim() || legacyLink.suffix;
-        return verifyCBELegacy(legacyLink.reference, resolvedSuffix);
+        // The suffix embedded in a CBE legacy receipt URL belongs to the
+        // payer's account and is part of the receipt lookup key. Do not let a
+        // separately supplied merchant/payout suffix override it.
+        return verifyCBELegacy(legacyLink.reference, legacyLink.suffix);
     }
 
     const token = extractNewCbeToken(reference);

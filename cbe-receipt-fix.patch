@@ -1,0 +1,294 @@
+From bbd2cbca6bc56a25802f6b327b21f0e8499b28bf Mon Sep 17 00:00:00 2001
+From: hai-png <72776546+hai-png@users.noreply.github.com>
+Date: Wed, 16 Sep 2026 18:19:48 +0000
+Subject: [PATCH] fix: classify rejected CBE legacy receipts
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ README.md                                     |  4 +-
+ ...t-verification-api.postman_collection.json |  2 +-
+ src/routes/paymentLinks.ts                    | 27 ++------
+ src/routes/verifyCBERoute.ts                  | 10 +++
+ src/services/verifyCBE.ts                     | 66 ++++++++++++++++---
+ web/src/app/docs/tools/cbe-qr/page.tsx        |  5 +-
+ web/src/app/docs/verification/page.tsx        |  2 +-
+ web/src/app/verify/page.tsx                   |  2 +-
+ 8 files changed, 80 insertions(+), 38 deletions(-)
+
+diff --git a/README.md b/README.md
+index c2bd12a..9fa3634 100644
+--- a/README.md
++++ b/README.md
+@@ -189,7 +189,7 @@ Verify a payment from multiple providers using a single endpoint. The API automa
+ 
+ #### `POST /verify-cbe`
+ 
+-Verify a CBE payment using a reference number and account suffix.
++Verify a CBE payment using a reference number and the payer account suffix (the last 8 digits after the CBE `1000` prefix).
+ 
+ **Requires API Key**
+ 
+@@ -333,7 +333,7 @@ Multipart form-data with an image file.
+ 
+ - Optional Query Param: `?autoVerify=true`  
+   When enabled, the system detects the receipt type and routes it to the correct verification flow automatically.
+-- **Note**: If the auto-detected receipt is from CBE, the request **must** include your `Suffix` (last 8 digits of your account).
++- **Note**: If the auto-detected receipt is a legacy CBE FT reference, the request **must** include the payer's `Suffix` (the last 8 digits after the CBE `1000` prefix).
+ 
+ ---
+ 
+diff --git a/payment-verification-api.postman_collection.json b/payment-verification-api.postman_collection.json
+index b28e3db..721e107 100644
+--- a/payment-verification-api.postman_collection.json
++++ b/payment-verification-api.postman_collection.json
+@@ -147,7 +147,7 @@
+                 "verify-cbe"
+               ]
+             },
+-            "description": "Verify a legacy CBE FT reference. accountSuffix is REQUIRED for legacy FT references (last 8 digits of the payee account)."
++            "description": "Verify a legacy CBE FT reference. accountSuffix is REQUIRED for bare legacy FT references (the last 8 digits after 1000 in the payer account); full legacy URLs already contain the suffix."
+           },
+           "response": []
+         },
+diff --git a/src/routes/paymentLinks.ts b/src/routes/paymentLinks.ts
+index f48a19f..7f34850 100644
+--- a/src/routes/paymentLinks.ts
++++ b/src/routes/paymentLinks.ts
+@@ -125,12 +125,6 @@ function toPublicOrderSummary(order: {
+   };
+ }
+ 
+-function deriveSellerCbeSuffix(account: string): string | null {
+-  const digits = account.replace(/\D/g, '');
+-  if (digits.length < 8) return null;
+-  return digits.slice(-8);
+-}
+-
+ function normaliseBuyerEmail(value: unknown): string | null | 'invalid' {
+   if (value === undefined || value === null || value === '') return null;
+   if (typeof value !== 'string') return 'invalid';
+@@ -956,22 +950,13 @@ router.post('/:id/confirm', async (req: Request, res: Response): Promise<void> =
+     verificationInput.suffix = suffix?.trim();
+   }
+ 
+-  if (trimmedProvider === 'cbe') {
++  if (trimmedProvider === 'cbe' && !isNewCbeReference(trimmedReference)) {
++    // A bare legacy FT reference needs the payer's suffix supplied by the
++    // payer. Full legacy URLs already embed that suffix and verifyCBE keeps it;
++    // the merchant's payout account is the receiver and must not be used as
++    // the receipt lookup key.
+     const legacyCbeLink = extractLegacyCbeUrlData(trimmedReference);
+-
+-    if (legacyCbeLink) {
+-      const sellerSuffix = deriveSellerCbeSuffix(payoutAccount.account);
+-      if (!sellerSuffix) {
+-        res.status(422).json({
+-          success: false,
+-          error: 'The selected payout account does not have a usable CBE account suffix.',
+-        });
+-        return;
+-      }
+-      verificationInput.suffix = sellerSuffix;
+-    } else if (!isNewCbeReference(trimmedReference)) {
+-      verificationInput.suffix = suffix?.trim();
+-    }
++    if (!legacyCbeLink) verificationInput.suffix = suffix?.trim();
+   }
+ 
+   if (trimmedProvider === 'cbebirr') {
+diff --git a/src/routes/verifyCBERoute.ts b/src/routes/verifyCBERoute.ts
+index c33aede..e28328d 100644
+--- a/src/routes/verifyCBERoute.ts
++++ b/src/routes/verifyCBERoute.ts
+@@ -42,6 +42,11 @@ router.post('/', async function (
+         return;
+     }
+ 
++    if (isLegacyReference && trimmedSuffix && !/^\d{8}$/.test(trimmedSuffix)) {
++        res.status(400).json({ success: false, error: 'CBE accountSuffix must be exactly 8 digits from the payer account.' });
++        return;
++    }
++
+     try {
+         const result = await verifyCBE(normalizedReference, trimmedSuffix);
+         if (!result.success) {
+@@ -83,6 +88,11 @@ router.get('/', async function(
+         return;
+     }
+ 
++    if (isLegacyReference && trimmedSuffix && !/^\d{8}$/.test(trimmedSuffix)) {
++        res.status(400).json({ success: false, error: 'CBE accountSuffix must be exactly 8 digits from the payer account.' });
++        return;
++    }
++
+     try {
+         const result = await verifyCBE(normalizedReference, trimmedSuffix);
+         if (!result.success) {
+diff --git a/src/services/verifyCBE.ts b/src/services/verifyCBE.ts
+index 14b43bb..36ceca4 100644
+--- a/src/services/verifyCBE.ts
++++ b/src/services/verifyCBE.ts
+@@ -114,6 +114,31 @@ function mapNewCBEReceipt(responseData: CBETransactionResponse): VerifyResult {
+ 
+ let browser: Browser | null = null;
+ 
++class CBEReceiptNotFoundError extends Error {
++    readonly statusCode = 404;
++
++    constructor() {
++        super('CBE did not find a receipt for that reference and account suffix.');
++        this.name = 'CBEReceiptNotFoundError';
++    }
++}
++
++function isCBEReceiptNotFoundResponse(status: number, buffer: Buffer | Uint8Array): boolean {
++    if (status === 404) return true;
++
++    const body = Buffer.from(buffer).toString('utf8').toLowerCase();
++    return body.includes('you are not allowed to see this data')
++        || body.includes('please check your link');
++}
++
++function notFoundResult(): VerifyResult {
++    return {
++        success: false,
++        error: 'CBE receipt not found. Check the FT reference and use the last 8 digits of the payer account as the suffix.',
++        statusCode: 404
++    };
++}
++
+ export function getChromeExecutablePath(): string | undefined {
+     // Render's native Node runtime does not provide Chrome. Prefer an explicit
+     // path, then Puppeteer's configured cache, and finally common system paths.
+@@ -230,11 +255,14 @@ function validatePdfBuffer(
+     contentType: string,
+     source: string
+ ): Buffer {
++    const normalizedBuffer = Buffer.from(buffer);
++    if (isCBEReceiptNotFoundResponse(status, normalizedBuffer)) {
++        throw new CBEReceiptNotFoundError();
++    }
+     if (status >= 400) {
+         throw new Error(`CBE receipt endpoint returned HTTP ${status}`);
+     }
+ 
+-    const normalizedBuffer = Buffer.from(buffer);
+     // Do not trust Content-Type alone. CBE sometimes returns an HTML error page
+     // with HTTP 200, which used to be passed to pdf-parse as if it were a PDF.
+     if (!isPdfBuffer(normalizedBuffer)) {
+@@ -290,6 +318,9 @@ async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer
+ 
+         if (navigationResponse) {
+             const navigationBuffer = await navigationResponse.buffer();
++            if (isCBEReceiptNotFoundResponse(navigationResponse.status(), navigationBuffer)) {
++                throw new CBEReceiptNotFoundError();
++            }
+             if (isPdfBuffer(navigationBuffer)) {
+                 const buffer = validatePdfBuffer(
+                     navigationBuffer,
+@@ -306,13 +337,16 @@ async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer
+ 
+         const pdfResponse = await pdfResponsePromise;
+         if (pdfResponse) {
+-            const buffer = await pdfResponse.buffer();
+-            if (isPdfBuffer(buffer)) {
+-                return buffer.buffer.slice(
+-                    buffer.byteOffset,
+-                    buffer.byteOffset + buffer.byteLength
+-                ) as ArrayBuffer;
+-            }
++            const buffer = validatePdfBuffer(
++                await pdfResponse.buffer(),
++                pdfResponse.status(),
++                responseContentType(pdfResponse),
++                'Puppeteer response'
++            );
++            return buffer.buffer.slice(
++                buffer.byteOffset,
++                buffer.byteOffset + buffer.byteLength
++            ) as ArrayBuffer;
+         }
+ 
+         const contentType = navigationResponse
+@@ -360,6 +394,11 @@ export async function verifyCBELegacy(
+         return await parseCBEReceipt(pdfBuffer);
+     } catch (directErr: any) {
+         const directMessage = directErr instanceof Error ? directErr.message : String(directErr);
++        if (directErr instanceof CBEReceiptNotFoundError) {
++            logger.warn(`⚠️ CBE rejected the legacy receipt link: ${directMessage}`);
++            return notFoundResult();
++        }
++
+         logger.warn(`⚠️ Direct CBE fetch failed, trying Puppeteer fallback: ${directMessage}`);
+ 
+         try {
+@@ -367,6 +406,11 @@ export async function verifyCBELegacy(
+             logger.info('✅ Puppeteer CBE fallback returned a PDF, parsing receipt');
+             return await parseCBEReceipt(pdfBuffer);
+         } catch (puppeteerErr: any) {
++            if (puppeteerErr instanceof CBEReceiptNotFoundError) {
++                logger.warn(`⚠️ CBE rejected the legacy receipt link in Puppeteer: ${puppeteerErr.message}`);
++                return notFoundResult();
++            }
++
+             const puppeteerMessage = puppeteerErr instanceof Error
+                 ? puppeteerErr.message
+                 : String(puppeteerErr);
+@@ -445,8 +489,10 @@ export async function verifyCBENew(token: string): Promise<VerifyResult> {
+ export async function verifyCBE(reference: string, accountSuffix?: string): Promise<VerifyResult> {
+     const legacyLink = extractLegacyCbeUrlData(reference);
+     if (legacyLink) {
+-        const resolvedSuffix = accountSuffix?.trim() || legacyLink.suffix;
+-        return verifyCBELegacy(legacyLink.reference, resolvedSuffix);
++        // The suffix embedded in a CBE legacy receipt URL belongs to the
++        // payer's account and is part of the receipt lookup key. Do not let a
++        // separately supplied merchant/payout suffix override it.
++        return verifyCBELegacy(legacyLink.reference, legacyLink.suffix);
+     }
+ 
+     const token = extractNewCbeToken(reference);
+diff --git a/web/src/app/docs/tools/cbe-qr/page.tsx b/web/src/app/docs/tools/cbe-qr/page.tsx
+index 1b6ebd2..e0acf1c 100644
+--- a/web/src/app/docs/tools/cbe-qr/page.tsx
++++ b/web/src/app/docs/tools/cbe-qr/page.tsx
+@@ -20,8 +20,9 @@ export default function CbeQr() {
+ 
+       <DocH2>Legacy format: FT number + account suffix</DocH2>
+       <DocP>
+-        Older receipts show an FT reference only. Pair it with the last digits of the receiving
+-        account as <code>suffix</code> so the payment can be matched to your payout account:
++        Older receipts show an FT reference only. Pair it with the last 8 digits of the payer&apos;s
++        CBE account (the digits after the <code>1000</code> prefix) as <code>suffix</code>. The
++        suffix is part of CBE&apos;s receipt lookup key:
+       </DocP>
+       <Code
+         code={`curl -X POST ${API_HOST}/verify-cbe \\
+diff --git a/web/src/app/docs/verification/page.tsx b/web/src/app/docs/verification/page.tsx
+index a8e9f7f..24ca87c 100644
+--- a/web/src/app/docs/verification/page.tsx
++++ b/web/src/app/docs/verification/page.tsx
+@@ -11,7 +11,7 @@ export default function Verification() {
+       <Endpoint
+         method="POST"
+         path="/verify"
+-        desc="Smart router. Body: { reference, suffix?, phoneNumber? }. suffix = receiving-account tail (CBE/Abyssinia legacy); phoneNumber = buyer phone (CBE Birr)."
++        desc="Smart router. Body: { reference, suffix?, phoneNumber? }. suffix = CBE payer-account tail or Abyssinia receiving-account tail; phoneNumber = buyer phone (CBE Birr)."
+       />
+       <Code
+         code={`curl -X POST ${API_HOST}/verify \\
+diff --git a/web/src/app/verify/page.tsx b/web/src/app/verify/page.tsx
+index 6173fd8..7ee29d4 100644
+--- a/web/src/app/verify/page.tsx
++++ b/web/src/app/verify/page.tsx
+@@ -94,7 +94,7 @@ export default function VerifyPage() {
+                   id="suffix"
+                   value={suffix}
+                   onChange={(e) => setSuffix(e.target.value)}
+-                  placeholder="Last digits of the receiving account"
++                  placeholder="CBE payer account tail (8 digits after 1000)"
+                 />
+               </div>
+               <div className="space-y-2">
+-- 
+2.39.5
+

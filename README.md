@@ -189,7 +189,7 @@ Verify a payment from multiple providers using a single endpoint. The API automa
 
 #### `POST /verify-cbe`
 
-Verify a CBE payment using a reference number and account suffix.
+Verify a CBE payment using a reference number and the payer account suffix (the last 8 digits after the CBE `1000` prefix).
 
 **Requires API Key**
 
@@ -333,7 +333,7 @@ Multipart form-data with an image file.
 
 - Optional Query Param: `?autoVerify=true`  
   When enabled, the system detects the receipt type and routes it to the correct verification flow automatically.
-- **Note**: If the auto-detected receipt is from CBE, the request **must** include your `Suffix` (last 8 digits of your account).
+- **Note**: If the auto-detected receipt is a legacy CBE FT reference, the request **must** include the payer's `Suffix` (the last 8 digits after the CBE `1000` prefix).
 
 ---
 
