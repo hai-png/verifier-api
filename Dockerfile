@@ -61,6 +61,10 @@ ENV PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
+# Ensure chromium is installed (fallback in case base stage didn't persist it)
+RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends chromium chromium-browser \
+    && sudo rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./package.json
