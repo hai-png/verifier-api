@@ -16,7 +16,7 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libdbus-1-3 \
     libdrm2 \
     libgbm1 \
-    libgtk-3-0 \
+    libgtk-3.0 \
     libnspr4 \
     libnss3 \
     libwayland-client0 \
@@ -34,10 +34,14 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libxtst6 \
     xdg-utils \
     chromium \
-    && sudo rm -rf /var/lib/apt/lists/*
+    chromium-browser \
+    && sudo rm -rf /var/lib/apt/lists/* \
+    && ls -la /usr/bin/chromium* /usr/bin/google-chrome* 2>/dev/null || true \
+    && which chromium 2>/dev/null || true \
+    && which chromium-browser 2>/dev/null || true
 
 # Create symlink for Puppeteer
-RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome
+RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome 2>/dev/null || ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome 2>/dev/null || true
 
 COPY pnpm-lock.yaml package.json pnpm-workspace.yaml* ./
 COPY prisma ./prisma
@@ -63,7 +67,10 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Ensure chromium is installed (fallback in case base stage didn't persist it)
 RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends chromium chromium-browser \
-    && sudo rm -rf /var/lib/apt/lists/*
+    && sudo rm -rf /var/lib/apt/lists/* \
+    && ls -la /usr/bin/chromium* /usr/bin/google-chrome* /usr/bin/chromium-browser* 2>/dev/null || true \
+    && which chromium 2>/dev/null || true \
+    && which chromium-browser 2>/dev/null || true
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
