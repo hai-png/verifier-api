@@ -42,6 +42,11 @@ router.post('/', async function (
         return;
     }
 
+    if (isLegacyReference && trimmedSuffix && !/^\d{8}$/.test(trimmedSuffix)) {
+        res.status(400).json({ success: false, error: 'CBE accountSuffix must be exactly 8 digits from the payer account.' });
+        return;
+    }
+
     try {
         const result = await verifyCBE(normalizedReference, trimmedSuffix);
         if (!result.success) {
@@ -80,6 +85,11 @@ router.get('/', async function(
 
     if (isLegacyReference && !trimmedSuffix) {
         res.status(400).json({ success: false, error: 'Legacy CBE verification requires accountSuffix.' });
+        return;
+    }
+
+    if (isLegacyReference && trimmedSuffix && !/^\d{8}$/.test(trimmedSuffix)) {
+        res.status(400).json({ success: false, error: 'CBE accountSuffix must be exactly 8 digits from the payer account.' });
         return;
     }
 

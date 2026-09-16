@@ -94,7 +94,7 @@ export default function VerifyPage() {
                   id="suffix"
                   value={suffix}
                   onChange={(e) => setSuffix(e.target.value)}
-                  placeholder="Last digits of the receiving account"
+                  placeholder="CBE payer account tail (8 digits after 1000)"
                 />
               </div>
               <div className="space-y-2">

@@ -125,12 +125,6 @@ function toPublicOrderSummary(order: {
   };
 }
 
-function deriveSellerCbeSuffix(account: string): string | null {
-  const digits = account.replace(/\D/g, '');
-  if (digits.length < 8) return null;
-  return digits.slice(-8);
-}
-
 function normaliseBuyerEmail(value: unknown): string | null | 'invalid' {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string') return 'invalid';
@@ -956,22 +950,13 @@ router.post('/:id/confirm', async (req: Request, res: Response): Promise<void> =
     verificationInput.suffix = suffix?.trim();
   }
 
-  if (trimmedProvider === 'cbe') {
+  if (trimmedProvider === 'cbe' && !isNewCbeReference(trimmedReference)) {
+    // A bare legacy FT reference needs the payer's suffix supplied by the
+    // payer. Full legacy URLs already embed that suffix and verifyCBE keeps it;
+    // the merchant's payout account is the receiver and must not be used as
+    // the receipt lookup key.
     const legacyCbeLink = extractLegacyCbeUrlData(trimmedReference);
-
-    if (legacyCbeLink) {
-      const sellerSuffix = deriveSellerCbeSuffix(payoutAccount.account);
-      if (!sellerSuffix) {
-        res.status(422).json({
-          success: false,
-          error: 'The selected payout account does not have a usable CBE account suffix.',
-        });
-        return;
-      }
-      verificationInput.suffix = sellerSuffix;
-    } else if (!isNewCbeReference(trimmedReference)) {
-      verificationInput.suffix = suffix?.trim();
-    }
+    if (!legacyCbeLink) verificationInput.suffix = suffix?.trim();
   }
 
   if (trimmedProvider === 'cbebirr') {

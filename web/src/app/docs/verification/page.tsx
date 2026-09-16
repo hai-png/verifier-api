@@ -11,7 +11,7 @@ export default function Verification() {
       <Endpoint
         method="POST"
         path="/verify"
-        desc="Smart router. Body: { reference, suffix?, phoneNumber? }. suffix = receiving-account tail (CBE/Abyssinia legacy); phoneNumber = buyer phone (CBE Birr)."
+        desc="Smart router. Body: { reference, suffix?, phoneNumber? }. suffix = CBE payer-account tail or Abyssinia receiving-account tail; phoneNumber = buyer phone (CBE Birr)."
       />
       <Code
         code={`curl -X POST ${API_HOST}/verify \\
