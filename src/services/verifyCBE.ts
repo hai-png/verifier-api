@@ -1,6 +1,7 @@
 import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
 import https from 'https';
+import puppeteer, { Browser, Page } from 'puppeteer';
 import logger from '../utils/logger';
 import { extractLegacyCbeUrlData, extractNewCbeToken } from '../utils/cbeReference';
 
@@ -52,6 +53,63 @@ function mapNewCBEReceipt(data: CBETransactionResponse): VerifyResult {
     };
 }
 
+let browser: Browser | null = null;
+
+async function getBrowser(): Promise<Browser> {
+    if (browser && browser.isConnected()) {
+        return browser;
+    }
+    browser = await puppeteer.launch({
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-extensions',
+            '--disable-default-apps',
+            '--disable-sync',
+            '--disable-translate',
+            '--hide-scrollbars',
+            '--mute-audio',
+        ],
+    });
+    return browser;
+}
+
+async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer> {
+    const url = `https://apps.cbe.com.et:100/?id=${fullId}`;
+    const b = await getBrowser();
+    const page: Page = await b.newPage();
+
+    try {
+        logger.info(`🔎 Puppeteer fetching: ${url}`);
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+        const response = await page.goto(url, {
+            waitUntil: 'networkidle0',
+            timeout: 30000,
+        });
+
+        if (!response) {
+            throw new Error('No response from Puppeteer navigation');
+        }
+
+        const contentType = response.headers()['content-type'] || '';
+        if (!contentType.includes('pdf')) {
+            const html = await page.content();
+            logger.warn(`⚠️ Expected PDF but got ${contentType}: ${html.substring(0, 500)}`);
+        }
+
+        const buffer = await page.pdf({ printBackground: true, format: 'A4' });
+        return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+    } finally {
+        await page.close();
+    }
+}
+
 export async function verifyCBELegacy(
     reference: string,
     accountSuffix: string
@@ -75,11 +133,20 @@ export async function verifyCBELegacy(
         logger.info('✅ Direct fetch success, parsing PDF');
         return await parseCBEReceipt(response.data);
     } catch (directErr: any) {
-        logger.warn('⚠️ Direct fetch failed (Puppeteer fallback removed in selfhosted build):', directErr.message);
-        return {
-            success: false,
-            error: `Direct fetch failed: ${directErr.message}. The Puppeteer fallback was removed to slim the deployment. If this CBE reference is for a legacy receipt, try the new CBE token format (mbreciept.cbe.com.et) instead.`
-        };
+        logger.warn('⚠️ Direct fetch failed, trying Puppeteer fallback:', directErr.message);
+
+        try {
+            const pdfBuffer = await fetchCBEReceiptWithPuppeteer(fullId);
+            logger.info('✅ Puppeteer fallback success, parsing PDF');
+            return await parseCBEReceipt(pdfBuffer);
+        } catch (puppeteerErr: any) {
+            logger.error('❌ Puppeteer fallback also failed:', puppeteerErr.message);
+            return {
+                success: false,
+                error: `Both direct fetch and Puppeteer fallback failed. Direct: ${directErr.message}. Puppeteer: ${puppeteerErr.message}`,
+                statusCode: 502
+            };
+        }
     }
 }
 
@@ -207,5 +274,13 @@ async function parseCBEReceipt(buffer: ArrayBuffer): Promise<VerifyResult> {
     } catch (parseErr: any) {
         logger.error('❌ PDF parsing failed:', parseErr.message);
         return { success: false, error: 'Error parsing PDF data' };
+    }
+}
+
+export async function closeCBEBrowser(): Promise<void> {
+    if (browser && browser.isConnected()) {
+        await browser.close();
+        browser = null;
+        logger.info('🔒 Puppeteer browser closed');
     }
 }
