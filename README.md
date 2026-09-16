@@ -523,6 +523,7 @@ LOG_LEVEL=info       # or debug, error
 MISTRAL_API_KEY=your_mistral_api_key # Required for image verification
 SKIP_PRIMARY_VERIFICATION=false      # Set to true to bypass primary fetch
 FALLBACK_PROXIES=https://example.et/telebirr?reference=,https://relay.example/telebirr?reference=
+# Bare relay endpoint URLs are also accepted; reference + key are added safely.
 TELEBIRR_PROXY_KEY=your_proxy_key
 # Optional public labels in the same order. Raw relay URLs are never exposed.
 TELEBIRR_PROXY_LABELS=leul.et,Community relay 1
