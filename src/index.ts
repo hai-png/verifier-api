@@ -7,7 +7,7 @@ import cookieParser from 'cookie-parser';
 dotenv.config();
 
 import CBERouter from './routes/verifyCBERoute';
-import { closeCBEBrowser } from './services/verifyCBE';
+import { closeCBEBrowser, getChromeExecutablePath } from './services/verifyCBE';
 import telebirrRouter from './routes/verifyTelebirrRoute';
 import dashenRouter from './routes/verifyDashenRoute';
 import abyssiniaRouter from './routes/verifyAbyssiniaRoute';
@@ -64,32 +64,35 @@ async function initializeRuntime(): Promise<void> {
     startupState.lastError = null;
 
     try {
-        // Verify Chrome is installed for Puppeteer fallback
-        const fs = await import('fs');
-        const possiblePaths = [
-            process.env.PUPPETEER_EXECUTABLE_PATH,
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser',
-            '/usr/bin/google-chrome',
-        ];
-        let foundPath = '';
-        for (const path of possiblePaths) {
-            if (path && fs.existsSync(path)) {
-                foundPath = path;
-                break;
-            }
-        }
+        // Verify Chrome is installed for the legacy CBE fallback. This checks
+        // both system paths and the Puppeteer cache used by Render/Docker.
+        const foundPath = getChromeExecutablePath();
         if (foundPath) {
-            logger.info(`✅ Chrome/Chromium found at: ${foundPath}`);
+            logger.info(`✅ Chrome/Chromium available for CBE fallback: ${foundPath}`);
             try {
-                const { execSync } = await import('child_process');
-                const version = execSync(`${foundPath} --version`, { encoding: 'utf-8', timeout: 5000 }).trim();
-                logger.info(`🌐 Version: ${version}`);
+                const { execFileSync } = await import('child_process');
+                const version = execFileSync(foundPath, ['--version'], {
+                    encoding: 'utf-8',
+                    timeout: 5000,
+                }).trim();
+                logger.info(`🌐 Chrome/Chromium version: ${version}`);
             } catch {
-                logger.warn('⚠️ Could not determine version');
+                logger.warn('⚠️ Could not determine Chrome/Chromium version');
             }
         } else {
-            logger.warn(`⚠️ Chrome/Chromium not found in standard paths. Checked: ${possiblePaths.filter(p => p).join(', ')}`);
+            logger.warn('⚠️ Chrome/Chromium is unavailable; legacy CBE fallback will return a configuration error.');
+        }
+
+        const telebirrRelayCount = (process.env.FALLBACK_PROXIES || '')
+            .split(',')
+            .map(value => value.trim())
+            .filter(Boolean)
+            .length;
+        logger.info(
+            `Telebirr verification config: primary ${process.env.SKIP_PRIMARY_VERIFICATION === 'true' ? 'disabled' : 'enabled'}, fallback relays ${telebirrRelayCount}`
+        );
+        if (process.env.SKIP_PRIMARY_VERIFICATION === 'true' && telebirrRelayCount === 0) {
+            logger.warn('⚠️ Telebirr primary is disabled but FALLBACK_PROXIES is empty.');
         }
 
         await prisma.$connect();

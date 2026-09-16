@@ -1,8 +1,15 @@
 services:
   - type: web
     name: verifier-api-selfhosted
-    env: node
+    env: docker
     plan: free  # 512MB RAM, spins down after 15 min inactivity (cold start ~30s)
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    # The CBE legacy verifier needs a real Chromium binary. The previous
+    # `env: node` service ignored Dockerfile entirely, so Render started the
+    # app without Chromium and every Puppeteer fallback failed immediately.
+    # Use the Docker image, which installs Chromium in the runtime layer.
     # Use db push instead of migrate deploy — the upstream migration history
     # has a bug (migration 4 ALTERs PlanPricingConfig but no migration CREATEs it).
     # db push reads schema.prisma directly and creates all tables, skipping the
@@ -10,8 +17,7 @@ services:
     #
     # Apply schema (idempotent — only creates missing tables/columns, preserves existing data)
     # No reset-db.js — we don't want to wipe data on every deploy.
-    buildCommand: pnpm install --frozen-lockfile && pnpm build
-    startCommand: npx prisma db push --accept-data-loss && node dist/index.js
+    # Dockerfile CMD applies the Prisma schema and starts the API.
     envVars:
       - key: NODE_ENV
         value: production
