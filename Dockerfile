@@ -54,44 +54,12 @@ RUN pnpm prisma generate && pnpm build
 RUN pnpm prune --prod
 
 # ---- runtime ----
-FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067 AS runtime
+FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-
-# Install Chromium dependencies for Puppeteer + Chromium browser
-RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-    ca-certificates \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3.0 \
-    libnspr4 \
-    libnss3 \
-    libwayland-client0 \
-    libx11-6 \
-    libxcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxkbcommon0 \
-    libxrandr2 \
-    libxss1 \
-    libxtst6 \
-    xdg-utils \
-    chromium \
-    && sudo rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
