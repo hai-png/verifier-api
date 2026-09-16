@@ -66,18 +66,30 @@ async function initializeRuntime(): Promise<void> {
     try {
         // Verify Chrome is installed for Puppeteer fallback
         const fs = await import('fs');
-        const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
-        if (fs.existsSync(chromePath)) {
-            logger.info(`✅ Chrome found at: ${chromePath}`);
+        const possiblePaths = [
+            process.env.PUPPETEER_EXECUTABLE_PATH,
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/google-chrome',
+        ];
+        let foundPath = '';
+        for (const path of possiblePaths) {
+            if (path && fs.existsSync(path)) {
+                foundPath = path;
+                break;
+            }
+        }
+        if (foundPath) {
+            logger.info(`✅ Chrome/Chromium found at: ${foundPath}`);
             try {
                 const { execSync } = await import('child_process');
-                const version = execSync(`${chromePath} --version`, { encoding: 'utf-8', timeout: 5000 }).trim();
-                logger.info(`🌐 Chrome version: ${version}`);
+                const version = execSync(`${foundPath} --version`, { encoding: 'utf-8', timeout: 5000 }).trim();
+                logger.info(`🌐 Version: ${version}`);
             } catch {
-                logger.warn('⚠️ Could not determine Chrome version');
+                logger.warn('⚠️ Could not determine version');
             }
         } else {
-            logger.warn(`⚠️ Chrome not found at ${chromePath} - Puppeteer fallback may fail`);
+            logger.warn(`⚠️ Chrome/Chromium not found in standard paths. Checked: ${possiblePaths.filter(p => p).join(', ')}`);
         }
 
         await prisma.$connect();
