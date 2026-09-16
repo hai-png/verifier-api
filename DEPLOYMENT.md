@@ -124,7 +124,7 @@ What a working proxy looks like:
 1. Go to https://render.com → Sign up (with GitHub)
 2. **New** → **Blueprint**
 3. Select your fork of this repo (or `hai-png/verifier-api`, branch `selfhosted`)
-4. Render will detect `render.yaml` and create the service
+4. Render will detect `render.yaml` and create a **Docker** service. This is required for legacy CBE verification: the Dockerfile installs Chromium. Do not replace the Docker service with a native Node service or use the old `pnpm install ... && node dist/index.js` commands, because that runtime has no browser.
 5. In the **Environment** tab, set these secrets:
    - `DATABASE_URL` → paste the TiDB connection string from Step 1
    - `ADMIN_SECRET` → `openssl rand -hex 32` (generate + paste)
@@ -138,6 +138,13 @@ What a working proxy looks like:
 6. Click **Create Blueprint**
 7. Render will build (5-10 min) + deploy. The URL will be `https://verifier-api-selfhosted.onrender.com`
 8. Test: `curl https://verifier-api-selfhosted.onrender.com/health` → `{"status":"ok",...}`
+
+> **Existing Render service:** a service created from an earlier revision may still
+> show `Using Node.js version ...` and run `pnpm install --frozen-lockfile && pnpm build`.
+> That means it is ignoring the Dockerfile. Update the service to use Docker (or
+> recreate it from the Blueprint), then perform a clean deploy. The startup log
+> should show Chromium available for the CBE fallback; a Node.js-only startup is
+> not a successful CBE deployment.
 
 ---
 

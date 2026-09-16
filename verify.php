@@ -1,10 +1,14 @@
 <?php
 header("Content-Type: application/json");
 
-$TELEBIRR_PROXY_KEY = 'YOUR_SECRET_PROXY_KEY_HERE'; // Change this to a secure random string on your server
+// Prefer an environment variable when the hosting panel supports one. Otherwise
+// replace the placeholder below before uploading this file.
+$TELEBIRR_PROXY_KEY = getenv('TELEBIRR_PROXY_KEY') ?: 'YOUR_SECRET_PROXY_KEY_HERE';
 
-// Check for proxy key
-if (!isset($_GET['key']) || $_GET['key'] !== $TELEBIRR_PROXY_KEY) {
+// Check for proxy key. Return a real HTTP status as well as the JSON error so a
+// broken proxy is distinguishable from a valid-but-missing receipt.
+if (!isset($_GET['key']) || !hash_equals($TELEBIRR_PROXY_KEY, (string) $_GET['key'])) {
+    http_response_code(401);
     echo json_encode([
         "success" => false,
         "error" => "Unauthorized: Invalid or missing proxy key"
@@ -12,8 +16,9 @@ if (!isset($_GET['key']) || $_GET['key'] !== $TELEBIRR_PROXY_KEY) {
     exit;
 }
 
-$reference = $_GET['reference'] ?? null;
-if (!$reference) {
+$reference = trim((string) ($_GET['reference'] ?? ''));
+if ($reference === '') {
+    http_response_code(400);
     echo json_encode([
         "success" => false,
         "error" => "Missing reference parameter."
@@ -28,7 +33,9 @@ function fetchReceipt($url) {
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
     curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_ENCODING, '');
     curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -79,6 +86,7 @@ function fetchReceipt($url) {
 $fetchResult = fetchReceipt($url);
 
 if (!$fetchResult['success']) {
+    http_response_code(502);
     echo json_encode([
         "success" => false,
         "error" => $fetchResult['error'],
