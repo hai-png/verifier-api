@@ -1,6 +1,7 @@
 import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
 import https from 'https';
+import fs from 'fs';
 import puppeteer, { Browser, Page } from 'puppeteer';
 import logger from '../utils/logger';
 import { extractLegacyCbeUrlData, extractNewCbeToken } from '../utils/cbeReference';
@@ -55,11 +56,54 @@ function mapNewCBEReceipt(data: CBETransactionResponse): VerifyResult {
 
 let browser: Browser | null = null;
 
+function getChromeExecutablePath(): string | undefined {
+    // Common paths where Puppeteer installs Chrome
+    const possiblePaths = [
+        process.env.PUPPETEER_EXECUTABLE_PATH,
+        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        '/root/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+    ];
+
+    for (const path of possiblePaths) {
+        if (path && fs.existsSync(path)) {
+            return path;
+        }
+    }
+
+    // Try to find Chrome in Puppeteer's cache directory dynamically
+    try {
+        const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
+        if (fs.existsSync(cacheDir)) {
+            const chromeDirs = fs.readdirSync(cacheDir, { withFileTypes: true })
+                .filter(dirent => dirent.isDirectory() && dirent.name.startsWith('chrome'))
+                .map(dirent => dirent.name)
+                .sort()
+                .reverse();
+            
+            for (const chromeDir of chromeDirs) {
+                const chromePath = `${cacheDir}/${chromeDir}/chrome-linux64/chrome`;
+                if (fs.existsSync(chromePath)) {
+                    return chromePath;
+                }
+            }
+        }
+    } catch {
+        // Ignore errors
+    }
+
+    return undefined;
+}
+
 async function getBrowser(): Promise<Browser> {
     if (browser && browser.isConnected()) {
         return browser;
     }
-    browser = await puppeteer.launch({
+    const executablePath = getChromeExecutablePath();
+    const launchOptions: puppeteer.LaunchOptions = {
         headless: true,
         args: [
             '--no-sandbox',
@@ -76,7 +120,14 @@ async function getBrowser(): Promise<Browser> {
             '--hide-scrollbars',
             '--mute-audio',
         ],
-    });
+    };
+    if (executablePath) {
+        launchOptions.executablePath = executablePath;
+        logger.info(`🔧 Using Chrome at: ${executablePath}`);
+    } else {
+        logger.warn('⚠️ Chrome executable not found in known paths, letting Puppeteer auto-detect');
+    }
+    browser = await puppeteer.launch(launchOptions);
     return browser;
 }
 

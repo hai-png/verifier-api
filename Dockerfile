@@ -47,12 +47,16 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store/v3 \
 FROM deps AS build
 COPY . .
 RUN pnpm prisma generate && pnpm build
+# Install Chrome for Puppeteer (required for legacy CBE receipt fallback)
+RUN npx puppeteer browsers install chrome
 RUN pnpm prune --prod
 
 # ---- runtime ----
 FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 
 # Install Chromium dependencies for Puppeteer
 RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
@@ -84,6 +88,9 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libxtst6 \
     xdg-utils \
     && sudo rm -rf /var/lib/apt/lists/*
+
+# Install Chrome for Puppeteer in runtime
+RUN npx puppeteer browsers install chrome
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
