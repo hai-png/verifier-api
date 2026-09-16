@@ -3,6 +3,14 @@
 FROM node:20-bookworm-slim AS base
 WORKDIR /app
 
+# The official Node image ships Corepack but does not always activate pnpm.
+# Pin the package-manager major used to create pnpm-lock.yaml.
+RUN corepack enable && corepack prepare pnpm@11.0.0 --activate
+
+# Use the Debian Chromium installed below instead of downloading a second
+# browser into node_modules during pnpm install.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+
 # Install Chromium dependencies for Puppeteer + Chromium browser
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
