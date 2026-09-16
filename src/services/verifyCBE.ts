@@ -2,7 +2,7 @@ import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
 import https from 'https';
 import fs from 'fs';
-import puppeteer, { Browser, Page } from 'puppeteer';
+import puppeteer, { Browser, Page, LaunchOptions } from 'puppeteer';
 import logger from '../utils/logger';
 import { extractLegacyCbeUrlData, extractNewCbeToken } from '../utils/cbeReference';
 
@@ -103,7 +103,7 @@ async function getBrowser(): Promise<Browser> {
         return browser;
     }
     const executablePath = getChromeExecutablePath();
-    const launchOptions: puppeteer.LaunchOptions = {
+    const launchOptions: LaunchOptions = {
         headless: true,
         args: [
             '--no-sandbox',
