@@ -3,7 +3,7 @@
 FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067 AS base
 WORKDIR /app
 
-# Install Chromium dependencies for Puppeteer + Google Chrome stable
+# Install Chromium dependencies for Puppeteer + Chromium browser
 RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -33,13 +33,11 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libxss1 \
     libxtst6 \
     xdg-utils \
-    wget \
-    gnupg \
-    && sudo rm -rf /var/lib/apt/lists/* \
-    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list \
-    && sudo apt-get update && sudo apt-get install -y --no-install-recommends google-chrome-stable \
+    chromium \
     && sudo rm -rf /var/lib/apt/lists/*
+
+# Create symlink for Puppeteer
+RUN ln -sf /usr/bin/chromium /usr/bin/google-chrome
 
 COPY pnpm-lock.yaml package.json pnpm-workspace.yaml* ./
 COPY prisma ./prisma
@@ -61,9 +59,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install Chromium dependencies for Puppeteer + Google Chrome stable
+# Install Chromium dependencies for Puppeteer + Chromium browser
 RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     ca-certificates \
     fonts-liberation \
@@ -75,7 +73,7 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libdbus-1-3 \
     libdrm2 \
     libgbm1 \
-    libgtk-3-0 \
+    libgtk-3.0 \
     libnspr4 \
     libnss3 \
     libwayland-client0 \
@@ -92,12 +90,7 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libxss1 \
     libxtst6 \
     xdg-utils \
-    wget \
-    gnupg \
-    && sudo rm -rf /var/lib/apt/lists/* \
-    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list \
-    && sudo apt-get update && sudo apt-get install -y --no-install-recommends google-chrome-stable \
+    chromium \
     && sudo rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/node_modules ./node_modules

@@ -66,7 +66,7 @@ async function initializeRuntime(): Promise<void> {
     try {
         // Verify Chrome is installed for Puppeteer fallback
         const fs = await import('fs');
-        const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome';
+        const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
         if (fs.existsSync(chromePath)) {
             logger.info(`✅ Chrome found at: ${chromePath}`);
             try {
