@@ -641,10 +641,11 @@ router.get('/:workspaceId/orders', async (req: Request, res: Response): Promise<
 router.post('/:workspaceId/verify', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
     const { workspaceId } = req.params as { workspaceId: string };
-    const { reference, suffix, phoneNumber } = req.body as {
+    const { reference, suffix, phoneNumber, provider } = req.body as {
         reference?: string;
         suffix?: string;
         phoneNumber?: string;
+        provider?: string;
     };
 
     if (!reference || typeof reference !== 'string' || !reference.trim()) {
@@ -686,6 +687,7 @@ router.post('/:workspaceId/verify', async (req: Request, res: Response): Promise
             reference: reference.trim(),
             suffix: typeof suffix === 'string' ? suffix : undefined,
             phoneNumber: typeof phoneNumber === 'string' ? phoneNumber : undefined,
+            provider: typeof provider === 'string' ? provider : undefined,
         });
 
         logger.info(
