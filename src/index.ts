@@ -1,4 +1,4 @@
-import express, { Request, Response, NextFunction, ErrorRequestHandler } from 'express';
+import express, { Request, Response, NextFunction, ErrorRequestHandler, RequestHandler } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
@@ -53,6 +53,49 @@ const startupState = {
     lastError: null as string | null,
 };
 
+// Keep-alive pinger. Render's free tier spins an instance down after ~15 min
+// of no inbound traffic, so the first request pays a ~30s cold start. Hitting
+// our own public /health every 5 min counts as inbound traffic and keeps the
+// instance warm, making /health — and therefore the dashboard — fast.
+const KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000;
+const KEEP_ALIVE_TIMEOUT_MS = 15 * 1000;
+const keepAliveUrl =
+    process.env.RENDER_EXTERNAL_URL || process.env.VERITAS_APP_URL || '';
+let keepAliveTimer: NodeJS.Timeout | null = null;
+
+function startKeepAlivePinger(): void {
+    if (!keepAliveUrl) {
+        logger.warn('Keep-alive pinger disabled — set RENDER_EXTERNAL_URL or VERITAS_APP_URL to enable it.');
+        return;
+    }
+    const ping = async (): Promise<void> => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), KEEP_ALIVE_TIMEOUT_MS);
+        try {
+            const startedAt = Date.now();
+            const res = await fetch(`${keepAliveUrl}/health`, { signal: controller.signal });
+            if (res.ok) {
+                logger.info(`Keep-alive ping OK in ${Date.now() - startedAt}ms`);
+            } else {
+                logger.warn(`Keep-alive ping returned ${res.status}`);
+            }
+        } catch (error) {
+            logger.warn(`Keep-alive ping failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+        } finally {
+            clearTimeout(timeout);
+        }
+    };
+    keepAliveTimer = setInterval(ping, KEEP_ALIVE_INTERVAL_MS);
+    void ping();
+}
+
+function stopKeepAlivePinger(): void {
+    if (keepAliveTimer) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+    }
+}
+
 // Add environment info to startup log
 logger.info(`Starting server in ${process.env.NODE_ENV || 'development'} mode`);
 logger.info(`Node version: ${process.version}`);
@@ -69,16 +112,12 @@ async function initializeRuntime(): Promise<void> {
         const foundPath = getChromeExecutablePath();
         if (foundPath) {
             logger.info(`✅ Chrome/Chromium available for CBE fallback: ${foundPath}`);
-            try {
-                const { execFileSync } = await import('child_process');
-                const version = execFileSync(foundPath, ['--version'], {
-                    encoding: 'utf-8',
-                    timeout: 5000,
-                }).trim();
-                logger.info(`🌐 Chrome/Chromium version: ${version}`);
-            } catch {
-                logger.warn('⚠️ Could not determine Chrome/Chromium version');
-            }
+            await import('child_process').then(({ execFile }) => {
+                execFile(foundPath, ['--version'], { timeout: 5000 }, (err, stdout) => {
+                    if (!err && stdout) logger.info(`🌐 Chrome/Chromium version: ${stdout.trim()}`);
+                    else logger.warn('⚠️ Could not determine Chrome/Chromium version');
+                });
+            }).catch(() => logger.warn('⚠️ Could not determine Chrome/Chromium version'));
         } else {
             logger.warn('⚠️ Chrome/Chromium is unavailable; legacy CBE fallback will return a configuration error.');
         }
@@ -215,6 +254,35 @@ app.use('/webhooks', permissionGate('webhooks'), webhooksRouter);
 app.use('/notifications', permissionGate('webhooks'), notificationsRouter);
 
 
+// Gate: keep endpoints that don't need the DB reachable instantly even while
+// the runtime is still starting (cold boot), and make DB-dependent routes wait
+// (bounded) for init to finish instead of failing. Placed once, before routers.
+const runtimeGuestPaths = ['/', '/health', '/ready', '/status'];
+const waitForRuntime: RequestHandler = async (req, res, next) => {
+    if (runtimeGuestPaths.some(p => req.path === p || req.path.startsWith(`${p}/`))) {
+        return next();
+    }
+    if (startupState.ready) {
+        return next();
+    }
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+        if (startupState.ready) {
+            return next();
+        }
+        if (!startupState.initializing && startupState.lastError) {
+            return res.status(503).json({
+                success: false,
+                error: 'Service initialization failed',
+                detail: startupState.lastError,
+            });
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return res.status(503).json({ success: false, error: 'Service still initializing' });
+};
+app.use(waitForRuntime);
+
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
     res.json({
@@ -334,6 +402,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 // Graceful shutdown
 const gracefulShutdown = async () => {
     logger.info('Shutting down server...');
+    stopKeepAlivePinger();
     await closeCBEBrowser();
     if (!server) {
         await stopWebhookQueueWorker();
@@ -363,14 +432,22 @@ process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
 async function bootstrap(): Promise<void> {
+    // Listen immediately so /health (and other no-DB endpoints) respond the
+    // moment the container is up, even while startup work (DB connect, stats
+    // cache) is still running in the background. The waitForRuntime middleware
+    // makes DB-dependent routes wait for init instead of failing.
+    server = app.listen(PORT, () => {
+        logger.info(`Server listening on port ${PORT} (runtime initializing in background)`);
+    });
+
+    await new Promise<void>((resolve) => server!.once('listening', resolve));
+
     try {
         await initializeRuntime();
-
-        server = app.listen(PORT, () => {
-            logger.info(`Server running on port ${PORT}`);
-        });
+        startKeepAlivePinger();
     } catch (error) {
-        logger.error('Startup failed. Exiting before accepting traffic.', error);
+        logger.error('Startup failed. Exiting.', error);
+        stopKeepAlivePinger();
         await stopWebhookQueueWorker().catch(() => undefined);
         await stopNotificationQueueWorker().catch(() => undefined);
         await disconnectPrisma().catch(() => undefined);
