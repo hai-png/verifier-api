@@ -1,5 +1,5 @@
 const NEW_CBE_URL_REGEX = /^https?:\/\/mbreciept\.cbe\.com\.et\/([A-Za-z0-9-]+)\/?$/i;
-const NEW_CBE_TOKEN_REGEX = /^[A-Za-z0-9-]{15,40}$/;
+const NEW_CBE_TOKEN_REGEX = /^[A-Za-z0-9]{15,40}$/;
 const LEGACY_CBE_REFERENCE_REGEX = /^FT[A-Z0-9]{10}$/i;
 const LEGACY_CBE_COMBINED_ID_REGEX = /^(FT[A-Z0-9]{10})(\d{8})$/i;
 

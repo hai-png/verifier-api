@@ -71,17 +71,28 @@ export async function verifyAwash(
     return { success: false, error: 'Unknown error in retry loop' };
 }
 
-function parseAwashReceipt(html: string, reference: string): AwashVerifyResult {
+export function parseAwashReceipt(html: string, reference: string): AwashVerifyResult {
     try {
-        // Awash Bank receipts use <table class="info-table"> with <tr> rows.
-        // Each row has 3 <td> cells: label, spacer, value.
         const data: Record<string, string> = {};
-        const rowRegex = /<tr>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([^<]*)<\/td>\s*<td[^>]*>([^<]+)<\/td>\s*<\/tr>/gi;
-        let match: RegExpExecArray | null;
+        const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+        const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+        const stripTags = (value: string) =>
+            value.replace(/<[^>]+>/g, ' ')
+                 .replace(/&nbsp;/gi, ' ')
+                 .replace(/\s+/g, ' ')
+                 .trim();
 
-        while ((match = rowRegex.exec(html)) !== null) {
-            const key = match[1].trim().replace(/:$/, '');
-            const value = match[3].trim();
+        let row: RegExpExecArray | null;
+        while ((row = rowRegex.exec(html)) !== null) {
+            const cells: string[] = [];
+            let cell: RegExpExecArray | null;
+            cellRegex.lastIndex = 0;
+            while ((cell = cellRegex.exec(row[1])) !== null) {
+                cells.push(stripTags(cell[1]));
+            }
+            if (cells.length < 3) continue;
+            const key = cells[0].replace(/:$/, '').trim();
+            const value = cells[2].trim();
             if (key && value) data[key] = value;
         }
 
@@ -97,25 +108,25 @@ function parseAwashReceipt(html: string, reference: string): AwashVerifyResult {
 
         const result: AwashVerifyResult = {
             success: true,
-            senderName: data['Sender Name'],
-            senderAccount: data['Sender Account'],
-            beneficiaryName: data['Beneficiary name'],
+            senderName: data['Customer Name'] || data['Sender Name'],
+            senderAccount: data['Source Account'] || data['Sender Account'],
+            beneficiaryName: data['Beneficiary name'] || data['Beneficiary Name'],
             beneficiaryAccount: data['Beneficiary Account'],
             beneficiaryBank: data['Beneficiary Bank'],
             transactionType: data['Transaction Type'],
             transactionId: data['Transaction ID'] || reference,
-            transactionDate: data['Transaction Time'],
+            transactionDate: data['Transaction Date'] || data['Transaction Time'],
             amount: parseAmount(data['Amount']),
             charge: parseAmount(data['Charge']),
             vat: parseAmount(data['VAT']),
             reason: data['Reason'],
         };
 
-        logger.info(`✅ Awash receipt parsed: ${result.senderName} → ${result.beneficiaryName}, ${result.amount} ETB`);
-
-        if (!result.amount && !result.senderName) {
+        if (!result.amount && !result.senderName && !result.senderAccount) {
             return { success: false, error: 'Could not extract required fields from receipt.' };
         }
+
+        logger.info(`✅ Awash receipt parsed: ${result.senderName} — ${result.amount ?? '?'} ETB`);
 
         return result;
     } catch (error: any) {

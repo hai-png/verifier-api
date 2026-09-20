@@ -137,10 +137,15 @@ router.delete('/:workspaceId/api-keys/:keyId', async (req: Request, res: Respons
             return;
         }
 
-        await prisma.apiKey.update({
+        const updated = await prisma.apiKey.updateMany({
             where: { id: keyId, workspaceId },
             data: { isActive: false },
         });
+
+        if (updated.count === 0) {
+            res.status(404).json({ success: false, error: 'API key not found.' });
+            return;
+        }
 
         res.json({ success: true });
     } catch (err) {
@@ -238,10 +243,15 @@ router.delete('/:workspaceId/payouts/:payoutId', async (req: Request, res: Respo
             return;
         }
 
-        await prisma.payoutAccount.update({
+        const updated = await prisma.payoutAccount.updateMany({
             where: { id: payoutId, workspaceId },
             data: { active: false },
         });
+
+        if (updated.count === 0) {
+            res.status(404).json({ success: false, error: 'Payout account not found.' });
+            return;
+        }
 
         res.json({ success: true });
     } catch (err) {
@@ -447,10 +457,15 @@ router.delete('/:workspaceId/webhooks/:webhookId', async (req: Request, res: Res
             return;
         }
 
-        await prisma.webhook.update({
+        const updated = await prisma.webhook.updateMany({
             where: { id: webhookId, workspaceId },
             data: { active: false },
         });
+
+        if (updated.count === 0) {
+            res.status(404).json({ success: false, error: 'Webhook not found.' });
+            return;
+        }
 
         res.json({ success: true });
     } catch (err) {
