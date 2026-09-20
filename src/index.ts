@@ -53,10 +53,6 @@ const startupState = {
     lastError: null as string | null,
 };
 
-// Keep-alive pinger. Render's free tier spins an instance down after ~15 min
-// of no inbound traffic, so the first request pays a ~30s cold start. Hitting
-// our own public /health every 5 min counts as inbound traffic and keeps the
-// instance warm, making /health — and therefore the dashboard — fast.
 const KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000;
 const KEEP_ALIVE_TIMEOUT_MS = 15 * 1000;
 const keepAliveUrl =
@@ -254,9 +250,6 @@ app.use('/webhooks', permissionGate('webhooks'), webhooksRouter);
 app.use('/notifications', permissionGate('webhooks'), notificationsRouter);
 
 
-// Gate: keep endpoints that don't need the DB reachable instantly even while
-// the runtime is still starting (cold boot), and make DB-dependent routes wait
-// (bounded) for init to finish instead of failing. Placed once, before routers.
 const runtimeGuestPaths = ['/', '/health', '/ready', '/status'];
 const waitForRuntime: RequestHandler = async (req, res, next) => {
     if (runtimeGuestPaths.some(p => req.path === p || req.path.startsWith(`${p}/`))) {
@@ -432,10 +425,6 @@ process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
 async function bootstrap(): Promise<void> {
-    // Listen immediately so /health (and other no-DB endpoints) respond the
-    // moment the container is up, even while startup work (DB connect, stats
-    // cache) is still running in the background. The waitForRuntime middleware
-    // makes DB-dependent routes wait for init instead of failing.
     server = app.listen(PORT, () => {
         logger.info(`Server listening on port ${PORT} (runtime initializing in background)`);
     });

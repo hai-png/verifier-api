@@ -859,6 +859,7 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
   const [newKey, setNewKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [revokingId, setRevokingId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     apiFetch(`/dashboard/${workspaceId}/api-keys`, token)
@@ -872,24 +873,37 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
   useEffect(() => { load() }, [load])
 
   const createKey = async () => {
-    const res = await apiFetch(`/dashboard/${workspaceId}/api-keys`, token, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    })
-    const data = await res.json()
-    if (data.success) {
-      setNewKey(data.apiKey.key)
-      setCreateOpen(false)
-      load()
-      toast({ title: 'API key created', description: 'Copy it now — you won\'t see it again.' })
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/api-keys`, token, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setNewKey(data.apiKey.key)
+        setCreateOpen(false)
+        load()
+        toast({ title: 'API key created', description: 'Copy it now — you won\'t see it again.' })
+      } else {
+        toast({ title: 'Failed to create key', description: data.error || 'Please try again.', variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({ title: 'Failed to create key', description: err instanceof Error ? err.message : 'Please try again.', variant: 'destructive' })
     }
   }
 
   const revokeKey = async (keyId: string) => {
     if (!confirm('Revoke this API key? Apps using it will stop working immediately.')) return
-    await apiFetch(`/dashboard/${workspaceId}/api-keys/${keyId}`, token, { method: 'DELETE' })
-    load()
-    toast({ title: 'API key revoked' })
+    setRevokingId(keyId)
+    try {
+      await apiFetch(`/dashboard/${workspaceId}/api-keys/${keyId}`, token, { method: 'DELETE' })
+      load()
+      toast({ title: 'API key revoked' })
+    } catch (err) {
+      toast({ title: 'Failed to revoke key', description: err instanceof Error ? err.message : 'Please try again.', variant: 'destructive' })
+    } finally {
+      setRevokingId(null)
+    }
   }
 
   const copyKey = () => {
@@ -957,8 +971,8 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
                     </div>
                   </div>
                 </div>
-                <Button variant="ghost" size="sm" onClick={() => revokeKey(key.id)}>
-                  <Trash2 className="w-4 h-4 text-destructive" />
+                <Button variant="ghost" size="sm" disabled={revokingId === key.id} onClick={() => revokeKey(key.id)}>
+                  {revokingId === key.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
                 </Button>
               </CardContent>
             </Card>
