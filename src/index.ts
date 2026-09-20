@@ -69,7 +69,7 @@ function startKeepAlivePinger(): void {
         const timeout = setTimeout(() => controller.abort(), KEEP_ALIVE_TIMEOUT_MS);
         try {
             const startedAt = Date.now();
-            const res = await fetch(`${keepAliveUrl}/health`, { signal: controller.signal });
+            const res = await fetch(`${keepAliveUrl}/ready`, { signal: controller.signal });
             if (res.ok) {
                 logger.info(`Keep-alive ping OK in ${Date.now() - startedAt}ms`);
             } else {
@@ -134,7 +134,14 @@ async function initializeRuntime(): Promise<void> {
         await prisma.$queryRaw`SELECT 1`;
         logger.info('Connected to database successfully');
 
-        await initializeStatsCache();
+        // Mark the runtime ready as soon as the DB is reachable. The stats
+        // cache aggregates the whole UsageLog table (COUNT + GROUP BYs), which
+        // can take several seconds on a cold database. Running it in the
+        // critical path forces every dashboard request (held by waitForRuntime)
+        // to block behind those heavy queries on cold start. Kick it off in the
+        // background instead — it self-heals on error and the admin usage-stats
+        // endpoint re-queries the DB directly anyway.
+        void initializeStatsCache();
 
         // BullMQ queue workers require Redis. When REDIS_URL is unset (e.g. on
         // Render free tier without a Redis instance), skip the workers gracefully
