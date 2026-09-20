@@ -59,7 +59,7 @@ router.get('/:workspaceId/api-keys', async (req: Request, res: Response): Promis
         }
 
         const apiKeys = await prisma.apiKey.findMany({
-            where: { workspaceId },
+            where: { workspaceId, isActive: true },
             select: {
                 id: true,
                 prefix: true,
