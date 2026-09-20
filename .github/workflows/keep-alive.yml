@@ -1,0 +1,32 @@
+name: keep-alive
+
+# External uptime monitor for the Render free-tier instance.
+#
+# Render free instances spin down after 15 min of inactivity (~30s cold start).
+# The in-process pinger in src/index.ts only runs while the instance is awake,
+# so it cannot wake a fully-slept instance. This workflow runs on GitHub's
+# infrastructure every 5 minutes and hits /ready (which does a SELECT 1), keeping
+# both the Render instance AND the TiDB Serverless database warm between users.
+#
+# GitHub Actions can delay scheduled jobs by a few minutes; a 5-min schedule still
+# lands well inside Render's 15-min inactivity window. Once this workflow is
+# merged, check it ran: https://github.com/hai-png/verifier-api/actions/workflows/keep-alive.yml
+
+on:
+  schedule:
+    # every 5 minutes
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Ping API
+        run: |
+          curl -fsS --max-time 45 -o /tmp/keepalive.out -w "HTTP %{http_code} in %{time_total}s\n" \
+            https://verify.noveld.com.et/ready
