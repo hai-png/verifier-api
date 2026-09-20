@@ -896,7 +896,12 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
     if (!confirm('Revoke this API key? Apps using it will stop working immediately.')) return
     setRevokingId(keyId)
     try {
-      await apiFetch(`/dashboard/${workspaceId}/api-keys/${keyId}`, token, { method: 'DELETE' })
+      const res = await apiFetch(`/dashboard/${workspaceId}/api-keys/${keyId}`, token, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok || !data.success) {
+        toast({ title: 'Failed to revoke key', description: data.error || 'Please try again.', variant: 'destructive' })
+        return
+      }
       load()
       toast({ title: 'API key revoked' })
     } catch (err) {
@@ -1018,6 +1023,7 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
   const [payouts, setPayouts] = useState<PayoutAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
+  const [removingId, setRemovingId] = useState<string | null>(null)
   const [form, setForm] = useState({
     label: '',
     accountHolderName: '',
@@ -1055,9 +1061,21 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
 
   const remove = async (id: string) => {
     if (!confirm('Delete this payout account?')) return
-    await apiFetch(`/dashboard/${workspaceId}/payouts/${id}`, token, { method: 'DELETE' })
-    load()
-    toast({ title: 'Payout account deleted' })
+    setRemovingId(id)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/payouts/${id}`, token, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok || !data.success) {
+        toast({ title: 'Failed to delete account', description: data.error || 'Please try again.', variant: 'destructive' })
+        return
+      }
+      load()
+      toast({ title: 'Payout account deleted' })
+    } catch (err) {
+      toast({ title: 'Failed to delete account', description: err instanceof Error ? err.message : 'Please try again.', variant: 'destructive' })
+    } finally {
+      setRemovingId(null)
+    }
   }
 
   return (
@@ -1103,8 +1121,8 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
                     </div>
                   </div>
                 </div>
-                <Button variant="ghost" size="sm" onClick={() => remove(p.id)}>
-                  <Trash2 className="w-4 h-4 text-destructive" />
+                <Button variant="ghost" size="sm" disabled={removingId === p.id} onClick={() => remove(p.id)}>
+                  {removingId === p.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
                 </Button>
               </CardContent>
             </Card>
@@ -1129,7 +1147,7 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
             </div>
             <div className="space-y-2">
               <Label>Type</Label>
-              <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v as 'PHONE' | 'BANK' })}>
+              <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v as 'PHONE' | 'BANK', providersAllowed: [] })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="PHONE">📱 Phone (Telebirr / CBE Birr / M-Pesa)</SelectItem>
@@ -1620,6 +1638,7 @@ function WebhooksTab({ workspaceId }: { workspaceId: string }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ url: '', events: ['payment_link.paid'] })
   const [newSecret, setNewSecret] = useState<string | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     apiFetch(`/dashboard/${workspaceId}/webhooks`, token)
@@ -1649,9 +1668,21 @@ function WebhooksTab({ workspaceId }: { workspaceId: string }) {
 
   const remove = async (id: string) => {
     if (!confirm('Delete this webhook?')) return
-    await apiFetch(`/dashboard/${workspaceId}/webhooks/${id}`, token, { method: 'DELETE' })
-    load()
-    toast({ title: 'Webhook deleted' })
+    setRemovingId(id)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/webhooks/${id}`, token, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok || !data.success) {
+        toast({ title: 'Failed to delete webhook', description: data.error || 'Please try again.', variant: 'destructive' })
+        return
+      }
+      load()
+      toast({ title: 'Webhook deleted' })
+    } catch (err) {
+      toast({ title: 'Failed to delete webhook', description: err instanceof Error ? err.message : 'Please try again.', variant: 'destructive' })
+    } finally {
+      setRemovingId(null)
+    }
   }
 
   return (
@@ -1720,8 +1751,8 @@ function WebhooksTab({ workspaceId }: { workspaceId: string }) {
                     </div>
                   </div>
                 </div>
-                <Button variant="ghost" size="sm" onClick={() => remove(wh.id)}>
-                  <Trash2 className="w-4 h-4 text-destructive" />
+                <Button variant="ghost" size="sm" disabled={removingId === wh.id} onClick={() => remove(wh.id)}>
+                  {removingId === wh.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
                 </Button>
               </CardContent>
             </Card>
