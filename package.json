@@ -11,7 +11,8 @@
     "loadtest": "node loadtest/run.mjs",
     "loadtest:db-traffic": "node loadtest/db-traffic.mjs",
     "loadtest:seed": "node loadtest/seed.mjs",
-    "stub:upstream": "node loadtest/stub-upstream.mjs"
+    "stub:upstream": "node loadtest/stub-upstream.mjs",
+    "typecheck": "npx prisma generate && npx tsc --noEmit"
   },
   "keywords": [],
   "author": "Leul Zenebe",

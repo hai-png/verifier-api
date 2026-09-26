@@ -179,7 +179,10 @@ app.set('trust proxy', true);
 
 app.use(cors({
     origin: true, // Allow all origins — the dashboard runs on a different domain
-    credentials: true, // Allow cookies for session auth
+    // Clients authenticate with an Authorization: Bearer token (or x-api-key),
+    // never with cookies, so reflecting credentials to every origin is not
+    // needed. Set CORS_CREDENTIALS=true only if you introduce cookie auth.
+    credentials: (process.env.CORS_CREDENTIALS ?? 'false').toLowerCase() === 'true',
 }));
 app.use(express.json());
 app.use(cookieParser());

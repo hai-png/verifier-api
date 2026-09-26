@@ -26,6 +26,8 @@ const SINGLE_VERIFY_PATHS = new Set<string>([
   '/verify-abyssinia',
   '/verify-cbebirr',
   '/verify-mpesa',
+  '/verify-awash',
+  '/verify-zemen',
   '/verify-image',
 ]);
 
