@@ -80,6 +80,11 @@ const combinedRotateFile = new transports.DailyRotateFile({
     )
 });
 
+// File transports write to the container's ephemeral disk. On a free tier that
+// is both wasted I/O and lost on every redeploy (the platform already captures
+// stdout), so they can be turned off with LOG_TO_FILES=false.
+const LOG_TO_FILES = (process.env.LOG_TO_FILES ?? 'true').toLowerCase() !== 'false';
+
 // 🧠 Main Winston Logger
 const logger = createLogger({
     level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
@@ -97,8 +102,7 @@ const logger = createLogger({
                 emojiFormat
             )
         }),
-        errorRotateFile,
-        combinedRotateFile
+        ...(LOG_TO_FILES ? [errorRotateFile, combinedRotateFile] : [])
     ],
     exitOnError: false
 });

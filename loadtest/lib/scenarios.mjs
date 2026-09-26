@@ -13,6 +13,35 @@ import crypto from 'node:crypto';
 
 const jsonHeaders = { 'content-type': 'application/json' };
 
+/**
+ * Credentials for authenticated scenarios. Two modes are supported:
+ *
+ *   api-key          `x-api-key: sk_live_…` — what a real integration sends, but
+ *                    minting one needs database access (see loadtest/seed.mjs),
+ *                    which a run against a live deployment does not have.
+ *   dashboard-secret `x-dashboard-key: <DASHBOARD_SECRET>` + `x-workspace-id`,
+ *                    the same path the Next.js dashboard server uses. Read-only
+ *                    with respect to setup: pick any existing workspace id.
+ */
+export function resolveAuth({ apiKey = null, dashboardKey = null, workspaceId = null } = {}) {
+  if (apiKey) return { mode: 'api-key', headers: { 'x-api-key': apiKey } };
+  if (dashboardKey) {
+    if (!workspaceId) {
+      throw new Error('Dashboard auth needs a workspace id too (--workspace-id / LOADTEST_WORKSPACE_ID)');
+    }
+    return {
+      mode: 'dashboard-secret',
+      workspaceId,
+      headers: { 'x-dashboard-key': dashboardKey, 'x-workspace-id': workspaceId },
+    };
+  }
+  return null;
+}
+
+/** Auth headers for a scenario, from either an auth object or a raw api key. */
+export const authHeaders = ({ auth, apiKey } = {}) =>
+  (auth ? { ...auth.headers } : { 'x-api-key': apiKey });
+
 export const SCENARIOS = {
   health: {
     group: 'public',
@@ -64,10 +93,10 @@ export const SCENARIOS = {
     group: 'authenticated',
     external: false,
     describe: 'POST /verify-cbe with a malformed reference — auth + quota + validation',
-    request: ({ apiKey }) => ({
+    request: (ctx) => ({
       method: 'POST',
       path: '/verify-cbe',
-      headers: { ...jsonHeaders, 'x-api-key': apiKey },
+      headers: { ...jsonHeaders, ...authHeaders(ctx) },
       body: { reference: 'NOT-A-REAL-REFERENCE', accountSuffix: '12345678' },
     }),
   },
@@ -75,20 +104,20 @@ export const SCENARIOS = {
     group: 'authenticated',
     external: false,
     describe: 'GET /products with a verify-only key — permission gate path',
-    request: ({ apiKey }) => ({
+    request: (ctx) => ({
       method: 'GET',
       path: '/products',
-      headers: { 'x-api-key': apiKey },
+      headers: authHeaders(ctx),
     }),
   },
   verify_mpesa_external: {
     group: 'authenticated',
     external: true,
     describe: 'POST /verify-mpesa with a synthetic receipt — reaches Safaricom via the PHP proxy',
-    request: ({ apiKey }) => ({
+    request: (ctx) => ({
       method: 'POST',
       path: '/verify-mpesa',
-      headers: { ...jsonHeaders, 'x-api-key': apiKey },
+      headers: { ...jsonHeaders, ...authHeaders(ctx) },
       body: { reference: 'SFE4ND9J8K' },
     }),
   },
@@ -96,10 +125,10 @@ export const SCENARIOS = {
     group: 'authenticated',
     external: true,
     describe: 'POST /verify-telebirr with a synthetic reference — reaches Ethio Telecom via the PHP proxy',
-    request: ({ apiKey }) => ({
+    request: (ctx) => ({
       method: 'POST',
       path: '/verify-telebirr',
-      headers: { ...jsonHeaders, 'x-api-key': apiKey },
+      headers: { ...jsonHeaders, ...authHeaders(ctx) },
       body: { reference: 'CE2513001XYT' },
     }),
   },
@@ -107,10 +136,10 @@ export const SCENARIOS = {
     group: 'authenticated',
     external: true,
     describe: 'POST /verify with a synthetic reference — smart router + upstream',
-    request: ({ apiKey }) => ({
+    request: (ctx) => ({
       method: 'POST',
       path: '/verify',
-      headers: { ...jsonHeaders, 'x-api-key': apiKey },
+      headers: { ...jsonHeaders, ...authHeaders(ctx) },
       body: { reference: 'CE2513001XYT' },
     }),
   },

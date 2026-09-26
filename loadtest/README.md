@@ -7,7 +7,7 @@ step, so it runs on a laptop, in the Render container, or on a GitHub runner.
 ```
 loadtest/
   run.mjs               # load/latency runner (profiles, budgets, reports)
-  db-traffic.mjs        # SQL statements per API request (MySQL general_log)
+  db-traffic.mjs        # SQL statements per API request (performance_schema)
   seed.mjs              # workspace + API key for lab runs
   stub-upstream.mjs     # fake verify.php / mpesa.php (never touches real providers)
   live-profile.json     # parameters used by push-triggered live runs
@@ -23,10 +23,18 @@ loadtest/
 # warm latency of the anonymous surface
 node loadtest/run.mjs --base-url https://verify.noveld.com.et --profile latency
 
-# staged ramp, mixed scenarios, with an API key
+# staged ramp, mixed scenarios, with an API key (lab / local runs, where the
+# database is reachable and a key can be minted with loadtest/seed.mjs)
 node loadtest/run.mjs --base-url https://verify.noveld.com.et \
   --profile load --concurrency 20 --stages 1:10,5:10,10:15,20:15,40:15 \
   --api-key "$VERIFIER_API_KEY"
+
+# ...or against a live deployment, using the dashboard-secret path: it needs no
+# database access, just the DASHBOARD_SECRET of the target and the id of any
+# existing workspace (the API looks it up and attributes the run to it)
+node loadtest/run.mjs --base-url https://verify.noveld.com.et \
+  --profile load --stages 1:15,5:15,10:15,25:20,50:20,100:120 \
+  --dashboard-secret "$DASHBOARD_SECRET" --workspace-id "ws_…"
 
 # include scenarios that call real providers (opt-in: they hit Ethio Telecom,
 # Safaricom and banks, and they consume verification quota)
@@ -54,8 +62,16 @@ appended to `$GITHUB_STEP_SUMMARY` when running in Actions.
 ## Scenarios
 
 Anonymous: `health`, `root`, `status_summary`, `ready`, `auth_missing_401`, `auth_invalid_403`.
-Authenticated (need `--api-key`): `verify_validate_400`, `permissions_403`,
-`verify_mpesa_external`, `verify_telebirr_external`, `verify_universal_external`.
+Authenticated (need `--api-key`, or `--dashboard-secret` + `--workspace-id`):
+`verify_validate_400`, `permissions_403`, `verify_mpesa_external`,
+`verify_telebirr_external`, `verify_universal_external`.
+
+Two credential modes exist because they answer different questions:
+
+| Mode | Headers | Use it when |
+|---|---|---|
+| `--api-key sk_live_…` | `x-api-key` | the database is reachable and you can mint a key (`loadtest/seed.mjs`); this is the customer path |
+| `--dashboard-secret … --workspace-id …` | `x-dashboard-key` + `x-workspace-id` | measuring a *live* deployment: no database access needed, and it exercises the same auth/quota/billing middleware |
 
 `*_external` scenarios are refused unless `--allow-external` is passed — a load
 test must never hammer a real bank, Ethio Telecom or Safaricom, and every
@@ -76,9 +92,16 @@ Exit code 1 when a budget fails, so the workflow fails the build.
 | `loadtest-live` | push (`loadtest/**`) + dispatch | probes the deployed origin, runs the harness from GitHub's network, uploads the report |
 | `perf-lab` | push (`src/**`, `loadtest/**`, `prisma/**`) + dispatch | real API + MySQL service container + stubbed relay, API pinned to one CPU, optional netem database latency |
 
-`loadtest-live` needs the repository secret `LOADTEST_API_KEY` for the
-authenticated scenarios (Settings → Secrets and variables → Actions). Without
-it the anonymous surface is still measured end to end.
+`loadtest-live` uses whichever credentials exist (Settings → Secrets and
+variables → Actions), preferring in this order:
+
+| Secret | What it is |
+|---|---|
+| `LOADTEST_API_KEY` | a seeded `sk_live_…` key (only useful if the target's database is reachable) |
+| `LOADTEST_DASHBOARD_SECRET` + `LOADTEST_WORKSPACE_ID` | the dashboard path — the one used for live runs |
+
+With no credentials at all the workflow still measures the anonymous surface and
+logs a warning; requests that need a workspace are skipped.
 
 ## Interpreting results
 

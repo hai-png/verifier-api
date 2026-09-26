@@ -10,8 +10,17 @@
  *   DIGEST_TEXT gives both the number of statements and their shapes.
  *   SHOW GLOBAL STATUS Com_* — a protocol-independent cross-check.
  *
+ * The tool's own snapshot queries also land in those counters, so an empty
+ * control window is measured first and subtracted — otherwise a 5-request
+ * sample would report ~0.2 phantom statements per request.
+ *
+ * Requires a server that implements performance_schema (MySQL/Percona/MariaDB
+ * with it enabled). TiDB Cloud does not, so this is a lab-only tool.
+ *
  *   node loadtest/db-traffic.mjs --base-url http://127.0.0.1:3001 \
  *        --api-key "$KEY" --scenario verify_telebirr_external --requests 5
+ *   node loadtest/db-traffic.mjs --dashboard-key "$DASHBOARD_SECRET" \
+ *        --workspace-id "$WORKSPACE_ID" --scenario verify_validate_400
  */
 import { parseArgs } from 'node:util';
 import { PrismaClient } from '@prisma/client';
@@ -23,9 +32,13 @@ const { values } = parseArgs({
     'base-url': { type: 'string' },
     'api-key': { type: 'string' },
     'dashboard-key': { type: 'string' },
+    'dashboard-secret': { type: 'string' },
     'workspace-id': { type: 'string' },
     scenario: { type: 'string', default: 'verify_telebirr_external' },
     requests: { type: 'string', default: '5' },
+    // The API batches analytics writes (2s interval by default), so wait for a
+    // flush before reading the counters or the request cost looks too low.
+    'settle-ms': { type: 'string', default: '4000' },
     out: { type: 'string' },
   },
 });
@@ -33,13 +46,20 @@ const { values } = parseArgs({
 const baseUrl = values['base-url'] || process.env.LOADTEST_BASE_URL || 'http://127.0.0.1:3001';
 const scenarioName = values.scenario;
 const requests = Number(values.requests);
+const settleMs = Number(values['settle-ms']);
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const auth = resolveAuth({
   apiKey: values['api-key'] || process.env.LOADTEST_API_KEY || null,
-  dashboardKey: values['dashboard-key'] || process.env.LOADTEST_DASHBOARD_SECRET || null,
+  dashboardKey:
+    values['dashboard-key'] ||
+    values['dashboard-secret'] ||
+    process.env.LOADTEST_DASHBOARD_SECRET ||
+    null,
   workspaceId: values['workspace-id'] || process.env.LOADTEST_WORKSPACE_ID || null,
 });
-if (!auth) throw new Error('Provide --api-key or --dashboard-key + --workspace-id');
+if (!auth) throw new Error('Provide --api-key, or --dashboard-key + --workspace-id');
 
 const prisma = new PrismaClient();
 
@@ -79,68 +99,122 @@ async function snapshotCom() {
 function normalize(sql) {
   return sql
     .replace(/\s+/g, ' ')
-    .replace(/\?/g, '?')
+    .replace(/\b\d+\b/g, '?')
     .trim()
     .slice(0, 180);
 }
 
+/** Values that grew between two snapshots. */
 function diff(before, after) {
   const result = new Map();
   for (const [key, value] of after) {
-    const previous = before.get(key) ?? 0;
-    const delta = value - previous;
+    const delta = value - (before.get(key) ?? 0);
     if (delta > 0) result.set(key, delta);
   }
   return result;
 }
 
+/** Subtract control noise (the tool's own queries) from a measured delta. */
+function subtractNoise(delta, noise) {
+  const result = new Map();
+  for (const [key, value] of delta) {
+    const net = value - (noise.get(key) ?? 0);
+    // Digest text for the snapshot queries can differ from the ones counted
+    // during the window, so never let noise push a shape below zero.
+    if (net > 0) result.set(key, net);
+  }
+  return result;
+}
+
+function sum(map) {
+  let total = 0;
+  for (const value of map.values()) total += value;
+  return total;
+}
+
+/**
+ * Run `fn` between two counter snapshots and return the raw deltas.
+ * `fn` returns { elapsed, value }.
+ */
+async function measureWindow(fn) {
+  const digestsBefore = await snapshotDigests();
+  const comBefore = await snapshotCom();
+  const outcome = await fn();
+  await sleep(settleMs);
+  const digestsAfter = await snapshotDigests();
+  const comAfter = await snapshotCom();
+  return {
+    digests: diff(digestsBefore, digestsAfter),
+    com: diff(comBefore, comAfter),
+    elapsedMs: outcome.elapsed,
+    result: outcome.value,
+  };
+}
+
 async function main() {
   const scenario = SCENARIOS[scenarioName];
-  if (!scenario) throw new Error(`unknown scenario ${scenarioName}`);
+  if (!scenario) {
+    throw new Error(`unknown scenario ${scenarioName}. Known: ${Object.keys(SCENARIOS).join(', ')}`);
+  }
+
+  // Fail loudly when performance_schema is unavailable instead of silently
+  // reporting zero statements.
+  const probe = await prisma.$queryRawUnsafe('SELECT @@performance_schema AS enabled');
+  const enabled = Number(probe?.[0]?.enabled ?? 0);
+  if (!enabled) {
+    throw new Error(
+      'performance_schema is disabled on this server — statement counts would be meaningless (TiDB does not implement it).',
+    );
+  }
 
   const client = createClient({ baseUrl });
 
   // Warm the pools and prepared statements so we measure steady state.
   await client.request({ ...scenario.request({ auth }), label: scenarioName });
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await sleep(300);
 
-  const digestsBefore = await snapshotDigests();
-  const comBefore = await snapshotCom();
+  // Control window: no requests in between, so every statement counted here
+  // belongs to the tool itself.
+  const control = await measureWindow(async () => ({ elapsed: 0, value: null }));
 
-  const started = Date.now();
-  const results = [];
-  for (let i = 0; i < requests; i += 1) {
-    results.push(await client.request({ ...scenario.request({ auth }), label: scenarioName }));
-  }
-  const elapsed = Date.now() - started;
+  const warm = await measureWindow(async () => {
+    const started = Date.now();
+    const results = [];
+    for (let i = 0; i < requests; i += 1) {
+      results.push(await client.request({ ...scenario.request({ auth }), label: scenarioName }));
+    }
+    return { elapsed: Date.now() - started, value: results };
+  });
 
-  // Let the write-behind buffers flush before counting.
-  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  const digests = subtractNoise(warm.digests, control.digests);
+  const com = subtractNoise(warm.com, control.com);
+  const statementCount = sum(digests);
 
-  const digestsAfter = await snapshotDigests();
-  const comAfter = await snapshotCom();
-
-  const digestDelta = [...diff(digestsBefore, digestsAfter).entries()]
+  const statementShapes = [...digests.entries()]
     .map(([sql, count]) => ({ sql: normalize(sql), count, perRequest: count / requests }))
     .sort((a, b) => b.count - a.count);
-
-  const comDelta = Object.fromEntries([...diff(comBefore, comAfter).entries()]);
-  const statementCount = [...diff(digestsBefore, digestsAfter).values()].reduce((a, b) => a + b, 0);
 
   const report = {
     scenario: scenarioName,
     authMode: auth.mode,
     requests,
-    requestMs: { total: elapsed, mean: elapsed / requests },
-    responses: results.map((r) => ({
+    settleMs,
+    requestMs: { total: warm.elapsedMs, mean: warm.elapsedMs / requests },
+    responses: (warm.result ?? []).map((r) => ({
       status: r.status,
       class: classify(r),
       totalMs: Number(r.totalMs?.toFixed(1)),
     })),
     sqlStatements: statementCount,
     sqlPerRequest: statementCount / requests,
-    comCounters: comDelta,
-    statementShapes: digestDelta,
+    comCountersPerRequest: Object.fromEntries(
+      [...com.entries()].map(([name, count]) => [name, count / requests]),
+    ),
+    controlNoise: {
+      statements: sum(control.digests),
+      comCounters: Object.fromEntries([...control.com.entries()]),
+    },
+    statementShapes,
   };
 
   console.log(JSON.stringify(report, null, 2));

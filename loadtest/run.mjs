@@ -18,7 +18,7 @@ import { parseArgs } from 'node:util';
 
 import { createClient, classify, PROBLEM_CLASSES } from './lib/http.mjs';
 import { summarize, fixed, histogram } from './lib/stats.mjs';
-import { SCENARIOS, SAFE_DEFAULT_SCENARIOS, resolveScenarios } from './lib/scenarios.mjs';
+import { resolveAuth, SCENARIOS, SAFE_DEFAULT_SCENARIOS, resolveScenarios } from './lib/scenarios.mjs';
 
 const DEFAULTS = {
   profile: 'latency',
@@ -40,8 +40,13 @@ Options:
   --profile <name>          smoke | latency | load | soak | coldstart | all   (default: ${DEFAULTS.profile})
   --scenarios <list>        Comma separated scenario names, or "all" (default: anonymous set)
                             Available: ${Object.keys(SCENARIOS).join(', ')}
-  --api-key <key>           API key for authenticated scenarios
+  --api-key <key>           API key for authenticated scenarios (needs DB access to mint)
   --api-key-env <VAR>       Read the API key from an environment variable instead
+  --dashboard-secret <s>    DASHBOARD_SECRET of the target, used with --workspace-id
+                            (alias: --dashboard-key)
+  --dashboard-secret-env <VAR>
+  --workspace-id <id>       Existing workspace id to attribute the run to
+  --workspace-id-env <VAR>
   --allow-external          Permit scenarios that call third-party providers
   --concurrency <n>         Concurrent workers (load/soak)                  (default: ${DEFAULTS.concurrency})
   --duration <seconds>      Per-stage duration (load/soak)                  (default: ${DEFAULTS.duration})
@@ -67,6 +72,11 @@ function parseCli() {
       scenarios: { type: 'string' },
       'api-key': { type: 'string' },
       'api-key-env': { type: 'string' },
+      'dashboard-secret': { type: 'string' },
+      'dashboard-key': { type: 'string' },
+      'dashboard-secret-env': { type: 'string' },
+      'workspace-id': { type: 'string' },
+      'workspace-id-env': { type: 'string' },
       'allow-external': { type: 'boolean', default: false },
       concurrency: { type: 'string' },
       duration: { type: 'string' },
@@ -100,18 +110,29 @@ function parseCli() {
     usage();
     throw new Error('--base-url is required (or set LOADTEST_BASE_URL)');
   }
-  let apiKey = values['api-key'] || null;
-  if (!apiKey && values['api-key-env']) {
-    apiKey = process.env[values['api-key-env']] || null;
-    if (!apiKey) {
-      console.error(`warning: ${values['api-key-env']} is not set — authenticated scenarios will be skipped`);
+  const fromEnv = (directKey, envKey, label) => {
+    const direct = values[directKey] || null;
+    if (direct) return direct;
+    if (!values[envKey]) return null;
+    const value = process.env[values[envKey]] || null;
+    if (!value) {
+      console.error(`warning: ${values[envKey]} is not set — ${label} scenarios will be skipped`);
     }
-  }
+    return value;
+  };
+  const auth = resolveAuth({
+    apiKey: fromEnv('api-key', 'api-key-env', 'authenticated'),
+    dashboardKey:
+      values['dashboard-secret'] ||
+      values['dashboard-key'] ||
+      fromEnv('dashboard-secret', 'dashboard-secret-env', 'authenticated'),
+    workspaceId: (values['workspace-id'] || (values['workspace-id-env'] && process.env[values['workspace-id-env']]) || null),
+  });
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     profile: values.profile || DEFAULTS.profile,
     scenarios: values.scenarios,
-    apiKey,
+    auth,
     allowExternal: values['allow-external'],
     concurrency: num('concurrency', DEFAULTS.concurrency),
     duration: num('duration', DEFAULTS.duration),
@@ -132,10 +153,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function buildTask(name, ctx) {
   const scenario = SCENARIOS[name];
-  if (scenario.group === 'authenticated' && !ctx.apiKey) {
+  if (scenario.group === 'authenticated' && !ctx.auth) {
     return null;
   }
-  const descriptor = scenario.request({ apiKey: ctx.apiKey });
+  const descriptor = scenario.request(ctx);
   return { name, scenario, descriptor };
 }
 
@@ -247,7 +268,7 @@ function markdownReport(report) {
   lines.push(`- **Run at:** ${report.startedAt}`);
   lines.push(`- **Profile:** \`${report.profile}\``);
   lines.push(`- **Scenarios:** ${report.scenarios.join(', ')}`);
-  lines.push(`- **Authenticated:** ${report.authenticated ? 'yes' : 'no'}`);
+  lines.push(`- **Authenticated:** ${report.authenticated ? `yes (${report.authMode})` : 'no'}`);
   lines.push(`- **Runtime:** Node ${report.node}, ${report.platform}, ${report.cpuCount} vCPU`);
   if (report.dns) {
     lines.push(`- **Resolved:** ${report.dns.addresses.join(', ') || 'n/a'}${report.dns.cname ? ` (CNAME ${report.dns.cname})` : ''}`);
@@ -414,7 +435,7 @@ async function main() {
   );
 
   const client = createClient({ baseUrl: options.baseUrl, maxSockets: 128, timeoutMs: options.maxTimeoutMs });
-  const ctx = { apiKey: options.apiKey };
+  const ctx = { auth: options.auth, apiKey: options.auth?.mode === 'api-key' ? options.auth.headers['x-api-key'] : null };
 
   const targets = [];
   const skipped = [];
@@ -424,10 +445,11 @@ async function main() {
     else skipped.push(name);
   }
   if (skipped.length) {
-    console.error(`warning: skipping authenticated scenarios (no API key): ${skipped.join(', ')}`);
+    console.error(`warning: skipping authenticated scenarios (no credentials): ${skipped.join(', ')}`);
+    console.error('         pass --api-key, or --dashboard-secret + --workspace-id for the dashboard path');
   }
   if (targets.length === 0) {
-    throw new Error('No runnable scenarios. Provide --api-key for authenticated scenarios.');
+    throw new Error('No runnable scenarios. Provide --api-key or --dashboard-secret + --workspace-id.');
   }
 
   /** @type {any} */
@@ -438,7 +460,8 @@ async function main() {
     profile: options.profile,
     scenarios: targets.map((t) => t.name),
     skippedScenarios: skipped,
-    authenticated: Boolean(options.apiKey),
+    authenticated: Boolean(options.auth),
+    authMode: options.auth?.mode ?? null,
     node: process.version,
     platform: `${process.platform}/${process.arch}`,
     cpuCount: (await import('node:os')).cpus().length,

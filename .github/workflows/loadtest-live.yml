@@ -5,7 +5,9 @@ name: loadtest-live
 # Runs from GitHub's network (the deployment is not reachable from every
 # environment), so it doubles as an external availability check.
 #
-# Authenticated scenarios need the repository secret LOADTEST_API_KEY
+# Authenticated scenarios need repository credentials: either LOADTEST_API_KEY,
+# or LOADTEST_DASHBOARD_SECRET + LOADTEST_WORKSPACE_ID (the dashboard path, which
+# is the one used for live runs because it needs no database access).
 # (Settings → Secrets and variables → Actions). Without it the run covers the
 # anonymous surface: /health, /, /status/summary, /ready, 401 and 403 paths.
 #
@@ -72,6 +74,10 @@ jobs:
     timeout-minutes: 90
     env:
       LOADTEST_API_KEY: ${{ secrets.LOADTEST_API_KEY }}
+      # Dashboard-secret auth is the practical choice for a live target: it needs
+      # no database access (no key minting) and exercises the same middleware.
+      LOADTEST_DASHBOARD_SECRET: ${{ secrets.LOADTEST_DASHBOARD_SECRET }}
+      LOADTEST_WORKSPACE_ID: ${{ secrets.LOADTEST_WORKSPACE_ID }}
 
     steps:
       - uses: actions/checkout@v4
@@ -139,7 +145,23 @@ jobs:
           if [ "$ALLOW_EXTERNAL" = "true" ]; then
             EXTRA="--allow-external"
           fi
-          echo "profile=$PROFILE scenarios=${SCENARIOS:-<default>} authenticated=$([ -n "$LOADTEST_API_KEY" ] && echo yes || echo no)"
+          AUTH_MODE=none
+          if [ -n "$LOADTEST_API_KEY" ]; then
+            AUTH_MODE=api-key
+          elif [ -n "$LOADTEST_DASHBOARD_SECRET" ] && [ -n "$LOADTEST_WORKSPACE_ID" ]; then
+            AUTH_MODE=dashboard-secret
+          else
+            echo "::warning::No credentials found. Set LOADTEST_API_KEY, or LOADTEST_DASHBOARD_SECRET + LOADTEST_WORKSPACE_ID; authenticated scenarios will be skipped."
+          fi
+          echo "profile=$PROFILE scenarios=${SCENARIOS:-<default>} auth=$AUTH_MODE"
+
+          API_KEY_ARGS=""
+          if [ "$AUTH_MODE" = "api-key" ]; then
+            API_KEY_ARGS="--api-key $LOADTEST_API_KEY"
+          elif [ "$AUTH_MODE" = "dashboard-secret" ]; then
+            API_KEY_ARGS="--dashboard-secret $LOADTEST_DASHBOARD_SECRET --workspace-id $LOADTEST_WORKSPACE_ID"
+          fi
+
           node loadtest/run.mjs \
             --base-url "$BASE_URL" \
             --profile "$PROFILE" \
@@ -152,7 +174,7 @@ jobs:
             --out-dir loadtest-results \
             ${SCENARIOS:+--scenarios "$SCENARIOS"} \
             $EXTRA \
-            ${LOADTEST_API_KEY:+--api-key "$LOADTEST_API_KEY"} \
+            $API_KEY_ARGS \
             | tee loadtest-console.txt
 
       - name: Upload results
