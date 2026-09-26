@@ -1,2 +1,3 @@
 enabled the events_statements_history_long consumer for this run
-warning: the statement timeline is empty (no readable history table)
+warning: no statements were recorded in the timeline window — nothing ran, or the history ring had already rotated past them
+warning: no statements were recorded in the timeline window — nothing ran, or the history ring had already rotated past them

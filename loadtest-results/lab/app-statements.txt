@@ -1,8 +1,8 @@
 ### app self-reported (10 M-Pesa verifications + 2 status reads)
 requests observed ......... 11
-statements ................ 79
-statements per request .... 7.18
-mean statement ms ......... 65.63
-top tables ................ [{"table":"apikey","statements":107},{"table":"workspace","statements":103},{"table":"usagelog","statements":28},{"table":"planpricingconfig","statements":4},{"table":"notificationchannel","statements":3}]
+statements ................ 80
+statements per request .... 7.27
+mean statement ms ......... 65.68
+top tables ................ [{"table":"apikey","statements":107},{"table":"workspace","statements":103},{"table":"usagelog","statements":27},{"table":"planpricingconfig","statements":4},{"table":"webhook","statements":3}]
 top tables (delta) ........ [{"table":"apikey","statements":19},{"table":"workspace","statements":20},{"table":"usagelog","statements":4}]
-slowest statements ........ [{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":123},{"sql":"SELECT `verifier`.`NotificationChannel`.`id`, `verifier`.`NotificationChannel`.`events` FROM `verifier`.`NotificationCha…","ms":122},{"sql":"SELECT `verifier`.`Webhook`.`id`, `verifier`.`Webhook`.`url`, `verifier`.`Webhook`.`secretHash`, `verifier`.`Webhook`.`e…","ms":122}]
+slowest statements ........ [{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":124},{"sql":"INSERT INTO `verifier`.`UsageLog` (`apiKeyId`,`endpoint`,`method`,`statusCode`,`responseTime`,`ip`,`createdAt`) VALUES (…","ms":121},{"sql":"SELECT `verifier`.`Webhook`.`id`, `verifier`.`Webhook`.`url`, `verifier`.`Webhook`.`secretHash`, `verifier`.`Webhook`.`e…","ms":121}]
