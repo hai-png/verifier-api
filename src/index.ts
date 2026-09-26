@@ -35,6 +35,7 @@ import { verifyResultCache } from './middleware/verifyResultCache';
 import { quotaRefundHook } from './utils/quotaCharge';
 import { invalidateWorkspaceDeliveryCache } from './utils/workspaceEvents';
 import { getWorkspaceId } from './utils/workspaceContext';
+import { singleFlight } from './utils/singleFlight';
 import { validateCbeRequest } from './middleware/validateCbeRequest';
 import { rateLimiter } from './middleware/rateLimiter';
 import { verifyImageGate, permissionGate, verifyQuotaGate } from './middleware/tierGate';
@@ -363,6 +364,10 @@ app.get('/health', (req: Request, res: Response) => {
     });
 });
 
+// Concurrent readiness probes must not each occupy a database connection.
+// No TTL: the next probe after completion always checks current DB health.
+const checkReadinessDatabase = singleFlight(async () => { await prisma.$queryRaw`SELECT 1`; });
+
 app.get('/ready', async (req: Request, res: Response) => {
     const timestamp = new Date().toISOString();
 
@@ -390,7 +395,7 @@ app.get('/ready', async (req: Request, res: Response) => {
     };
 
     try {
-        await prisma.$queryRaw`SELECT 1`;
+        await checkReadinessDatabase();
         checks.database.ready = true;
     } catch (error) {
         checks.database.error = error instanceof Error ? error.message : 'Database readiness check failed.';

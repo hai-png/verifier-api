@@ -125,7 +125,7 @@ jobs:
         run: |
           npx prisma generate
           pnpm build
-          node --test dist/tests/validateCbeRequest.test.js
+          pnpm test
 
       - name: Apply schema
         run: npx prisma db push --skip-generate
