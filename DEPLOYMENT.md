@@ -353,7 +353,35 @@ mint a key. Note that it also bypasses per-key permissions, so a
 permission-denied scenario such as `/products` will answer `200` rather than
 `403` under it.
 
-### 6. Proxy and client IP
+### 6. Is the database still the bottleneck? Ask the instance
+
+Every SQL statement Prisma runs is counted (cheaply, from the `query` event) and
+reported on the public status endpoint, so a deployed instance can answer
+"what does one request cost" without lab tooling:
+
+```bash
+curl -s https://verify.noveld.com.et/status/summary \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["diagnostics"]["database"], indent=2))'
+```
+
+What to look at:
+
+| Field | Meaning |
+|---|---|
+| `totals.statementsPerRequest` | average SQL statements per handled HTTP request since start |
+| `window.statementsPerRequest` | the same, over the last 60 seconds (what it is doing *now*) |
+| `totals.meanStatementMs` | mean statement duration — on a warm local pool this is ~1 ms; if it is ~150 ms you are paying the cross-region round trip described in section 1 |
+| `topTables` / `byVerb` | where the statements go |
+| `slowestStatements` | the three slowest statement shapes (truncated to 120 chars) |
+
+Reference points measured on this deployment: `/health` costs 0 statements,
+`/ready` costs 1, an authenticated verification costs 2–3 on the success path
+(api-key lookup, quota decrement, plus the batched analytics flush) and the
+writes that follow the response are batched into `createMany`/single updates.
+If you see a number far above that, something started querying per request
+again — check `topTables` before reaching for `EXPLAIN`.
+
+### 7. Proxy and client IP
 
 `getRequestIp()` trusts `CF-Connecting-IP`, then `X-Forwarded-For`, then
 `X-Real-IP`. Web traffic arrives through Cloudflare, which sets those headers

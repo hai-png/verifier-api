@@ -605,6 +605,21 @@ replay identical verifications), `USAGE_LOG_FLUSH_MS` / `KEY_USAGE_FLUSH_MS`
 (batch analytics writes), `BILLING_CONFIG_CACHE_TTL_MS`, `CBE_MAX_CONCURRENT_BROWSER_OPS`
 and `SKIP_SCHEMA_PUSH`. All have safe defaults; see `.env.example`.
 
+### Measuring it yourself
+
+`GET /status/summary` reports live database counters
+(`diagnostics.database`): statements per request, mean statement duration,
+the tables involved and the slowest statement shapes. That is enough to tell
+whether a change helped without any lab tooling:
+
+```bash
+curl -s https://verify.noveld.com.et/status/summary | jq .diagnostics.database
+```
+
+`loadtest/README.md` documents the zero-dependency load harness (`loadtest/run.mjs`)
+and the two CI workflows that run it against the live deployment and against a
+local instance with a real MySQL and emulated cross-region latency.
+
 ## 🧰 Technologies Used
 
 - Node.js with Express
