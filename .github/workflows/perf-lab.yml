@@ -46,11 +46,12 @@ on:
       - '.github/workflows/perf-lab.yml'
 
 permissions:
-  contents: read
+  contents: write   # the report is committed back to the branch (see publish step)
 
 concurrency:
+  # A newer commit measures newer code — drop the older measurement run.
   group: perf-lab-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   lab:
@@ -244,6 +245,13 @@ jobs:
         run: |
           echo "--- api.log (tail) ---"; tail -n 80 api.log || true
           echo "--- api-restart.log (tail) ---"; tail -n 80 api-restart.log || true
+
+      - name: Publish report to the branch
+        # Artifacts are only downloadable from the Actions UI; committing the
+        # report keeps it readable from the repo (pushes made with GITHUB_TOKEN
+        # do not re-trigger workflows).
+        if: always()
+        run: bash loadtest/ci/publish-report.sh lab
 
       - name: Upload lab artifacts
         if: always()
