@@ -64,7 +64,17 @@ const keepAliveUrl =
     process.env.RENDER_EXTERNAL_URL || process.env.VERITAS_APP_URL || '';
 let keepAliveTimer: NodeJS.Timeout | null = null;
 
+const KEEP_ALIVE_PINGER_ENABLED = (process.env.KEEP_ALIVE_PINGER ?? 'true').toLowerCase() !== 'false';
+
 function startKeepAlivePinger(): void {
+    // The ping goes out to the public URL, so Render counts it as traffic and
+    // never idles the instance out. Set KEEP_ALIVE_PINGER=false when something
+    // else does the pinging (an external monitor) or when you are measuring a
+    // real cold start.
+    if (!KEEP_ALIVE_PINGER_ENABLED) {
+        logger.info('Keep-alive pinger disabled (KEEP_ALIVE_PINGER=false).');
+        return;
+    }
     if (!keepAliveUrl) {
         logger.warn('Keep-alive pinger disabled — set RENDER_EXTERNAL_URL or VERITAS_APP_URL to enable it.');
         return;
