@@ -11,12 +11,12 @@
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 64.1
+      "totalMs": 64
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.6
+      "totalMs": 62.5
     }
   ],
   "sqlStatements": 0,
@@ -32,5 +32,8 @@
       "Com_stmt_execute": 2
     }
   },
-  "statementShapes": []
+  "statementShapes": [],
+  "statementTimeline": [],
+  "statementTimelineTotalMs": 0,
+  "statementTimelineSource": "events_statements_history_long"
 }
