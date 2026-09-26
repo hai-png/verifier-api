@@ -289,11 +289,22 @@ the instance from idling out. After a spin-down (deploy, manual sleep, crash)
 nothing wakes it until real traffic arrives.
 
 Measured with `--profile coldstart --coldstart-sleep 1200` (20 minutes idle,
-`loadtest-results/live/`): the first request after the spin-down pays Render's
-container boot, the boot-time `prisma db push` (schema introspection against a
-remote database) *and* TiDB Serverless' own resume, because both scale to zero.
-In the lab the same cold boot to first `200` costs 2.4 s and the first
-authenticated request afterwards 0.8 s (JIT + connection pool warm-up).
+run 36217057046): the first request cost **956 ms**, the next two 258 ms and
+231 ms. That is *not* a cold start — the instance never slept. The in-process
+pinger in `src/index.ts` fetches `${RENDER_EXTERNAL_URL}/ready` every 5 minutes,
+and because that request arrives through Render's front door it resets the
+inactivity timer, so an awake instance keeps itself (and TiDB) warm forever.
+
+A genuine cold start only happens when Render restarts the container (deploy,
+platform maintenance, crash) and nothing wakes it for 15 minutes. That path
+pays Render's container boot, the boot-time `prisma db push` (schema
+introspection against a remote database) *and* TiDB Serverless' own resume,
+because both scale to zero. In the lab the same cold boot to first `200` costs
+2.4 s and the first authenticated request afterwards 0.8 s (JIT + connection
+pool warm-up).
+
+To measure the real thing you have to stop the pinger first
+(`KEEP_ALIVE_PINGER=false`), then idle 20 minutes.
 
 Three things keep the first request of the day tolerable:
 
