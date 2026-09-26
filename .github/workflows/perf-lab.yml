@@ -59,6 +59,8 @@ jobs:
     timeout-minutes: 90
     env:
       DATABASE_URL: mysql://root:root@127.0.0.1:3306/verifier
+      # Measure the full provider path, not repeated positive-cache hits.
+      VERIFY_CACHE_TTL_MS: 0
 
     services:
       mysql:
@@ -242,6 +244,13 @@ jobs:
           end=$(date +%s.%N)
           awk -v a="$start" -v b="$end" 'BEGIN { printf "time to first ready = %.2f s\n", b - a }' | tee startup-cost.txt
           echo "first authenticated request = ${authed}s" | tee -a startup-cost.txt
+
+      - name: Assert successful synthetic Telebirr verification
+        run: |
+          curl -fsS --max-time 30 http://127.0.0.1:3001/verify-telebirr \
+            -H "x-api-key: $LOADTEST_API_KEY" -H 'content-type: application/json' \
+            -d '{"reference":"CE2513001XYT"}' > synthetic-success.json
+          node -e 'const r = require("./synthetic-success.json"); if (r.success !== true || !r.data?.payerName) throw new Error("Synthetic receipt did not exercise the success path");'
 
       - name: Database statements per request
         run: |

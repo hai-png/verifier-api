@@ -32,11 +32,11 @@ function telebirrHtml(reference) {
   return `<!DOCTYPE html><html><head><title>Telebirr Receipt</title></head><body>
 <div class="container"><table class="receipttable">
 <tr><td>የክፍያ ቁጥር/Receipt No.</td><td class="receipttableTd receipttableTd2">${reference}</td></tr>
-<tr><td>የገዢ ስም/Payer Name</td><td class="receipttableTd receipttableTd2">Abebe Kebede</td></tr>
-<tr><td>የገዢ ቴሌብር ቁጥር/Payer Telebirr No</td><td class="receipttableTd receipttableTd2">251911223344</td></tr>
+<tr><td>የከፋይ ስም/Payer Name</td><td class="receipttableTd receipttableTd2">Abebe Kebede</td></tr>
+<tr><td>የከፋይ ቴሌብር ቁ./Payer telebirr no.</td><td class="receipttableTd receipttableTd2">251911223344</td></tr>
 <tr><td>የገንዘብ ተቀባይ ስም/Credited Party Name</td><td class="receipttableTd receipttableTd2">FitLife Hub</td></tr>
-<tr><td>የገንዘብ ተቀባይ አካውንት/Credited Party Account No</td><td class="receipttableTd receipttableTd2">1000123456789</td></tr>
-<tr><td>የክፍያ ሁኔታ/Transaction Status</td><td class="receipttableTd receipttableTd2">Completed</td></tr>
+<tr><td>የገንዘብ ተቀባይ ቴሌብር ቁ./Credited party account no</td><td class="receipttableTd receipttableTd2">1000123456789</td></tr>
+<tr><td>የክፍያው ሁኔታ/transaction status</td><td class="receipttableTd receipttableTd2">Completed</td></tr>
 <tr><td>የክፍያ ቀን/Payment date</td><td class="receipttableTd receipttableTd2">2026-09-26 10:15:32</td></tr>
 <tr><td>የተከፈለው መጠን/Settled Amount</td><td class="receipttableTd receipttableTd2">299.00 Birr</td></tr>
 <tr><td>የአገልግሎት ክፍያ/Service fee</td><td class="receipttableTd receipttableTd2">1.50 Birr</td></tr>
