@@ -124,6 +124,31 @@ variables → Actions), preferring in this order:
 With no credentials at all the workflow still measures the anonymous surface and
 logs a warning; requests that need a workspace are skipped.
 
+## Where the round trips go
+
+`loadtest/db-traffic.mjs --timeline` prints the ordered SQL sequence of one
+request (from `performance_schema.events_statements_history_long`), and every
+instance also reports its own counters on `GET /status/summary`:
+
+```bash
+# 10 M-Pesa verifications, then read the delta of the instance's own counters
+curl -s http://127.0.0.1:3001/status/summary | jq .diagnostics.database
+```
+
+Measured on a post-fix build (60 ms round trip):
+
+| Path | Statements before the response | Statements after it |
+|---|---|---|
+| `GET /health` | 0 | 0 |
+| `GET /ready` | 1 (`SELECT 1`) | 0 |
+| `POST /verify-cbe`, unknown key | 1 (key lookup) | 0 |
+| `POST /verify-mpesa`, success | ~3 (key lookup, credit decrement, config read) | ~4 (analytics + key-usage batches, delivery-target lookup, or the credit refund on a failure) |
+
+The app-side figure is higher than the statement count the MySQL tool reports
+(~3 for the success path) because it also includes the batched
+analytics/usage writes that finish after the response — they do not delay the
+customer, but they do compete for the connection pool.
+
 ## Interpreting results
 
 - `TTFB` is time to first byte as seen by the client; `Total` includes body read.
