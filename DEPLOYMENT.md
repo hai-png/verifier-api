@@ -410,7 +410,25 @@ mint a key. Note that it also bypasses per-key permissions, so a
 permission-denied scenario such as `/products` will answer `200` rather than
 `403` under it.
 
-### 6. Is the database still the bottleneck? Ask the instance
+### 6. What the response cache changes
+
+`VERIFY_CACHE_TTL_MS` (default 60 s) makes identical single-reference
+verifications share one provider call:
+
+- positive results only — a 404/422 ("receipt not found") is never cached,
+  because the receipt may exist a moment later;
+- concurrent duplicates are coalesced (two requests, one upstream call);
+- the key is workspace + endpoint + body, so tenants cannot read each other's
+  results, and `/verify-batch`, `/verify-image` and `/verify/public` are
+  excluded;
+- every response says what happened: `x-verify-cache: hit` or `coalesced`.
+
+If your product needs every request to hit the provider (for example because a
+receipt's status can move from pending to paid), set `VERIFY_CACHE_TTL_MS=0`.
+`diagnostics.caches.verificationResults` on `/status/summary` reports hits,
+coalesced duplicates and entries.
+
+### 7. Is the database still the bottleneck? Ask the instance
 
 Every SQL statement Prisma runs is counted (cheaply, from the `query` event) and
 reported on the public status endpoint, so a deployed instance can answer
@@ -438,7 +456,7 @@ writes that follow the response are batched into `createMany`/single updates.
 If you see a number far above that, something started querying per request
 again — check `topTables` before reaching for `EXPLAIN`.
 
-### 7. Proxy and client IP
+### 8. Proxy and client IP
 
 `getRequestIp()` trusts `CF-Connecting-IP`, then `X-Forwarded-For`, then
 `X-Real-IP`. Web traffic arrives through Cloudflare, which sets those headers
