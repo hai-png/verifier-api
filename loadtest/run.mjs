@@ -160,6 +160,52 @@ function parseCli() {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * A run can be perfectly healthy and still measure the wrong thing: if the
+ * server rejects the credentials, every "authenticated" sample is a 401/403/404
+ * and the report would look like a fast, error-free verification path. Say so
+ * explicitly, with the likely cause, instead of leaving it to the reader.
+ */
+function credentialHint(report, targets) {
+  const authenticated = new Set(
+    targets.filter((t) => t.scenario.group === 'authenticated').map((t) => t.name),
+  );
+  if (!report.authenticated || authenticated.size === 0) return null;
+
+  const seen = new Map();
+  for (const section of [report.latency, report.load, report.soak]) {
+    for (const stage of section?.stages ?? []) {
+      for (const [name, agg] of Object.entries(stage.byScenario ?? {})) {
+        if (!authenticated.has(name)) continue;
+        const classes = seen.get(name) ?? new Set();
+        for (const klass of Object.keys(agg.classes ?? {})) classes.add(klass);
+        seen.set(name, classes);
+      }
+    }
+  }
+  if (seen.size === 0) return null;
+
+  const rejected = new Set(['unauthenticated_401', 'forbidden_403', 'not_found_404']);
+  const all = [...seen.values()];
+  if (!all.every((classes) => [...classes].length > 0 && [...classes].every((c) => rejected.has(c)))) {
+    return null;
+  }
+
+  const classes = new Set(all.flatMap((set) => [...set]));
+  if (classes.has('unauthenticated_401')) {
+    return report.authMode === 'dashboard-secret'
+      ? "every authenticated scenario returned 401: the target ignored x-dashboard-key, so its DASHBOARD_SECRET does not match the LOADTEST_DASHBOARD_SECRET secret (or is unset on the service)."
+      : "every authenticated scenario returned 401: the target ignored x-api-key. Check that the key exists on *this* deployment and is still active.";
+  }
+  if (classes.has('not_found_404') && report.authMode === 'dashboard-secret') {
+    return 'every authenticated scenario returned 404: LOADTEST_WORKSPACE_ID does not exist in the target database.';
+  }
+  if (classes.has('forbidden_403')) {
+    return 'every authenticated scenario returned 403: the credentials are recognised but rejected (inactive key, or the workspace does not belong to this key).';
+  }
+  return null;
+}
+
+/**
  * Throttle authenticated requests to `rps` so a sequential profile stays inside
  * the workspace rate limit instead of measuring 429 responses. Anonymous
  * scenarios are never paced.
@@ -305,6 +351,7 @@ function markdownReport(report) {
   lines.push(`- **Profile:** \`${report.profile}\``);
   lines.push(`- **Scenarios:** ${report.scenarios.join(', ')}`);
   lines.push(`- **Authenticated:** ${report.authenticated ? `yes (${report.authMode})` : 'no'}`);
+  if (report.authHint) lines.push(`- **⚠️ Credentials rejected:** ${report.authHint}`);
   lines.push(`- **Runtime:** Node ${report.node}, ${report.platform}, ${report.cpuCount} vCPU`);
   if (report.dns) {
     lines.push(`- **Resolved:** ${report.dns.addresses.join(', ') || 'n/a'}${report.dns.cname ? ` (CNAME ${report.dns.cname})` : ''}`);
@@ -626,6 +673,8 @@ async function main() {
   }
 
   report.connections = client.stats();
+  report.authHint = credentialHint(report, targets);
+  if (report.authHint) console.error(`warning: ${report.authHint}`);
   const os = await import('node:os');
   report.memory = {
     peakRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),

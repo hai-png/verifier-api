@@ -254,14 +254,18 @@ jobs:
               --out "db-traffic-$scenario.json" || echo "db-traffic failed for $scenario"
           done | tee db-traffic.txt
           # Same path, dashboard credentials: the mode actually used for live runs.
-          echo "### verify_validate_400 (dashboard-secret)"
-          node loadtest/db-traffic.mjs \
-            --base-url http://127.0.0.1:3001 \
-            --dashboard-key lab-dashboard-secret \
-            --workspace-id "$LOADTEST_WORKSPACE_ID" \
-            --scenario verify_validate_400 \
-            --requests 5 \
-            --out db-traffic-dashboard.json || echo "db-traffic failed for dashboard-secret"
+          # Piped through tee as well, otherwise this evidence only exists in the
+          # job log (which is not always downloadable).
+          {
+            echo "### verify_validate_400 (dashboard-secret)"
+            node loadtest/db-traffic.mjs \
+              --base-url http://127.0.0.1:3001 \
+              --dashboard-key lab-dashboard-secret \
+              --workspace-id "$LOADTEST_WORKSPACE_ID" \
+              --scenario verify_validate_400 \
+              --requests 5 \
+              --out db-traffic-dashboard.json || echo "db-traffic failed for dashboard-secret"
+          } 2>&1 | tee -a db-traffic.txt
           node -e "
             const rows = ['health','ready','auth_invalid_403','verify_validate_400','permissions_403','verify_telebirr_external','verify_mpesa_external']
               .map((name) => {
@@ -273,6 +277,11 @@ jobs:
             console.log('## statements per request');
             console.log(rows.join('\n'));
             console.log('');
+            try {
+              const dash = require('./db-traffic-dashboard.json');
+              console.log('dashboard-secret path: ' + dash.sqlPerRequest.toFixed(2) + ' statements/request, ' + dash.requestMs.mean.toFixed(1) + ' ms');
+              console.log('');
+            } catch {}
             const d = require('./db-traffic-verify_validate_400.json');
             console.log('shapes for verify_validate_400:');
             for (const shape of d.statementShapes) console.log('  ' + shape.perRequest.toFixed(2) + 'x  ' + shape.sql);
@@ -329,7 +338,16 @@ jobs:
             console.log('statements ................ ' + statements);
             console.log('statements per request .... ' + (requests > 0 ? (statements / requests).toFixed(2) : 'n/a'));
             console.log('mean statement ms ......... ' + after.totals.meanStatementMs);
+            // topTables is cumulative since process start, so diff it against the
+            // earlier snapshot; the list itself is the top 5 of each snapshot.
+            const deltaTables = after.topTables
+              .map((row) => {
+                const previous = before.topTables.find((t) => t.table === row.table);
+                return { table: row.table, statements: row.statements - (previous ? previous.statements : 0) };
+              })
+              .filter((row) => row.statements > 0);
             console.log('top tables ................ ' + JSON.stringify(after.topTables));
+            console.log('top tables (delta) ........ ' + JSON.stringify(deltaTables));
             console.log('slowest statements ........ ' + JSON.stringify(after.slowestStatements));
           " | tee app-statements.txt
 
