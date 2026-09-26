@@ -60,7 +60,7 @@ on:
       - '.github/workflows/loadtest-live.yml'
 
 permissions:
-  contents: read
+  contents: write   # the report is committed back to the branch (see publish step)
 
 concurrency:
   group: loadtest-live-${{ github.ref }}
@@ -89,7 +89,7 @@ jobs:
             const file = fs.existsSync("loadtest/live-profile.json")
               ? JSON.parse(fs.readFileSync("loadtest/live-profile.json", "utf8"))
               : {};
-            const inputs = ${{ toJSON(github.event.inputs) }};
+            const inputs = ${{ toJSON(github.event.inputs) }} || {};
             const pick = (key, fallback) => {
               const value = inputs[key];
               if (value !== undefined && value !== null && String(value).length > 0) return String(value);
@@ -165,3 +165,10 @@ jobs:
             loadtest-console.txt
           retention-days: 30
           if-no-files-found: warn
+
+      - name: Publish report to the branch
+        # Artifacts are only downloadable from the Actions UI; committing the
+        # report keeps it readable from the repo (pushes made with GITHUB_TOKEN
+        # do not re-trigger workflows).
+        if: always()
+        run: bash loadtest/ci/publish-report.sh live
