@@ -1,1 +1,1 @@
-db round trip: p50 0.41 ms, min 0.32 ms
+db round trip: p50 0.29 ms, min 0.23 ms
