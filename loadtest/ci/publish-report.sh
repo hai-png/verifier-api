@@ -13,7 +13,7 @@ DEST="loadtest-results/${LABEL}"
 BRANCH="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
 
 mkdir -p "$DEST"
-for file in loadtest-console.txt api.log api-restart.log db-traffic.txt db-timeline.txt app-statements.txt startup-cost.txt db-rtt-before.txt stub.log; do
+for file in loadtest-console.txt api.log api-restart.log db-traffic.txt db-timeline.txt db-timeline-errors.txt app-statements.txt startup-cost.txt db-rtt-before.txt stub.log; do
   if [ -f "$file" ]; then cp "$file" "$DEST/" 2>/dev/null || true; fi
 done
 find loadtest-results -maxdepth 1 -type f \( -name '*.json' -o -name '*.md' \) -exec cp {} "$DEST/" \; 2>/dev/null || true
