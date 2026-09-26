@@ -169,7 +169,17 @@ function sum(map) {
  * `fn` returns { elapsed, value }.
  */
 async function measureWindow(fn, { withHistory = false } = {}) {
-  const cursor = withHistory ? await historyCursor() : null;
+  let cursor = null;
+  if (withHistory) {
+    // performance_schema history is a convenience, not a requirement: if the
+    // server has it disabled the counts must still be reported.
+    try {
+      cursor = await historyCursor();
+    } catch (error) {
+      console.error(`warning: statement timeline unavailable (${error.message})`);
+      cursor = null;
+    }
+  }
   const digestsBefore = await snapshotDigests();
   const comBefore = await snapshotCom();
   const outcome = await fn();
@@ -181,7 +191,10 @@ async function measureWindow(fn, { withHistory = false } = {}) {
     com: diff(comBefore, comAfter),
     elapsedMs: outcome.elapsed,
     result: outcome.value,
-    timeline: cursor ? await historySince(cursor) : null,
+    timeline: cursor ? await historySince(cursor).catch((error) => {
+      console.error(`warning: could not read the statement timeline: ${error.message}`);
+      return null;
+    }) : null,
   };
 }
 

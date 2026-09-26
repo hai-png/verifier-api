@@ -23,6 +23,15 @@ test('classifyStatement finds the verb and the table', () => {
         { verb: 'INSERT', table: 'usage_logs' },
     );
     assert.deepEqual(classifyStatement('BEGIN'), { verb: 'BEGIN', table: null });
+    // Prisma qualifies identifiers with the schema name — the table is the last part.
+    assert.deepEqual(
+        classifyStatement('SELECT `verifier`.`ApiKey`.`id` FROM `verifier`.`ApiKey` WHERE `verifier`.`ApiKey`.`keyHash` = ?'),
+        { verb: 'SELECT', table: 'apikey' },
+    );
+    assert.deepEqual(
+        classifyStatement('UPDATE `verifier`.`Workspace` SET `verificationCredits` = 1 WHERE `id` = ?'),
+        { verb: 'UPDATE', table: 'workspace' },
+    );
     assert.deepEqual(classifyStatement('   commit  '), { verb: 'COMMIT', table: null });
 });
 

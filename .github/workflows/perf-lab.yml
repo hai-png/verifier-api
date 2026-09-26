@@ -291,7 +291,8 @@ jobs:
               --requests 2 \
               --settle-ms 2500 \
               --timeline \
-              --out "db-timeline-$scenario.json" >/dev/null || echo "timeline failed for $scenario"
+              --out "db-timeline-$scenario.json" >/dev/null 2>>db-timeline-errors.txt \
+              || echo "timeline failed for $scenario"
           done
           node -e "
             for (const name of ['ready', 'verify_validate_400', 'verify_mpesa_external']) {
