@@ -92,6 +92,27 @@ Exit code 1 when a budget fails, so the workflow fails the build.
 | `loadtest-live` | push (`loadtest/**`) + dispatch | probes the deployed origin, runs the harness from GitHub's network, uploads the report |
 | `perf-lab` | push (`src/**`, `loadtest/**`, `prisma/**`) + dispatch | real API + MySQL service container + stubbed relay, API pinned to one CPU, optional netem database latency |
 
+### Authenticated runs are rate limited — pace them
+
+A workspace gets `config.freeRateLimit` requests per fixed 60 s window (default
+**10** for FREE, 60 for PRO, 30 for a grandfathered FREE workspace), and the
+dashboard path keys its bucket on `workspace+IP`. An unpaced authenticated run
+therefore measures the 429 path after the first few requests rather than the
+verification path. Pace the sequential profiles to stay inside the window:
+
+```bash
+# ~7 authenticated requests per minute, well under a FREE workspace's 10
+node loadtest/run.mjs --base-url https://verify.noveld.com.et \
+  --profile latency --auth-pace-rps 0.12 \
+  --scenarios health,ready,verify_validate_400 \
+  --dashboard-secret "$DASHBOARD_SECRET" --workspace-id "$WORKSPACE_ID"
+```
+
+`--auth-pace-rps` only delays scenarios in the `authenticated` group; anonymous
+ones run at full speed. The load profile ignores pacing on purpose — a staged
+ramp is how you find the throttle boundary, and the report counts `throttled_429`
+separately from errors.
+
 `loadtest-live` uses whichever credentials exist (Settings → Secrets and
 variables → Actions), preferring in this order:
 
