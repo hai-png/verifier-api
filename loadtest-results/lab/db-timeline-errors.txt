@@ -1,0 +1,19 @@
+enabled the events_statements_history_long consumer for this run
+warning: could not read the statement timeline: 
+Invalid `prisma.$queryRawUnsafe()` invocation:
+
+
+Raw query failed. Code: `1064`. Message: `You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms
+           FROM performance_schema.' at line 1`
+warning: could not read the statement timeline: 
+Invalid `prisma.$queryRawUnsafe()` invocation:
+
+
+Raw query failed. Code: `1064`. Message: `You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms
+           FROM performance_schema.' at line 1`
+warning: could not read the statement timeline: 
+Invalid `prisma.$queryRawUnsafe()` invocation:
+
+
+Raw query failed. Code: `1064`. Message: `You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms
+           FROM performance_schema.' at line 1`

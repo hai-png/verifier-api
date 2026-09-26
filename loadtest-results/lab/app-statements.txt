@@ -2,6 +2,6 @@
 requests observed ......... 11
 statements ................ 79
 statements per request .... 7.18
-mean statement ms ......... 65.92
-top tables ................ [{"table":"verifier","statements":246},{"table":"usagelog","statements":2}]
-slowest statements ........ [{"sql":"SELECT `verifier`.`ApiKey`.`id`, `verifier`.`ApiKey`.`key`, `verifier`.`ApiKey`.`keyHash`, `verifier`.`ApiKey`.`prefix`,…","ms":123},{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":123},{"sql":"SELECT `verifier`.`NotificationChannel`.`id`, `verifier`.`NotificationChannel`.`events` FROM `verifier`.`NotificationCha…","ms":122}]
+mean statement ms ......... 65.88
+top tables ................ [{"table":"apikey","statements":107},{"table":"workspace","statements":103},{"table":"usagelog","statements":28},{"table":"planpricingconfig","statements":4},{"table":"webhook","statements":3}]
+slowest statements ........ [{"sql":"\n      SELECT ip, COUNT(*) as count\n      FROM UsageLog\n      GROUP BY ip\n    ","ms":123},{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":123},{"sql":"SELECT 1","ms":122}]
