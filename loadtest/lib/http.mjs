@@ -93,9 +93,11 @@ export function createClient({ baseUrl, maxSockets = 128, timeoutMs = 120_000 })
       };
 
       let settled = false;
+      let deadline;
       const finish = () => {
         if (settled) return;
         settled = true;
+        clearTimeout(deadline);
         result.totalMs = ms(startedAt);
         resolve(result);
       };
@@ -142,11 +144,17 @@ export function createClient({ baseUrl, maxSockets = 128, timeoutMs = 120_000 })
         }
       });
 
-      req.on('timeout', () => {
+      // A wall-clock deadline includes socket queueing, DNS, TLS and body read.
+      // Socket inactivity timeouts alone allow a slow trickle to run forever.
+      const expire = () => {
+        if (settled) return;
         result.error = `timeout after ${timeout}ms`;
         result.errorCode = 'ETIMEDOUT_LOCAL';
-        req.destroy(new Error(result.error));
-      });
+        req.destroy(Object.assign(new Error(result.error), { code: result.errorCode }));
+        finish();
+      };
+      deadline = setTimeout(expire, timeout);
+      req.on('timeout', expire);
 
       req.on('error', (err) => {
         result.error = describeError(err);
@@ -169,6 +177,7 @@ export function createClient({ baseUrl, maxSockets = 128, timeoutMs = 120_000 })
 
 /** Classify a response for reporting. */
 export function classify(result) {
+  if (result.errorCode === 'ETIMEDOUT_LOCAL') return 'client_timeout';
   if (result.status === null || result.status === undefined) {
     return result.errorCode === 'ETIMEDOUT_LOCAL' ? 'client_timeout' : 'network_error';
   }
@@ -190,6 +199,7 @@ export function classify(result) {
 }
 
 export const PROBLEM_CLASSES = new Set([
+  'unexpected_status',
   'client_timeout',
   'network_error',
   'server_error_5xx',
