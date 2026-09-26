@@ -99,28 +99,78 @@ async function snapshotCom() {
   return map;
 }
 
-/** Highest event id currently recorded, plus this connection's thread id. */
-async function historyCursor() {
-  const [row] = await prisma.$queryRawUnsafe(
-    'SELECT (SELECT COALESCE(MAX(EVENT_ID), 0) FROM performance_schema.events_statements_history_long) AS maxEventId, (SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = CONNECTION_ID()) AS threadId',
+const LONG_HISTORY = 'events_statements_history_long';
+const THREAD_HISTORY = 'events_statements_history';
+
+/**
+ * Which statement-history table can we read?
+ *
+ * `events_statements_history_long` is DISABLED by default in MySQL (only the
+ * per-thread `events_statements_history` ring is on), which is why a timeline
+ * silently came back empty. Try to switch the consumer on; if that is not
+ * permitted, fall back to the per-thread ring (10 statements by default, so it
+ * may only show part of a request — the caller is told which one was used).
+ */
+async function historyCapabilities() {
+  const consumers = await prisma.$queryRawUnsafe(
+    'SELECT NAME AS name, ENABLED AS enabled FROM performance_schema.setup_consumers WHERE NAME IN (?, ?)',
+    LONG_HISTORY,
+    THREAD_HISTORY,
   );
-  return { maxEventId: Number(row?.maxEventId ?? 0), threadId: Number(row?.threadId ?? 0) };
+  const enabled = new Map(consumers.map((row) => [String(row.name), String(row.enabled).toUpperCase()]));
+
+  if (enabled.get(LONG_HISTORY) !== 'YES') {
+    try {
+      await prisma.$queryRawUnsafe(
+        `UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME = ?`,
+        LONG_HISTORY,
+      );
+      enabled.set(LONG_HISTORY, 'YES');
+      console.error('enabled the events_statements_history_long consumer for this run');
+    } catch (error) {
+      console.error(
+        `warning: cannot enable ${LONG_HISTORY} (${error.message}); falling back to ${THREAD_HISTORY} (per-thread ring, may truncate)`,
+      );
+    }
+  }
+
+  const source = enabled.get(LONG_HISTORY) === 'YES' ? LONG_HISTORY : THREAD_HISTORY;
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT (SELECT COALESCE(MAX(EVENT_ID), 0) FROM performance_schema.${source}) AS maxEventId, (SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = CONNECTION_ID()) AS threadId`,
+  );
+  return {
+    source,
+    fallback: source === THREAD_HISTORY,
+    maxEventId: Number(rows?.[0]?.maxEventId ?? 0),
+    threadId: Number(rows?.[0]?.threadId ?? 0),
+  };
 }
 
 /**
  * Every statement the *application* ran after `cursor`, in order. The tool's own
- * queries are filtered out by thread id, so this is the app's real sequence —
- * the thing you need to explain a request that costs six round trips.
+ * queries are filtered out (by thread id for the long ring, by keeping only our
+ * thread for the per-thread one), so this is the app's real sequence — the thing
+ * you need to explain a request that costs six round trips.
  */
 async function historySince(cursor) {
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT SQL_TEXT AS sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms, THREAD_ID AS threadId, EVENT_ID AS eventId
-     FROM performance_schema.events_statements_history_long
-     WHERE EVENT_ID > ? AND THREAD_ID <> ? AND SQL_TEXT IS NOT NULL
-     ORDER BY EVENT_ID`,
-    cursor.maxEventId,
-    cursor.threadId,
-  );
+  const rows =
+    cursor.source === THREAD_HISTORY
+      ? await prisma.$queryRawUnsafe(
+          `SELECT SQL_TEXT AS sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms
+           FROM performance_schema.${THREAD_HISTORY}
+           WHERE THREAD_ID = ? AND EVENT_ID > ? AND SQL_TEXT IS NOT NULL
+           ORDER BY EVENT_ID`,
+          cursor.threadId,
+          cursor.maxEventId,
+        )
+      : await prisma.$queryRawUnsafe(
+          `SELECT SQL_TEXT AS sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms
+           FROM performance_schema.${LONG_HISTORY}
+           WHERE EVENT_ID > ? AND THREAD_ID <> ? AND SQL_TEXT IS NOT NULL
+           ORDER BY EVENT_ID`,
+          cursor.maxEventId,
+          cursor.threadId,
+        );
   return rows.map((row) => ({
     sql: normalize(String(row.sql)),
     ms: Number(row.ms ?? 0),
@@ -174,7 +224,7 @@ async function measureWindow(fn, { withHistory = false } = {}) {
     // performance_schema history is a convenience, not a requirement: if the
     // server has it disabled the counts must still be reported.
     try {
-      cursor = await historyCursor();
+      cursor = await historyCapabilities();
     } catch (error) {
       console.error(`warning: statement timeline unavailable (${error.message})`);
       cursor = null;
@@ -195,6 +245,7 @@ async function measureWindow(fn, { withHistory = false } = {}) {
       console.error(`warning: could not read the statement timeline: ${error.message}`);
       return null;
     }) : null,
+    timelineSource: cursor?.source ?? null,
   };
 }
 
@@ -265,9 +316,16 @@ async function main() {
   };
 
   if (warm.timeline) {
-    // Strip the per-request sleeps (if any) so the sequence reads as requests.
     report.statementTimeline = warm.timeline;
     report.statementTimelineTotalMs = warm.timeline.reduce((total, stmt) => total + stmt.ms, 0);
+    report.statementTimelineSource = warm.timelineSource;
+    if (warm.timeline.length === 0) {
+      console.error('warning: the statement timeline is empty (no readable history table)');
+    } else if (warm.timelineSource === THREAD_HISTORY) {
+      console.error(
+        `note: timeline read from ${THREAD_HISTORY} — it holds ~10 statements per thread, so a multi-request window may be truncated`,
+      );
+    }
   }
 
   console.log(JSON.stringify(report, null, 2));

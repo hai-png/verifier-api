@@ -2,8 +2,8 @@
 # Commit harness output back into the repository so reports are readable
 # outside the Actions UI (log/artifact downloads are not always reachable).
 #
-# Two workflows can finish at the same time, so the push is rebased and retried
-# instead of racing the other run's report commit.
+# Two workflows can finish at the same time, so a rejected push is retried:
+# the report commit is replayed on top of whatever landed first.
 #
 #   bash loadtest/ci/publish-report.sh <label>
 set -uo pipefail
@@ -42,24 +42,33 @@ git commit -q -m "ci(${LABEL}): publish load test report for run ${GITHUB_RUN_ID
   || { echo "::warning::could not commit the report"; exit 0; }
 
 for attempt in 1 2 3 4 5 6; do
+  git fetch -q origin "$BRANCH" 2>/dev/null || true
+
+  # Already on the remote (an earlier attempt of this loop published it): done.
+  if [ -n "${FETCH_HEAD:-}" ] && git merge-base --is-ancestor HEAD FETCH_HEAD 2>/dev/null; then
+    echo "report commit is already on ${BRANCH} (attempt ${attempt})"
+    exit 0
+  fi
+
   if git push origin "HEAD:${BRANCH}" 2>/tmp/push-error.txt; then
     echo "published report to ${BRANCH} (attempt ${attempt})"
     exit 0
   fi
   echo "push attempt ${attempt} failed: $(tail -n 2 /tmp/push-error.txt | tr '\n' ' ')"
-  # Another push (a workflow or a human) landed first — replay our commit on
-  # top of it. `git fetch` + `git rebase` works on a detached HEAD too, unlike
-  # `git pull --rebase`, which is why a race used to lose the report silently.
-  git fetch -q origin "$BRANCH" || true
-  git rebase --onto FETCH_HEAD "$(git rev-parse HEAD)" 2>/dev/null \
-    || git rebase --abort >/dev/null 2>&1 \
-    || true
-  git fetch -q origin "$BRANCH" || true
-  git rebase FETCH_HEAD >/dev/null 2>&1 || { git rebase --abort >/dev/null 2>&1 || true; }
+
+  # Replay OUR commits (those not already in FETCH_HEAD) on top of the branch.
+  # NOTE: the upstream must be the merge base, not HEAD — `git rebase --onto X HEAD`
+  # replays an empty range, drops the report commit, and the following push then
+  # looks like a no-op success. That is how reports were lost silently.
+  BASE="$(git merge-base HEAD FETCH_HEAD 2>/dev/null || true)"
+  if [ -n "$BASE" ] && [ "$BASE" != "$(git rev-parse HEAD)" ]; then
+    git rebase --onto FETCH_HEAD "$BASE" >/dev/null 2>&1 \
+      || { git rebase --abort >/dev/null 2>&1 || true; }
+  fi
   sleep $((attempt * 5))
 done
 
 # Visible in the Actions UI, so a lost report is never silent again.
 echo "::warning::could not publish the report after retries (it is still in the run artifact)"
-echo "staged files were:"; git diff --cached --name-only | head -20
+echo "local HEAD: $(git rev-parse --short HEAD); branch tip: $(git rev-parse --short FETCH_HEAD 2>/dev/null || echo unknown)"
 exit 0
