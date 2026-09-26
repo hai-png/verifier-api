@@ -1,0 +1,27 @@
+stage: 1 concurrent × 10s …
+  46 requests, 4.6 rps, p95 716.2 ms, problems 0
+stage: 5 concurrent × 10s …
+  170 requests, 16.7 rps, p95 994.2 ms, problems 0
+stage: 10 concurrent × 15s …
+  378 requests, 23.7 rps, p95 1260.3 ms, problems 0
+stage: 20 concurrent × 15s …
+  402 requests, 24.1 rps, p95 2178.6 ms, problems 0
+stage: 40 concurrent × 15s …
+  447 requests, 26.3 rps, p95 3957.3 ms, problems 0
+
+target        http://127.0.0.1:3001
+resolved      127.0.0.1 (4)
+profile       all
+connections   created=40 reused=1658
+cold start    first TTFB 128.4 ms (sleep 0s)
+
+stage                reqs     rps      p50      p95      p99       max   err
+sequential ×25        252     4.4     63.6    723.6    773.1     786.0     0
+c=1                    46     4.6     63.1    716.2    722.0     724.0     0
+c=5                   170    16.7    123.4    994.2   1147.8    1205.1     0
+c=10                  378    23.7    241.7   1260.3   1636.7    1713.0     0
+c=20                  402    24.1    570.6   2178.6   2736.2    2932.5     0
+c=40                  447    26.3   1057.4   3957.3   4817.7    5317.5     0
+
+report  loadtest-results/lab-all-2026-09-26T04-16-05-568Z.md
+json    loadtest-results/lab-all-2026-09-26T04-16-05-568Z.json
