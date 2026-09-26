@@ -1,0 +1,7 @@
+### app self-reported (10 M-Pesa verifications + 2 status reads)
+requests observed ......... 11
+statements ................ 79
+statements per request .... 7.18
+mean statement ms ......... 65.92
+top tables ................ [{"table":"verifier","statements":246},{"table":"usagelog","statements":2}]
+slowest statements ........ [{"sql":"SELECT `verifier`.`ApiKey`.`id`, `verifier`.`ApiKey`.`key`, `verifier`.`ApiKey`.`keyHash`, `verifier`.`ApiKey`.`prefix`,…","ms":123},{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":123},{"sql":"SELECT `verifier`.`NotificationChannel`.`id`, `verifier`.`NotificationChannel`.`events` FROM `verifier`.`NotificationCha…","ms":122}]

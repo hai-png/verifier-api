@@ -1,0 +1,54 @@
+{
+  "scenario": "permissions_403",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 624,
+    "mean": 124.8
+  },
+  "responses": [
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 125.2
+    },
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 124.2
+    },
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 124.6
+    },
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 124.3
+    },
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 124.3
+    }
+  ],
+  "sqlStatements": 0,
+  "sqlPerRequest": 0,
+  "comCountersPerRequest": {
+    "Com_select": 2,
+    "Com_stmt_execute": 2,
+    "Com_stmt_prepare": 0.2
+  },
+  "controlNoise": {
+    "statements": 4,
+    "comCounters": {
+      "Com_insert": 1,
+      "Com_select": 3,
+      "Com_stmt_execute": 6,
+      "Com_update": 1
+    }
+  },
+  "statementShapes": []
+}
