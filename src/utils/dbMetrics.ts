@@ -29,7 +29,12 @@ const TOTALS_SLOWEST: { sql: string; ms: number }[] = [];
 export function classifyStatement(sql: string): StatementClassification {
     const normalized = String(sql ?? '').replace(/\s+/g, ' ').trim();
     const verb = (normalized.match(/^([A-Za-z]+)/)?.[1] ?? 'OTHER').toUpperCase();
-    const table = normalized.match(/\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\s+`?([A-Za-z0-9_]+)`?/i)?.[1] ?? null;
+    // Prisma qualifies everything (`verifier`.`ApiKey`), so take the *last*
+    // identifier of the first qualified name after FROM/INTO/UPDATE/JOIN.
+    const match = normalized.match(
+        /\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\s+(?:`?[A-Za-z0-9_]+`?\s*\.\s*)*`?([A-Za-z0-9_]+)`?/i,
+    );
+    const table = match?.[1] ?? null;
     return { verb, table: table ? table.toLowerCase() : null };
 }
 
