@@ -236,12 +236,14 @@ function buildTask(name, ctx) {
   if (scenario.group === 'authenticated' && !ctx.auth) {
     return null;
   }
-  const descriptor = scenario.request(ctx);
-  return { name, scenario, descriptor };
+  return { name, scenario, get descriptor() { return scenario.request(ctx); } };
 }
 
 function recordSample(store, name, result, startedAtMs) {
-  const klass = classify(result);
+  const expected = SCENARIOS[name]?.expectedStatuses;
+  const klass = expected && !result.error && !expected.includes(result.status)
+    && result.status < 500 && ![402, 429].includes(result.status)
+    ? 'unexpected_status' : classify(result);
   const sample = {
     scenario: name,
     status: result.status,
@@ -274,7 +276,7 @@ async function runLatency({ client, targets, iterations, warmup, timeoutMs, pace
     for (let i = 0; i < warmup; i += 1) {
       await pacer.wait(task.name);
       const result = await client.request({ ...task.descriptor, label: task.name, timeout: timeoutMs });
-      store.warmup.push(recordSample(store, task.name, result, 0));
+      store.warmup.push(recordSample({ samples: [], byScenario: {}, problems: [] }, task.name, result, 0));
     }
     for (let i = 0; i < iterations; i += 1) {
       await pacer.wait(task.name);
@@ -499,6 +501,16 @@ function consoleSummary(report) {
 
 async function main() {
   const options = parseCli();
+  const positive = ['concurrency', 'duration', 'iterations', 'maxTimeoutMs', 'coldstartSamples'];
+  for (const key of positive) if (!(options[key] > 0)) throw new Error(`${key} must be positive`);
+  for (const key of ['concurrency', 'iterations', 'warmup', 'coldstartSamples']) {
+    if (!Number.isInteger(options[key]) || options[key] < 0) throw new Error(`${key} must be a nonnegative integer`);
+  }
+  for (const key of ['authPaceRps', 'coldstartSleep']) if (options[key] < 0) throw new Error(`${key} must be nonnegative`);
+  if (!['smoke', 'latency', 'load', 'soak', 'coldstart', 'all'].includes(options.profile)) throw new Error('Unknown profile');
+  if (!options.stages.split(',').every((s) => /^\d+:(?:\d+(?:\.\d+)?|\.\d+)$/.test(s) && s.split(':').every((n) => Number(n) > 0))) throw new Error('Invalid stages; use positive concurrency:seconds pairs');
+  if (options.budgetErrorRate !== null && (options.budgetErrorRate < 0 || options.budgetErrorRate > 1)) throw new Error('Error budget must be between 0 and 1');
+  if (options.budgetP95 !== null && options.budgetP95 <= 0) throw new Error('Latency budget must be positive');
   const startedAt = new Date();
 
   let dnsInfo = null;
@@ -623,6 +635,7 @@ async function main() {
       });
       const allSamples = [];
       const stageReports = [];
+      let timelineOffsetMs = 0;
       for (const stage of stages) {
         console.log(`stage: ${stage.concurrency} concurrent × ${stage.duration}s …`);
         const store = await runStage({
@@ -642,7 +655,8 @@ async function main() {
           byScenario: Object.fromEntries(Object.entries(store.byScenario).map(([name, samples]) => [name, aggregate(samples)])),
         });
         report.failures.push(...store.problems);
-        allSamples.push(...store.samples);
+        allSamples.push(...store.samples.map((sample) => ({ ...sample, startedAtMs: sample.startedAtMs + timelineOffsetMs })));
+        timelineOffsetMs += store.durationMs;
         console.log(`  ${store.samples.length} requests, ${fixed(rps, 1)} rps, p95 ${fixed(agg.total.p95)} ms, problems ${agg.problemCount}`);
       }
       report.load = { stages: stageReports, timeline: perSecondTimeline(allSamples) };
@@ -685,7 +699,11 @@ async function main() {
   // The load profile is judged on its highest stage; latency-only runs are
   // judged on their single sequential stage.
   const mainStage = report.load?.stages?.at(-1) || report.latency?.stages?.at(0) || report.soak?.stages?.at(0);
-  const budgets = [];
+  const budgets = [{
+    name: 'valid measurement',
+    passed: !report.authHint && (mainStage ? mainStage.aggregate.count > 0 && mainStage.aggregate.problemCount < mainStage.aggregate.count : report.coldStart?.samples.some((s) => !PROBLEM_CLASSES.has(s.class))),
+    detail: report.authHint || 'At least one non-failing measured response is required; all-failure runs cannot pass.',
+  }];
   if (mainStage) {
     if (options.budgetP95 !== null) {
       const p95 = mainStage.aggregate.total.p95;
