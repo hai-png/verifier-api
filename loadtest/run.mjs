@@ -28,6 +28,7 @@ const DEFAULTS = {
   stages: '1:10,5:10,10:15,20:15,40:15',
   warmup: 3,
   maxTimeoutMs: 120_000,
+  'auth-pace-rps': 0,
   'coldstart-sleep': 0,
   'coldstart-samples': 3,
 };
@@ -47,6 +48,11 @@ Options:
   --dashboard-secret-env <VAR>
   --workspace-id <id>       Existing workspace id to attribute the run to
   --workspace-id-env <VAR>
+  --auth-pace-rps <n>       Minimum requests/sec for authenticated scenarios in
+                            the sequential profiles. A FREE workspace allows
+                            config.freeRateLimit (10) requests per 60s window, so
+                            an unpaced run measures the throttle path, not the
+                            verification path.
   --allow-external          Permit scenarios that call third-party providers
   --concurrency <n>         Concurrent workers (load/soak)                  (default: ${DEFAULTS.concurrency})
   --duration <seconds>      Per-stage duration (load/soak)                  (default: ${DEFAULTS.duration})
@@ -77,6 +83,7 @@ function parseCli() {
       'dashboard-secret-env': { type: 'string' },
       'workspace-id': { type: 'string' },
       'workspace-id-env': { type: 'string' },
+      'auth-pace-rps': { type: 'string' },
       'allow-external': { type: 'boolean', default: false },
       concurrency: { type: 'string' },
       duration: { type: 'string' },
@@ -140,6 +147,7 @@ function parseCli() {
     stages: values.stages || DEFAULTS.stages,
     warmup: num('warmup', DEFAULTS.warmup),
     maxTimeoutMs: num('max-timeout-ms', DEFAULTS.maxTimeoutMs),
+    authPaceRps: num('auth-pace-rps', DEFAULTS['auth-pace-rps']),
     coldstartSleep: num('coldstart-sleep', DEFAULTS['coldstart-sleep']),
     coldstartSamples: num('coldstart-samples', DEFAULTS['coldstart-samples']),
     label: values.label || 'verifier-api',
@@ -150,6 +158,32 @@ function parseCli() {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Throttle authenticated requests to `rps` so a sequential profile stays inside
+ * the workspace rate limit instead of measuring 429 responses. Anonymous
+ * scenarios are never paced.
+ */
+function createAuthPacer({ rps, targets }) {
+  const pacedScenarios = new Set(
+    targets.filter((t) => t.scenario.group === 'authenticated').map((t) => t.name),
+  );
+  if (!(rps > 0) || pacedScenarios.size === 0) {
+    return { enabled: false, pacedScenarios: [...pacedScenarios], wait: async () => {} };
+  }
+  const intervalMs = 1000 / rps;
+  let nextSlotAt = 0;
+  return {
+    enabled: true,
+    pacedScenarios: [...pacedScenarios],
+    wait: async (taskName) => {
+      if (!pacedScenarios.has(taskName)) return;
+      const waitMs = nextSlotAt - Date.now();
+      if (waitMs > 0) await sleep(waitMs);
+      nextSlotAt = Math.max(Date.now(), nextSlotAt) + intervalMs;
+    },
+  };
+}
 
 function buildTask(name, ctx) {
   const scenario = SCENARIOS[name];
@@ -188,14 +222,16 @@ function recordSample(store, name, result, startedAtMs) {
 }
 
 /** Sequential (concurrency = 1) latency measurement — the clean warm baseline. */
-async function runLatency({ client, targets, iterations, warmup, timeoutMs, ctx }) {
+async function runLatency({ client, targets, iterations, warmup, timeoutMs, pacer }) {
   const store = { samples: [], byScenario: {}, problems: [], warmup: [] };
   for (const task of targets) {
     for (let i = 0; i < warmup; i += 1) {
+      await pacer.wait(task.name);
       const result = await client.request({ ...task.descriptor, label: task.name, timeout: timeoutMs });
       store.warmup.push(recordSample(store, task.name, result, 0));
     }
     for (let i = 0; i < iterations; i += 1) {
+      await pacer.wait(task.name);
       const result = await client.request({ ...task.descriptor, label: task.name, timeout: timeoutMs });
       recordSample(store, task.name, result, i);
     }
@@ -274,6 +310,9 @@ function markdownReport(report) {
     lines.push(`- **Resolved:** ${report.dns.addresses.join(', ') || 'n/a'}${report.dns.cname ? ` (CNAME ${report.dns.cname})` : ''}`);
   }
   lines.push(`- **Client:** keep-alive, max ${report.maxSockets} sockets; connections created ${report.connections.created}, reused ${report.connections.reused}`);
+  if (report.authPaceRps) {
+    lines.push(`- **Authenticated pacing:** ${report.authPaceRps} req/s (stays inside the workspace rate limit — see loadtest/README.md)`);
+  }
   lines.push('');
 
   if (report.coldStart) {
@@ -452,6 +491,8 @@ async function main() {
     throw new Error('No runnable scenarios. Provide --api-key or --dashboard-secret + --workspace-id.');
   }
 
+  const pacer = createAuthPacer({ rps: options.authPaceRps, targets });
+
   /** @type {any} */
   const report = {
     label: options.label,
@@ -466,6 +507,7 @@ async function main() {
     platform: `${process.platform}/${process.arch}`,
     cpuCount: (await import('node:os')).cpus().length,
     maxSockets: 128,
+    authPaceRps: pacer.enabled ? options.authPaceRps : null,
     dns: dnsInfo,
     connections: { created: 0, reused: 0 },
     coldStart: null,
@@ -512,7 +554,7 @@ async function main() {
         iterations: profile === 'smoke' ? 1 : options.iterations,
         warmup: profile === 'smoke' ? 0 : options.warmup,
         timeoutMs: options.maxTimeoutMs,
-        ctx,
+        pacer,
       });
       const agg = aggregate(store.samples);
       report.latency = {

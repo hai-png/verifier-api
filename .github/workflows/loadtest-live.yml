@@ -47,6 +47,10 @@ on:
         description: 'Ramp stages for the load profile (c:d,c:d)'
         required: false
         default: '1:10,5:10,10:15,20:15,40:15'
+      auth_pace_rps:
+        description: 'Max requests/sec for authenticated scenarios (0 = unpaced). A FREE workspace allows 10 per 60s window, so pace to ~0.12 to measure real latency'
+        required: false
+        type: string
       coldstart_sleep:
         description: 'Seconds to idle before the cold-start probe (0 = off)'
         required: false
@@ -111,6 +115,7 @@ jobs:
               ITERATIONS: pick("iterations", "25"),
               STAGES: pick("stages", "1:10,5:10,10:15,20:15,40:15"),
               COLDSTART_SLEEP: pick("coldstart_sleep", "0"),
+              AUTH_PACE_RPS: pick("auth_pace_rps", "0"),
               ALLOW_EXTERNAL: pick("allow_external", String(file.allow_external ?? false)),
             };
             for (const [key, value] of Object.entries(env)) {
@@ -171,6 +176,7 @@ jobs:
             --iterations "$ITERATIONS" \
             --stages "$STAGES" \
             --coldstart-sleep "$COLDSTART_SLEEP" \
+            --auth-pace-rps "$AUTH_PACE_RPS" \
             --out-dir loadtest-results \
             ${SCENARIOS:+--scenarios "$SCENARIOS"} \
             $EXTRA \

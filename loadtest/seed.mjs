@@ -5,6 +5,9 @@
  *
  * Prints ONLY the raw API key on stdout (logs go to stderr) so CI can capture it:
  *   KEY=$(node loadtest/seed.mjs)
+ *
+ * Set SEED_OUT=<path> to also write { apiKey, workspaceId } as JSON — the lab
+ * uses the workspace id to exercise the dashboard-secret auth path as well.
  */
 import crypto from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
@@ -70,6 +73,15 @@ async function main() {
       permissions: ['verify'],
     },
   });
+
+  if (process.env.SEED_OUT) {
+    const fs = await import('node:fs');
+    fs.writeFileSync(
+      process.env.SEED_OUT,
+      `${JSON.stringify({ apiKey: rawKey, workspaceId: workspace.id }, null, 2)}\n`,
+    );
+    log(`wrote ${process.env.SEED_OUT}`);
+  }
 
   log(`workspace=${workspace.id}`);
   process.stdout.write(`${rawKey}\n`);

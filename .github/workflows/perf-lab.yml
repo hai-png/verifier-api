@@ -168,7 +168,10 @@ jobs:
 
       - name: Seed workspace + API key
         run: |
-          echo "LOADTEST_API_KEY=$(node loadtest/seed.mjs)" >> "$GITHUB_ENV"
+          SEED_OUT=seed.json node loadtest/seed.mjs > seed-key.txt
+          echo "LOADTEST_API_KEY=$(cat seed-key.txt)" >> "$GITHUB_ENV"
+          echo "LOADTEST_WORKSPACE_ID=$(node -p "require('./seed.json').workspaceId")" >> "$GITHUB_ENV"
+          echo "seeded workspace $LOADTEST_WORKSPACE_ID (api key + dashboard-secret paths both measurable)"
 
       - name: Start stubbed Ethiopian relay
         run: |
@@ -238,8 +241,11 @@ jobs:
 
       - name: Database statements per request
         run: |
-          for scenario in auth_invalid_403 verify_validate_400 verify_telebirr_external verify_mpesa_external; do
-            echo "### $scenario"
+          # The tool subtracts an empty control window, so these are net
+          # per-request statement counts (and it refuses to guess when
+          # performance_schema is off).
+          for scenario in health ready auth_invalid_403 verify_validate_400 permissions_403 verify_telebirr_external verify_mpesa_external; do
+            echo "### $scenario (api-key)"
             node loadtest/db-traffic.mjs \
               --base-url http://127.0.0.1:3001 \
               --api-key "$LOADTEST_API_KEY" \
@@ -247,6 +253,30 @@ jobs:
               --requests 5 \
               --out "db-traffic-$scenario.json" || echo "db-traffic failed for $scenario"
           done | tee db-traffic.txt
+          # Same path, dashboard credentials: the mode actually used for live runs.
+          echo "### verify_validate_400 (dashboard-secret)"
+          node loadtest/db-traffic.mjs \
+            --base-url http://127.0.0.1:3001 \
+            --dashboard-key lab-dashboard-secret \
+            --workspace-id "$LOADTEST_WORKSPACE_ID" \
+            --scenario verify_validate_400 \
+            --requests 5 \
+            --out db-traffic-dashboard.json || echo "db-traffic failed for dashboard-secret"
+          node -e "
+            const rows = ['health','ready','auth_invalid_403','verify_validate_400','permissions_403','verify_telebirr_external','verify_mpesa_external']
+              .map((name) => {
+                try {
+                  const j = require('./db-traffic-' + name + '.json');
+                  return \`\${name.padEnd(26)} \${j.sqlPerRequest.toFixed(2)} statements/request, \${j.requestMs.mean.toFixed(1)} ms\`;
+                } catch { return \`\${name.padEnd(26)} (no data)\`; }
+              });
+            console.log('## statements per request');
+            console.log(rows.join('\n'));
+            console.log('');
+            const d = require('./db-traffic-verify_validate_400.json');
+            console.log('shapes for verify_validate_400:');
+            for (const shape of d.statementShapes) console.log('  ' + shape.perRequest.toFixed(2) + 'x  ' + shape.sql);
+          " | tee -a db-traffic.txt
 
       - name: Run harness (lab)
         run: |
