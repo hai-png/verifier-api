@@ -325,7 +325,35 @@ Throughput plateaus at ~140 rps and latency starts climbing after ~25
 concurrent requests: that is the free plan's shared-CPU ceiling. No 5xx and no
 429s were observed during the ramp.
 
-### 5. Proxy and client IP
+### 5. Authenticated load tests must be paced
+
+A workspace is allowed `config.freeRateLimit` requests per fixed 60 s window
+(default **10** for FREE, 60 for PRO and 30 for a grandfathered FREE workspace),
+and the dashboard auth path keys its bucket on `workspace + client IP`. A load
+test on the authenticated endpoints therefore spends its first few requests on
+real work and then measures nothing but `429`s.
+
+When you point the harness at the deployment, pace the authenticated scenarios:
+
+```bash
+node loadtest/run.mjs --base-url https://verify.noveld.com.et \
+  --profile latency --auth-pace-rps 0.12 \
+  --scenarios health,ready,verify_validate_400 \
+  --dashboard-secret "$DASHBOARD_SECRET" --workspace-id "$WORKSPACE_ID"
+```
+
+`--auth-pace-rps` delays only scenarios in the `authenticated` group, so the
+anonymous surface is still measured at full speed. To characterise the throttle
+boundary instead, ramp deliberately and read the `throttled_429` column — that
+is what the load profile is for.
+
+The dashboard path (`x-dashboard-key` + `x-workspace-id`, both server-side only)
+is the practical way to authenticate a live run: it needs no database access to
+mint a key. Note that it also bypasses per-key permissions, so a
+permission-denied scenario such as `/products` will answer `200` rather than
+`403` under it.
+
+### 6. Proxy and client IP
 
 `getRequestIp()` trusts `CF-Connecting-IP`, then `X-Forwarded-For`, then
 `X-Real-IP`. Web traffic arrives through Cloudflare, which sets those headers
