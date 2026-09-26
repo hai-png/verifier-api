@@ -59,11 +59,6 @@ jobs:
     timeout-minutes: 90
     env:
       DATABASE_URL: mysql://root:root@127.0.0.1:3306/verifier
-      PROFILE: ${{ github.event.inputs.profile || 'latency' }}
-      DB_LATENCY_MS: ${{ github.event.inputs.db_latency_ms || '0' }}
-      UPSTREAM_DELAY_MS: ${{ github.event.inputs.upstream_delay_ms || '400' }}
-      STAGES: ${{ github.event.inputs.stages || '1:10,5:10,10:15,20:15,40:15' }}
-      PIN_CPU: ${{ github.event.inputs.pin_cpu == 'false' && '0' || '1' }}
 
     services:
       mysql:
@@ -81,6 +76,35 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve run parameters
+        # workflow_dispatch inputs win; push-triggered runs read
+        # loadtest/lab-profile.json so the parameters stay versioned.
+        run: |
+          node -e '
+            const fs = require("fs");
+            const file = fs.existsSync("loadtest/lab-profile.json")
+              ? JSON.parse(fs.readFileSync("loadtest/lab-profile.json", "utf8"))
+              : {};
+            const inputs = ${{ toJSON(github.event.inputs) }} || {};
+            const pick = (key, fallback) => {
+              const value = inputs[key];
+              if (value !== undefined && value !== null && String(value).length > 0) return String(value);
+              if (file[key] !== undefined) return String(file[key]);
+              return fallback;
+            };
+            const env = {
+              PROFILE: pick("profile", "all"),
+              DB_LATENCY_MS: pick("db_latency_ms", "0"),
+              UPSTREAM_DELAY_MS: pick("upstream_delay_ms", "400"),
+              STAGES: pick("stages", "1:10,5:10,10:15,20:15,40:15"),
+              PIN_CPU: pick("pin_cpu", "true") === "false" ? "0" : "1",
+            };
+            for (const [key, value] of Object.entries(env)) {
+              fs.appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
+            }
+            console.log(env);
+          '
 
       - uses: actions/setup-node@v4
         with:
