@@ -1,8 +1,276 @@
 ### auth_invalid_403
-db-traffic failed for auth_invalid_403
+{
+  "scenario": "auth_invalid_403",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 324,
+    "mean": 64.8
+  },
+  "responses": [
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 65.5
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 64.7
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 64.5
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 64.2
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 64.1
+    }
+  ],
+  "sqlStatements": 0,
+  "sqlPerRequest": 0,
+  "comCountersPerRequest": {
+    "Com_select": 0.6,
+    "Com_stmt_execute": 0.2
+  },
+  "controlNoise": {
+    "statements": 4,
+    "comCounters": {
+      "Com_insert": 1,
+      "Com_select": 3,
+      "Com_stmt_execute": 6,
+      "Com_stmt_prepare": 4,
+      "Com_update": 1
+    }
+  },
+  "statementShapes": []
+}
 ### verify_validate_400
-db-traffic failed for verify_validate_400
+{
+  "scenario": "verify_validate_400",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 1969,
+    "mean": 393.8
+  },
+  "responses": [
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 493.7
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 368.5
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 307.9
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 489.5
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 308.7
+    }
+  ],
+  "sqlStatements": 22,
+  "sqlPerRequest": 4.4,
+  "comCountersPerRequest": {
+    "Com_insert": 0.2,
+    "Com_select": 4.2,
+    "Com_stmt_execute": 6.2,
+    "Com_stmt_prepare": 2,
+    "Com_update": 2
+  },
+  "controlNoise": {
+    "statements": 6,
+    "comCounters": {
+      "Com_insert": 1,
+      "Com_select": 4,
+      "Com_stmt_execute": 6,
+      "Com_stmt_prepare": 4,
+      "Com_update": 1
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "BEGIN",
+      "count": 11,
+      "perRequest": 2.2
+    },
+    {
+      "sql": "COMMIT",
+      "count": 10,
+      "perRequest": 2
+    },
+    {
+      "sql": "SELECT ?",
+      "count": 1,
+      "perRequest": 0.2
+    }
+  ]
+}
 ### verify_telebirr_external
-db-traffic failed for verify_telebirr_external
+{
+  "scenario": "verify_telebirr_external",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 3833,
+    "mean": 766.6
+  },
+  "responses": [
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 754.5
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 727.2
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 723.7
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 906.8
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 720.7
+    }
+  ],
+  "sqlStatements": 16,
+  "sqlPerRequest": 3.2,
+  "comCountersPerRequest": {
+    "Com_insert": 0.2,
+    "Com_select": 3.4,
+    "Com_stmt_execute": 4.4,
+    "Com_stmt_prepare": 0.2,
+    "Com_update": 1.2
+  },
+  "controlNoise": {
+    "statements": 4,
+    "comCounters": {
+      "Com_insert": 1,
+      "Com_select": 3,
+      "Com_stmt_execute": 6,
+      "Com_stmt_prepare": 3,
+      "Com_update": 1
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "BEGIN",
+      "count": 7,
+      "perRequest": 1.4
+    },
+    {
+      "sql": "COMMIT",
+      "count": 7,
+      "perRequest": 1.4
+    },
+    {
+      "sql": "SELECT ?",
+      "count": 2,
+      "perRequest": 0.4
+    }
+  ]
+}
 ### verify_mpesa_external
-db-traffic failed for verify_mpesa_external
+{
+  "scenario": "verify_mpesa_external",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 3562,
+    "mean": 712.4
+  },
+  "responses": [
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 715.1
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 712.2
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 711.2
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 713.4
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 709.5
+    }
+  ],
+  "sqlStatements": 13,
+  "sqlPerRequest": 2.6,
+  "comCountersPerRequest": {
+    "Com_insert": 0.2,
+    "Com_select": 2.2,
+    "Com_stmt_execute": 3.2,
+    "Com_stmt_prepare": 0.2,
+    "Com_update": 1
+  },
+  "controlNoise": {
+    "statements": 4,
+    "comCounters": {
+      "Com_insert": 1,
+      "Com_select": 3,
+      "Com_stmt_execute": 6,
+      "Com_update": 1
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "BEGIN",
+      "count": 6,
+      "perRequest": 1.2
+    },
+    {
+      "sql": "COMMIT",
+      "count": 6,
+      "perRequest": 1.2
+    },
+    {
+      "sql": "SELECT ?",
+      "count": 1,
+      "perRequest": 0.2
+    }
+  ]
+}
