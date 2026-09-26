@@ -2,7 +2,12 @@ services:
   - type: web
     name: verifier-api-selfhosted
     env: docker
-    plan: free  # 512MB RAM, spins down after 15 min inactivity (cold start ~30s)
+    plan: free  # 512MB RAM / shared CPU, spins down after 15 min inactivity (cold start ~30s)
+    # REGION MATTERS. This service runs in us-west (Oregon) — see the CNAME
+    # target *.origin.onrender.com in DNS. The database must live in the same
+    # region: a TiDB Serverless cluster in us-east-1 adds ~150 ms to every query,
+    # and a verification issues several queries. Use us-west-2 (Oregon) for
+    # TiDB, or move this service to us-east (Ohio/Virginia).
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /
@@ -21,6 +26,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Boot schema push (Dockerfile) after the first successful deploy, so cold
+      # starts skip prisma db push entirely.
+      - key: SKIP_SCHEMA_PUSH
+        value: "false"
       - key: LOG_LEVEL
         value: info
       # Database (MySQL — TiDB Cloud Serverless free tier recommended)
@@ -57,3 +66,17 @@ services:
       # Status monitor (optional)
       - key: STATUS_MONITOR_SECRET
         sync: false
+      # ── Performance knobs (optional, sane defaults) ──────────────────────────
+      # Merge identical in-flight verifications and replay successful ones.
+      # Set to 0 to disable.
+      # - key: VERIFY_CACHE_TTL_MS
+      #   value: "60000"
+      # Batch the per-request usage log + API key counter writes.
+      # - key: USAGE_LOG_FLUSH_MS
+      #   value: "2000"
+      # Cache the pricing row used by the rate limiter / quota gate.
+      # - key: BILLING_CONFIG_CACHE_TTL_MS
+      #   value: "30000"
+      # Cap concurrent headless-Chromium work (legacy CBE).
+      # - key: CBE_MAX_CONCURRENT_BROWSER_OPS
+      #   value: "1"

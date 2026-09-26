@@ -201,6 +201,61 @@ export function getChromeExecutablePath(): string | undefined {
     return undefined;
 }
 
+// ─── Browser concurrency guard ────────────────────────────────────────────────
+// Legacy CBE verification drives headless Chromium. Each in-flight verification
+// opens its own page, and a Render free instance has 512 MB of RAM, so a burst
+// of legacy receipts could take the whole service down. Serialise browser work
+// (configurable) and give queued requests a deadline instead of piling up.
+const MAX_CONCURRENT_BROWSER_OPS = Math.max(
+    1,
+    Number(process.env.CBE_MAX_CONCURRENT_BROWSER_OPS ?? 1)
+);
+const BROWSER_QUEUE_TIMEOUT_MS = Math.max(
+    1_000,
+    Number(process.env.CBE_BROWSER_QUEUE_TIMEOUT_MS ?? 20_000)
+);
+
+let activeBrowserOps = 0;
+const browserQueue: Array<{ resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> = [];
+
+export function browserQueueState() {
+    return { active: activeBrowserOps, queued: browserQueue.length, maxConcurrent: MAX_CONCURRENT_BROWSER_OPS };
+}
+
+async function acquireBrowserSlot(): Promise<void> {
+    if (activeBrowserOps < MAX_CONCURRENT_BROWSER_OPS) {
+        activeBrowserOps += 1;
+        return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+        const entry = {
+            resolve: () => {
+                clearTimeout(entry.timer);
+                activeBrowserOps += 1;
+                resolve();
+            },
+            reject: (error: Error) => {
+                clearTimeout(entry.timer);
+                reject(error);
+            },
+            timer: setTimeout(() => {
+                const index = browserQueue.indexOf(entry);
+                if (index >= 0) browserQueue.splice(index, 1);
+                reject(new Error('Legacy CBE verification is busy. Please retry in a moment.'));
+            }, BROWSER_QUEUE_TIMEOUT_MS),
+        };
+        entry.timer.unref?.();
+        browserQueue.push(entry);
+    });
+}
+
+function releaseBrowserSlot(): void {
+    activeBrowserOps = Math.max(0, activeBrowserOps - 1);
+    const next = browserQueue.shift();
+    if (next) next.resolve();
+}
+
 async function getBrowser(): Promise<Browser> {
     if (browser && browser.isConnected()) {
         return browser;
@@ -299,9 +354,18 @@ async function waitForPdfResponse(page: Page, timeoutMs: number): Promise<HTTPRe
 
 async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer> {
     const url = `https://apps.cbe.com.et:100/?id=${encodeURIComponent(fullId)}`;
-    const b = await getBrowser();
-    const page: Page = await b.newPage();
+    // Bound concurrent Chromium work so a burst cannot exhaust the instance.
+    await acquireBrowserSlot();
+    try {
+        const b = await getBrowser();
+        const page: Page = await b.newPage();
+        return await renderCBEReceiptPage(page, url);
+    } finally {
+        releaseBrowserSlot();
+    }
+}
 
+async function renderCBEReceiptPage(page: Page, url: string): Promise<ArrayBuffer> {
     try {
         logger.info(`🔎 Puppeteer fetching CBE receipt: ${url}`);
         await page.setUserAgent(

@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 /**
- * Counts the SQL statements a single API request costs, using MySQL's
- * general_log (log_output=TABLE). This is how we quantify "one verification
- * costs N round trips to the database" — the dominant cost when the database
- * lives in another region than the API instance.
+ * Counts the SQL statements one API request costs.
+ *
+ * Prisma talks to MySQL with prepared statements, so the general log alone is
+ * misleading (an Execute row logs parameter placeholders, not SQL). We therefore
+ * diff two sources around the measured requests:
+ *
+ *   performance_schema.events_statements_summary_by_digest — COUNT_STAR per
+ *   DIGEST_TEXT gives both the number of statements and their shapes.
+ *   SHOW GLOBAL STATUS Com_* — a protocol-independent cross-check.
  *
  *   node loadtest/db-traffic.mjs --base-url http://127.0.0.1:3001 \
  *        --api-key "$KEY" --scenario verify_telebirr_external --requests 5
@@ -11,12 +16,14 @@
 import { parseArgs } from 'node:util';
 import { PrismaClient } from '@prisma/client';
 import { createClient, classify } from './lib/http.mjs';
-import { SCENARIOS } from './lib/scenarios.mjs';
+import { SCENARIOS, resolveAuth } from './lib/scenarios.mjs';
 
 const { values } = parseArgs({
   options: {
     'base-url': { type: 'string' },
     'api-key': { type: 'string' },
+    'dashboard-key': { type: 'string' },
+    'workspace-id': { type: 'string' },
     scenario: { type: 'string', default: 'verify_telebirr_external' },
     requests: { type: 'string', default: '5' },
     out: { type: 'string' },
@@ -24,82 +31,116 @@ const { values } = parseArgs({
 });
 
 const baseUrl = values['base-url'] || process.env.LOADTEST_BASE_URL || 'http://127.0.0.1:3001';
-const apiKey = values['api-key'] || process.env.LOADTEST_API_KEY || null;
 const scenarioName = values.scenario;
 const requests = Number(values.requests);
 
+const auth = resolveAuth({
+  apiKey: values['api-key'] || process.env.LOADTEST_API_KEY || null,
+  dashboardKey: values['dashboard-key'] || process.env.LOADTEST_DASHBOARD_SECRET || null,
+  workspaceId: values['workspace-id'] || process.env.LOADTEST_WORKSPACE_ID || null,
+});
+if (!auth) throw new Error('Provide --api-key or --dashboard-key + --workspace-id');
+
 const prisma = new PrismaClient();
 
-/** Collapse literals so identical query shapes group together. */
+const COM_COUNTERS = [
+  'Com_select',
+  'Com_insert',
+  'Com_update',
+  'Com_delete',
+  'Com_stmt_execute',
+  'Com_stmt_prepare',
+  'Com_stmt_fetch',
+];
+
+async function snapshotDigests() {
+  const rows = await prisma.$queryRawUnsafe(
+    'SELECT DIGEST_TEXT AS sqlText, COUNT_STAR AS count FROM performance_schema.events_statements_summary_by_digest WHERE DIGEST_TEXT IS NOT NULL',
+  );
+  const map = new Map();
+  for (const row of rows) {
+    map.set(String(row.sqlText), Number(row.count));
+  }
+  return map;
+}
+
+async function snapshotCom() {
+  const rows = await prisma.$queryRawUnsafe('SHOW GLOBAL STATUS');
+  const map = new Map();
+  for (const row of rows) {
+    const name = String(row.Variable_name ?? row.variable_name ?? '');
+    const value = Number(row.Value ?? row.value ?? 0);
+    if (COM_COUNTERS.includes(name)) map.set(name, value);
+  }
+  return map;
+}
+
+/** Collapse literals and whitespace so shapes aggregate. */
 function normalize(sql) {
   return sql
     .replace(/\s+/g, ' ')
-    .replace(/'(\\.|[^'])*'/g, '?')
-    .replace(/\b\d+\b/g, 'N')
-    .replace(/`[^`]*`/g, '`?`')
+    .replace(/\?/g, '?')
     .trim()
-    .slice(0, 160);
+    .slice(0, 180);
 }
 
-async function logControl(sql) {
-  await prisma.$executeRawUnsafe(sql);
+function diff(before, after) {
+  const result = new Map();
+  for (const [key, value] of after) {
+    const previous = before.get(key) ?? 0;
+    const delta = value - previous;
+    if (delta > 0) result.set(key, delta);
+  }
+  return result;
 }
 
 async function main() {
   const scenario = SCENARIOS[scenarioName];
   if (!scenario) throw new Error(`unknown scenario ${scenarioName}`);
 
-  await logControl('SET GLOBAL log_output = "TABLE"');
-  await logControl('SET GLOBAL general_log = 1');
-
-  const reset = async () => {
-    await logControl('SET GLOBAL general_log = 0');
-    await logControl('TRUNCATE TABLE mysql.general_log');
-    await logControl('SET GLOBAL general_log = 1');
-  };
-
-  const readLog = async () => {
-    const rows = await prisma.$queryRawUnsafe(
-      'SELECT argument AS sql_text FROM mysql.general_log WHERE command_type = "Query" ORDER BY event_time',
-    );
-    return rows.map((row) => String(row.sql_text ?? row.SQL_TEXT ?? ''));
-  };
-
   const client = createClient({ baseUrl });
 
-  // Warm the connection pool + JIT paths so we measure steady-state cost.
-  await client.request({ ...scenario.request({ apiKey }), label: scenarioName });
-  await new Promise((resolve) => setTimeout(resolve, 250));
+  // Warm the pools and prepared statements so we measure steady state.
+  await client.request({ ...scenario.request({ auth }), label: scenarioName });
+  await new Promise((resolve) => setTimeout(resolve, 300));
 
-  await reset();
+  const digestsBefore = await snapshotDigests();
+  const comBefore = await snapshotCom();
+
   const started = Date.now();
   const results = [];
   for (let i = 0; i < requests; i += 1) {
-    results.push(await client.request({ ...scenario.request({ apiKey }), label: scenarioName }));
+    results.push(await client.request({ ...scenario.request({ auth }), label: scenarioName }));
   }
   const elapsed = Date.now() - started;
-  await new Promise((resolve) => setTimeout(resolve, 250));
 
-  const statements = (await readLog()).filter((sql) => !/general_log|log_output/i.test(sql));
-  await logControl('SET GLOBAL general_log = 0');
+  // Let the write-behind buffers flush before counting.
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
 
-  const grouped = new Map();
-  for (const sql of statements) {
-    const key = normalize(sql);
-    grouped.set(key, (grouped.get(key) || 0) + 1);
-  }
+  const digestsAfter = await snapshotDigests();
+  const comAfter = await snapshotCom();
+
+  const digestDelta = [...diff(digestsBefore, digestsAfter).entries()]
+    .map(([sql, count]) => ({ sql: normalize(sql), count, perRequest: count / requests }))
+    .sort((a, b) => b.count - a.count);
+
+  const comDelta = Object.fromEntries([...diff(comBefore, comAfter).entries()]);
+  const statementCount = [...diff(digestsBefore, digestsAfter).values()].reduce((a, b) => a + b, 0);
 
   const report = {
     scenario: scenarioName,
+    authMode: auth.mode,
     requests,
     requestMs: { total: elapsed, mean: elapsed / requests },
-    responses: results.map((r) => ({ status: r.status, class: classify(r), totalMs: r.totalMs })),
-    sqlStatements: statements.length,
-    sqlPerRequest: statements.length / requests,
-    distinctShapes: grouped.size,
-    shapes: [...grouped.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([sql, count]) => ({ count, perRequest: count / requests, sql })),
+    responses: results.map((r) => ({
+      status: r.status,
+      class: classify(r),
+      totalMs: Number(r.totalMs?.toFixed(1)),
+    })),
+    sqlStatements: statementCount,
+    sqlPerRequest: statementCount / requests,
+    comCounters: comDelta,
+    statementShapes: digestDelta,
   };
 
   console.log(JSON.stringify(report, null, 2));
