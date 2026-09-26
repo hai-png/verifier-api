@@ -320,7 +320,9 @@ async function main() {
     report.statementTimelineTotalMs = warm.timeline.reduce((total, stmt) => total + stmt.ms, 0);
     report.statementTimelineSource = warm.timelineSource;
     if (warm.timeline.length === 0) {
-      console.error('warning: the statement timeline is empty (no readable history table)');
+      console.error(
+        'warning: no statements were recorded in the timeline window — nothing ran, or the history ring had already rotated past them',
+      );
     } else if (warm.timelineSource === THREAD_HISTORY) {
       console.error(
         `note: timeline read from ${THREAD_HISTORY} — it holds ~10 statements per thread, so a multi-request window may be truncated`,
