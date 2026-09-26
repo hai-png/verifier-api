@@ -5,10 +5,15 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 7,
-    "mean": 1.4
+    "total": 9,
+    "mean": 1.8
   },
   "responses": [
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 2.7
+    },
     {
       "status": 200,
       "class": "ok",
@@ -17,7 +22,7 @@
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 1
+      "totalMs": 1.5
     },
     {
       "status": 200,
@@ -27,24 +32,18 @@
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 1
-    },
-    {
-      "status": 200,
-      "class": "ok",
-      "totalMs": 0.8
+      "totalMs": 1.3
     }
   ],
   "sqlStatements": 0,
   "sqlPerRequest": 0,
   "comCountersPerRequest": {},
   "controlNoise": {
-    "statements": 4,
+    "statements": 3,
     "comCounters": {
-      "Com_insert": 1,
       "Com_select": 3,
-      "Com_stmt_execute": 6,
-      "Com_stmt_prepare": 4,
+      "Com_stmt_execute": 5,
+      "Com_stmt_prepare": 3,
       "Com_update": 1
     }
   },
@@ -57,34 +56,34 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 376,
-    "mean": 75.2
+    "total": 380,
+    "mean": 76
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 125.8
+      "totalMs": 125.6
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.7
+      "totalMs": 63.6
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.6
+      "totalMs": 63.4
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.4
+      "totalMs": 63.2
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.3
+      "totalMs": 63.2
     }
   ],
   "sqlStatements": 1,
@@ -115,10 +114,20 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 320,
-    "mean": 64
+    "total": 325,
+    "mean": 65
   },
   "responses": [
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 66
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 65
+    },
     {
       "status": 403,
       "class": "forbidden_403",
@@ -127,22 +136,12 @@
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 63.7
+      "totalMs": 64.2
     },
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 63.5
-    },
-    {
-      "status": 403,
-      "class": "forbidden_403",
-      "totalMs": 63.9
-    },
-    {
-      "status": 403,
-      "class": "forbidden_403",
-      "totalMs": 63.4
+      "totalMs": 64.1
     }
   ],
   "sqlStatements": 0,
@@ -167,50 +166,52 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 682,
-    "mean": 136.4
+    "total": 626,
+    "mean": 125.2
   },
   "responses": [
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 185.7
+      "totalMs": 126.7
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 124.1
+      "totalMs": 125.4
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 123.9
+      "totalMs": 124.5
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 123.9
+      "totalMs": 124.5
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 123.9
+      "totalMs": 124.6
     }
   ],
-  "sqlStatements": 3,
-  "sqlPerRequest": 0.6,
+  "sqlStatements": 2,
+  "sqlPerRequest": 0.4,
   "comCountersPerRequest": {
     "Com_insert": 0.2,
-    "Com_select": 2.4,
-    "Com_stmt_execute": 2.4,
+    "Com_select": 2,
+    "Com_stmt_execute": 2.2,
     "Com_stmt_prepare": 0.2
   },
   "controlNoise": {
-    "statements": 2,
+    "statements": 5,
     "comCounters": {
-      "Com_select": 2,
-      "Com_stmt_execute": 3,
-      "Com_stmt_prepare": 1
+      "Com_insert": 1,
+      "Com_select": 4,
+      "Com_stmt_execute": 6,
+      "Com_stmt_prepare": 1,
+      "Com_update": 1
     }
   },
   "statementShapes": [
@@ -221,11 +222,6 @@
     },
     {
       "sql": "COMMIT",
-      "count": 1,
-      "perRequest": 0.2
-    },
-    {
-      "sql": "SELECT ?",
       "count": 1,
       "perRequest": 0.2
     }
@@ -238,237 +234,42 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 620,
-    "mean": 124
+    "total": 627,
+    "mean": 125.4
   },
   "responses": [
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 125.8
+    },
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 125.1
+    },
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 125.3
+    },
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 125.1
+    },
     {
       "status": 402,
       "class": "quota_402",
       "totalMs": 124.6
-    },
-    {
-      "status": 402,
-      "class": "quota_402",
-      "totalMs": 123.8
-    },
-    {
-      "status": 402,
-      "class": "quota_402",
-      "totalMs": 123.6
-    },
-    {
-      "status": 402,
-      "class": "quota_402",
-      "totalMs": 123.6
-    },
-    {
-      "status": 402,
-      "class": "quota_402",
-      "totalMs": 123.5
-    }
-  ],
-  "sqlStatements": 1,
-  "sqlPerRequest": 0.2,
-  "comCountersPerRequest": {
-    "Com_insert": 0.2,
-    "Com_select": 2,
-    "Com_stmt_execute": 2.2
-  },
-  "controlNoise": {
-    "statements": 2,
-    "comCounters": {
-      "Com_select": 3,
-      "Com_stmt_execute": 5,
-      "Com_update": 1
-    }
-  },
-  "statementShapes": [
-    {
-      "sql": "BEGIN",
-      "count": 1,
-      "perRequest": 0.2
-    }
-  ]
-}
-### verify_telebirr_external (api-key)
-{
-  "scenario": "verify_telebirr_external",
-  "authMode": "api-key",
-  "requests": 5,
-  "settleMs": 4000,
-  "requestMs": {
-    "total": 4046,
-    "mean": 809.2
-  },
-  "responses": [
-    {
-      "status": 404,
-      "class": "not_found_404",
-      "totalMs": 906.5
-    },
-    {
-      "status": 404,
-      "class": "not_found_404",
-      "totalMs": 725.1
-    },
-    {
-      "status": 404,
-      "class": "not_found_404",
-      "totalMs": 883.5
-    },
-    {
-      "status": 404,
-      "class": "not_found_404",
-      "totalMs": 812.7
-    },
-    {
-      "status": 404,
-      "class": "not_found_404",
-      "totalMs": 717.4
-    }
-  ],
-  "sqlStatements": 12,
-  "sqlPerRequest": 2.4,
-  "comCountersPerRequest": {
-    "Com_insert": 0.2,
-    "Com_select": 2,
-    "Com_stmt_execute": 3.2,
-    "Com_stmt_prepare": 1,
-    "Com_update": 1
-  },
-  "controlNoise": {
-    "statements": 4,
-    "comCounters": {
-      "Com_insert": 1,
-      "Com_select": 3,
-      "Com_stmt_execute": 6,
-      "Com_update": 1
-    }
-  },
-  "statementShapes": [
-    {
-      "sql": "BEGIN",
-      "count": 6,
-      "perRequest": 1.2
-    },
-    {
-      "sql": "COMMIT",
-      "count": 6,
-      "perRequest": 1.2
-    }
-  ]
-}
-### verify_mpesa_external (api-key)
-{
-  "scenario": "verify_mpesa_external",
-  "authMode": "api-key",
-  "requests": 5,
-  "settleMs": 4000,
-  "requestMs": {
-    "total": 3779,
-    "mean": 755.8
-  },
-  "responses": [
-    {
-      "status": 200,
-      "class": "ok",
-      "totalMs": 734.2
-    },
-    {
-      "status": 200,
-      "class": "ok",
-      "totalMs": 758
-    },
-    {
-      "status": 200,
-      "class": "ok",
-      "totalMs": 865.9
-    },
-    {
-      "status": 200,
-      "class": "ok",
-      "totalMs": 710
-    },
-    {
-      "status": 200,
-      "class": "ok",
-      "totalMs": 710.6
-    }
-  ],
-  "sqlStatements": 13,
-  "sqlPerRequest": 2.6,
-  "comCountersPerRequest": {
-    "Com_insert": 0.2,
-    "Com_select": 2,
-    "Com_stmt_execute": 3.2,
-    "Com_stmt_prepare": 0.2,
-    "Com_update": 1
-  },
-  "controlNoise": {
-    "statements": 4,
-    "comCounters": {
-      "Com_insert": 1,
-      "Com_select": 4,
-      "Com_stmt_execute": 6,
-      "Com_update": 1
-    }
-  },
-  "statementShapes": [
-    {
-      "sql": "COMMIT",
-      "count": 7,
-      "perRequest": 1.4
-    },
-    {
-      "sql": "BEGIN",
-      "count": 6,
-      "perRequest": 1.2
-    }
-  ]
-}
-### verify_validate_400 (dashboard-secret)
-{
-  "scenario": "verify_validate_400",
-  "authMode": "api-key",
-  "requests": 5,
-  "settleMs": 4000,
-  "requestMs": {
-    "total": 621,
-    "mean": 124.2
-  },
-  "responses": [
-    {
-      "status": 400,
-      "class": "client_error_4xx",
-      "totalMs": 125.1
-    },
-    {
-      "status": 400,
-      "class": "client_error_4xx",
-      "totalMs": 123.9
-    },
-    {
-      "status": 400,
-      "class": "client_error_4xx",
-      "totalMs": 124
-    },
-    {
-      "status": 400,
-      "class": "client_error_4xx",
-      "totalMs": 123.9
-    },
-    {
-      "status": 400,
-      "class": "client_error_4xx",
-      "totalMs": 123.9
     }
   ],
   "sqlStatements": 1,
   "sqlPerRequest": 0.2,
   "comCountersPerRequest": {
     "Com_select": 2.2,
-    "Com_stmt_execute": 2
+    "Com_stmt_execute": 2,
+    "Com_stmt_prepare": 0.2
   },
   "controlNoise": {
     "statements": 4,
@@ -487,18 +288,224 @@
     }
   ]
 }
+### verify_telebirr_external (api-key)
+{
+  "scenario": "verify_telebirr_external",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 3788,
+    "mean": 757.6
+  },
+  "responses": [
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 845
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 779.9
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 717.5
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 721.9
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 723.6
+    }
+  ],
+  "sqlStatements": 17,
+  "sqlPerRequest": 3.4,
+  "comCountersPerRequest": {
+    "Com_insert": 0.6,
+    "Com_select": 2.4,
+    "Com_stmt_execute": 4.2,
+    "Com_stmt_prepare": 0.8,
+    "Com_update": 1.2
+  },
+  "controlNoise": {
+    "statements": 2,
+    "comCounters": {
+      "Com_select": 3,
+      "Com_stmt_execute": 5,
+      "Com_stmt_prepare": 3,
+      "Com_update": 1
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "BEGIN",
+      "count": 9,
+      "perRequest": 1.8
+    },
+    {
+      "sql": "COMMIT",
+      "count": 8,
+      "perRequest": 1.6
+    }
+  ]
+}
+### verify_mpesa_external (api-key)
+{
+  "scenario": "verify_mpesa_external",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 3623,
+    "mean": 724.6
+  },
+  "responses": [
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 774.2
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 711.6
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 711.7
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 713.8
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 710.8
+    }
+  ],
+  "sqlStatements": 16,
+  "sqlPerRequest": 3.2,
+  "comCountersPerRequest": {
+    "Com_insert": 0.6,
+    "Com_select": 2,
+    "Com_stmt_execute": 3.6,
+    "Com_stmt_prepare": 0.2,
+    "Com_update": 1
+  },
+  "controlNoise": {
+    "statements": 3,
+    "comCounters": {
+      "Com_select": 4,
+      "Com_stmt_execute": 5,
+      "Com_update": 1
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "BEGIN",
+      "count": 8,
+      "perRequest": 1.6
+    },
+    {
+      "sql": "COMMIT",
+      "count": 8,
+      "perRequest": 1.6
+    }
+  ]
+}
+### verify_validate_400 (dashboard-secret)
+{
+  "scenario": "verify_validate_400",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 684,
+    "mean": 136.8
+  },
+  "responses": [
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 125.9
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 124.4
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 124
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 184.9
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 124.7
+    }
+  ],
+  "sqlStatements": 6,
+  "sqlPerRequest": 1.2,
+  "comCountersPerRequest": {
+    "Com_insert": 0.2,
+    "Com_select": 2.8,
+    "Com_stmt_execute": 2.8,
+    "Com_stmt_prepare": 0.2,
+    "Com_update": 0.2
+  },
+  "controlNoise": {
+    "statements": 2,
+    "comCounters": {
+      "Com_insert": 1,
+      "Com_select": 1,
+      "Com_stmt_execute": 3
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "BEGIN",
+      "count": 2,
+      "perRequest": 0.4
+    },
+    {
+      "sql": "COMMIT",
+      "count": 2,
+      "perRequest": 0.4
+    },
+    {
+      "sql": "SELECT ?",
+      "count": 2,
+      "perRequest": 0.4
+    }
+  ]
+}
 ## statements per request
-health                     0.00 statements/request, 1.4 ms
-ready                      0.20 statements/request, 75.2 ms
-auth_invalid_403           0.00 statements/request, 64.0 ms
-verify_validate_400        0.60 statements/request, 136.4 ms
-permissions_403            0.20 statements/request, 124.0 ms
-verify_telebirr_external   2.40 statements/request, 809.2 ms
-verify_mpesa_external      2.60 statements/request, 755.8 ms
+health                     0.00 statements/request, 1.8 ms
+ready                      0.20 statements/request, 76.0 ms
+auth_invalid_403           0.00 statements/request, 65.0 ms
+verify_validate_400        0.40 statements/request, 125.2 ms
+permissions_403            0.20 statements/request, 125.4 ms
+verify_telebirr_external   3.40 statements/request, 757.6 ms
+verify_mpesa_external      3.20 statements/request, 724.6 ms
 
-dashboard-secret path: 0.20 statements/request, 124.2 ms
+dashboard-secret path: 1.20 statements/request, 136.8 ms
 
 shapes for verify_validate_400:
   0.20x  BEGIN
   0.20x  COMMIT
-  0.20x  SELECT ?
