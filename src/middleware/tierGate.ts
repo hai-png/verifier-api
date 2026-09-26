@@ -12,6 +12,7 @@ import {
 } from '../config/plans';
 import { getBillingConfig, type BillingConfig } from '../config/billingConfig';
 import { isTrustedBillingPaymentVerification } from '../utils/trustedInternalOperation';
+import { markQuotaCharged } from '../utils/quotaCharge';
 
 const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
 
@@ -444,6 +445,12 @@ export const verifyQuotaGate = async (
       verificationCredits: { decrement: units },
     },
   });
+
+  // Remember the charge so the response hook can refund it when the request is
+  // rejected after this point without ever reaching the provider.
+  if (updated.count > 0) {
+    markQuotaCharged(req, { workspaceId: account.creditHolderId, units });
+  }
 
   if (updated.count === 0) {
     res.status(402).json({

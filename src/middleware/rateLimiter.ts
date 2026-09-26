@@ -4,12 +4,18 @@ import { getRateLimit } from '../config/plans';
 import { getBillingConfig } from '../config/billingConfig';
 import { getRequestIp } from '../utils/requestIp';
 import { isTrustedBillingPaymentVerification } from '../utils/trustedInternalOperation';
+import { MemoryWindowCounter } from '../utils/expiringStore';
 
 const WINDOW_MS = 60 * 1000;
 const PUBLIC_VERIFY_WINDOW_MS = 60 * 60 * 1000;
 const PUBLIC_VERIFY_LIMIT = 6;
 
-const store = new Map<string, { count: number; windowStart: number }>();
+// Bounded, self-sweeping counters — the previous plain Map grew with every
+// distinct IP/key and was never evicted.
+const store = new MemoryWindowCounter();
+
+/** Observability for /status/summary. */
+export const rateLimiterState = () => ({ trackedKeys: store.size(), sweeps: store.sweepCount() });
 
 export const rateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   if (isTrustedBillingPaymentVerification(req)) {
@@ -28,15 +34,8 @@ export const rateLimiter = async (req: Request, res: Response, next: NextFunctio
 
     const rateLimitKey = `public:${requestIp}`;
     const now = Date.now();
-    const entry = store.get(rateLimitKey);
+    const entry = store.increment(rateLimitKey, PUBLIC_VERIFY_WINDOW_MS, now);
 
-    if (!entry || now - entry.windowStart >= PUBLIC_VERIFY_WINDOW_MS) {
-      store.set(rateLimitKey, { count: 1, windowStart: now });
-      next();
-      return;
-    }
-
-    entry.count++;
     if (entry.count > PUBLIC_VERIFY_LIMIT) {
       const retryAfter = Math.ceil((entry.windowStart + PUBLIC_VERIFY_WINDOW_MS - now) / 1000);
       res.status(429).json({
@@ -72,15 +71,8 @@ export const rateLimiter = async (req: Request, res: Response, next: NextFunctio
   }
 
   const now    = Date.now();
-  const entry  = store.get(rateLimitKey);
+  const entry  = store.increment(rateLimitKey, WINDOW_MS, now);
 
-  if (!entry || now - entry.windowStart >= WINDOW_MS) {
-    store.set(rateLimitKey, { count: 1, windowStart: now });
-    next();
-    return;
-  }
-
-  entry.count++;
   if (entry.count > limit) {
     const retryAfter = Math.ceil((entry.windowStart + WINDOW_MS - now) / 1000);
     res.status(429).json({

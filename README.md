@@ -580,6 +580,51 @@ LOG_LEVEL=debug
 
 ---
 
+## ⚡ Performance & capacity
+
+The repository ships a zero-dependency latency/load harness and the results it
+produced against a free-tier deployment:
+
+```bash
+# warm latency of the anonymous surface
+node loadtest/run.mjs --base-url https://verify.noveld.com.et --profile latency
+
+# staged ramp (finds the throughput ceiling)
+node loadtest/run.mjs --base-url https://verify.noveld.com.et --profile load --stages 1:15,10:15,25:20,50:20,100:60
+
+# authenticated verification paths
+node loadtest/run.mjs --base-url http://127.0.0.1:3001 --api-key "$KEY" --allow-external
+```
+
+See [`loadtest/README.md`](./loadtest/README.md) for profiles, CI workflows and
+budgets, and `DEPLOYMENT.md` → *Performance, regions and capacity* for the
+findings (database region alignment is the single biggest win).
+
+Runtime knobs that matter on a small instance: `VERIFY_CACHE_TTL_MS` (merge +
+replay identical verifications), `USAGE_LOG_FLUSH_MS` / `KEY_USAGE_FLUSH_MS`
+(batch analytics writes), `BILLING_CONFIG_CACHE_TTL_MS`, `CBE_MAX_CONCURRENT_BROWSER_OPS`
+and `SKIP_SCHEMA_PUSH`. All have safe defaults; see `.env.example`.
+
+### Measuring it yourself
+
+`GET /status/summary` reports live database counters
+(`diagnostics.database`): statements per request, mean statement duration,
+the tables involved and the slowest statement shapes. That is enough to tell
+whether a change helped without any lab tooling:
+
+```bash
+curl -s https://verify.noveld.com.et/status/summary | jq .diagnostics.database
+```
+
+Identical single-reference verifications are served from a 60 s positive-result
+cache (`VERIFY_CACHE_TTL_MS`, per workspace, `x-verify-cache: hit` in the
+response) and concurrent duplicates are coalesced into one provider call —
+see DEPLOYMENT.md for what that means for freshness.
+
+`loadtest/README.md` documents the zero-dependency load harness (`loadtest/run.mjs`)
+and the two CI workflows that run it against the live deployment and against a
+local instance with a real MySQL and emulated cross-region latency.
+
 ## 🧰 Technologies Used
 
 - Node.js with Express

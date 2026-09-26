@@ -1,0 +1,206 @@
+name: loadtest-live
+
+# Latency + load test against a *deployed* instance.
+#
+# Runs from GitHub's network (the deployment is not reachable from every
+# environment), so it doubles as an external availability check.
+#
+# Authenticated scenarios need repository credentials: either LOADTEST_API_KEY,
+# or LOADTEST_DASHBOARD_SECRET + LOADTEST_WORKSPACE_ID (the dashboard path, which
+# is the one used for live runs because it needs no database access).
+# (Settings → Secrets and variables → Actions). Without it the run covers the
+# anonymous surface: /health, /, /status/summary, /ready, 401 and 403 paths.
+#
+# Note: workflow_dispatch only appears in the Actions tab once this file exists
+# on the default branch — pushes to a feature branch still trigger it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Target origin'
+        required: false
+        default: 'https://verify.noveld.com.et'
+      profile:
+        description: 'Profile'
+        required: false
+        type: choice
+        options: [latency, load, soak, coldstart, smoke, all]
+        default: 'latency'
+      scenarios:
+        description: 'Comma separated scenarios (blank = anonymous default set)'
+        required: false
+        default: ''
+      concurrency:
+        description: 'Concurrent workers (load/soak)'
+        required: false
+        default: '10'
+      duration:
+        description: 'Seconds per stage (load/soak)'
+        required: false
+        default: '20'
+      iterations:
+        description: 'Sequential samples per scenario (latency)'
+        required: false
+        default: '25'
+      stages:
+        description: 'Ramp stages for the load profile (c:d,c:d)'
+        required: false
+        default: '1:10,5:10,10:15,20:15,40:15'
+      auth_pace_rps:
+        description: 'Max requests/sec for authenticated scenarios (0 = unpaced). A FREE workspace allows 10 per 60s window, so pace to ~0.12 to measure real latency'
+        required: false
+        type: string
+      coldstart_sleep:
+        description: 'Seconds to idle before the cold-start probe (0 = off)'
+        required: false
+        default: '0'
+      allow_external:
+        description: 'Include scenarios that call real bank/telecom providers'
+        required: false
+        type: boolean
+        default: false
+  push:
+    paths:
+      - 'loadtest/**'
+      - '.github/workflows/loadtest-live.yml'
+
+permissions:
+  contents: write   # the report is committed back to the branch (see publish step)
+
+concurrency:
+  group: loadtest-live-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      LOADTEST_API_KEY: ${{ secrets.LOADTEST_API_KEY }}
+      # Dashboard-secret auth is the practical choice for a live target: it needs
+      # no database access (no key minting) and exercises the same middleware.
+      LOADTEST_DASHBOARD_SECRET: ${{ secrets.LOADTEST_DASHBOARD_SECRET }}
+      LOADTEST_WORKSPACE_ID: ${{ secrets.LOADTEST_WORKSPACE_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve run parameters
+        # workflow_dispatch inputs win; push-triggered runs read
+        # loadtest/live-profile.json so the parameters stay versioned.
+        run: |
+          node -e '
+            const fs = require("fs");
+            const file = fs.existsSync("loadtest/live-profile.json")
+              ? JSON.parse(fs.readFileSync("loadtest/live-profile.json", "utf8"))
+              : {};
+            const inputs = ${{ toJSON(github.event.inputs) }} || {};
+            const pick = (key, fallback) => {
+              const value = inputs[key];
+              if (value !== undefined && value !== null && String(value).length > 0) return String(value);
+              if (file[key] !== undefined) return String(file[key]);
+              return fallback;
+            };
+            const env = {
+              BASE_URL: pick("base_url", "https://verify.noveld.com.et"),
+              PROFILE: pick("profile", "latency"),
+              SCENARIOS: pick("scenarios", ""),
+              CONCURRENCY: pick("concurrency", "10"),
+              DURATION: pick("duration", "20"),
+              ITERATIONS: pick("iterations", "25"),
+              STAGES: pick("stages", "1:10,5:10,10:15,20:15,40:15"),
+              COLDSTART_SLEEP: pick("coldstart_sleep", "0"),
+              AUTH_PACE_RPS: pick("auth_pace_rps", "0"),
+              ALLOW_EXTERNAL: pick("allow_external", String(file.allow_external ?? false)),
+            };
+            for (const [key, value] of Object.entries(env)) {
+              fs.appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
+            }
+            console.log(env);
+          '
+
+      - name: Deployment surface probe
+        run: |
+          echo "## Deployment surface" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Path | Status | DNS | TCP | TLS | TTFB | Total |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|-----|-----|-----|------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          for p in /health /ready / /status/summary; do
+            out=$(curl -sS -o /dev/null --max-time 120 \
+              -w "%{http_code}|%{time_namelookup}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{remote_ip}" \
+              "${BASE_URL}${p}" || echo "ERR||||||")
+            IFS='|' read -r code dns tcp tls ttfb total ip <<< "$out"
+            echo "| \`$p\` | $code | $dns | $tcp | $tls | $ttfb | $total |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%-18s code=%-4s dns=%-8s tcp=%-8s tls=%-8s ttfb=%-8s total=%-8s ip=%s\n' "$p" "$code" "$dns" "$tcp" "$tls" "$ttfb" "$total" "$ip"
+          done
+
+      - name: Response headers (cache/CDN/host fingerprints)
+        run: |
+          curl -sSI --max-time 120 "${BASE_URL}/health" | sed -n '1,40p' || true
+
+      - name: Run harness
+        run: |
+          set -o pipefail
+          EXTRA=""
+          if [ "$ALLOW_EXTERNAL" = "true" ]; then
+            EXTRA="--allow-external"
+          fi
+          AUTH_MODE=none
+          if [ -n "$LOADTEST_API_KEY" ]; then
+            AUTH_MODE=api-key
+          elif [ -n "$LOADTEST_DASHBOARD_SECRET" ] && [ -n "$LOADTEST_WORKSPACE_ID" ]; then
+            AUTH_MODE=dashboard-secret
+          else
+            echo "::warning::No credentials found. Set LOADTEST_API_KEY, or LOADTEST_DASHBOARD_SECRET + LOADTEST_WORKSPACE_ID; authenticated scenarios will be skipped."
+          fi
+          echo "profile=$PROFILE scenarios=${SCENARIOS:-<default>} auth=$AUTH_MODE"
+
+          API_KEY_ARGS=""
+          if [ "$AUTH_MODE" = "api-key" ]; then
+            API_KEY_ARGS="--api-key $LOADTEST_API_KEY"
+          elif [ "$AUTH_MODE" = "dashboard-secret" ]; then
+            API_KEY_ARGS="--dashboard-secret $LOADTEST_DASHBOARD_SECRET --workspace-id $LOADTEST_WORKSPACE_ID"
+          fi
+
+          node loadtest/run.mjs \
+            --base-url "$BASE_URL" \
+            --profile "$PROFILE" \
+            --label live \
+            --concurrency "$CONCURRENCY" \
+            --duration "$DURATION" \
+            --iterations "$ITERATIONS" \
+            --stages "$STAGES" \
+            --coldstart-sleep "$COLDSTART_SLEEP" \
+            --auth-pace-rps "$AUTH_PACE_RPS" \
+            --out-dir loadtest-results \
+            ${SCENARIOS:+--scenarios "$SCENARIOS"} \
+            $EXTRA \
+            $API_KEY_ARGS \
+            | tee loadtest-console.txt
+
+      - name: Summarise the report as annotations
+        if: always()
+        run: node loadtest/ci/summarize.mjs loadtest-results
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-live-${{ github.run_id }}
+          path: |
+            loadtest-results/**
+            loadtest-console.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Publish report to the branch
+        # Artifacts are only downloadable from the Actions UI; committing the
+        # report keeps it readable from the repo (pushes made with GITHUB_TOKEN
+        # do not re-trigger workflows).
+        if: always()
+        run: bash loadtest/ci/publish-report.sh live

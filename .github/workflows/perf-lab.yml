@@ -1,0 +1,405 @@
+name: perf-lab
+
+# Synthetic lab: the real API server + real MySQL + a stubbed Ethiopian relay,
+# all on one machine, so we can separate *application* cost from *provider*
+# cost and reproduce the production topology (a database in another region,
+# a slow relay, one CPU).
+#
+# Two knobs make the lab a good stand-in for production:
+#   db_latency_ms   — adds netem delay to loopback MySQL traffic, emulating the
+#                     Render (us-west) ↔ TiDB (us-east) round trip.
+#   upstream_delay_ms — how fast the stubbed relay answers.
+# The API process is pinned to a single CPU (taskset) because Render's free
+# plan gives a fraction of a core.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Harness profile'
+        required: false
+        type: choice
+        options: [latency, load, all, soak]
+        default: 'latency'
+      db_latency_ms:
+        description: 'Artificial one-way delay on MySQL loopback traffic (ms, 0 = off)'
+        required: false
+        default: '0'
+      upstream_delay_ms:
+        description: 'Delay the stubbed relay adds to every response (ms)'
+        required: false
+        default: '400'
+      stages:
+        description: 'Ramp stages for the load profile'
+        required: false
+        default: '1:10,5:10,10:15,20:15,40:15'
+      pin_cpu:
+        description: 'Pin the API to a single CPU'
+        required: false
+        type: boolean
+        default: true
+  push:
+    paths:
+      - 'loadtest/**'
+      - 'src/**'
+      - 'prisma/**'
+      - '.github/workflows/perf-lab.yml'
+
+permissions:
+  contents: write   # the report is committed back to the branch (see publish step)
+
+concurrency:
+  # A newer commit measures newer code — drop the older measurement run.
+  group: perf-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/verifier
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: verifier
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve run parameters
+        # workflow_dispatch inputs win; push-triggered runs read
+        # loadtest/lab-profile.json so the parameters stay versioned.
+        run: |
+          node -e '
+            const fs = require("fs");
+            const file = fs.existsSync("loadtest/lab-profile.json")
+              ? JSON.parse(fs.readFileSync("loadtest/lab-profile.json", "utf8"))
+              : {};
+            const inputs = ${{ toJSON(github.event.inputs) }} || {};
+            const pick = (key, fallback) => {
+              const value = inputs[key];
+              if (value !== undefined && value !== null && String(value).length > 0) return String(value);
+              if (file[key] !== undefined) return String(file[key]);
+              return fallback;
+            };
+            const env = {
+              PROFILE: pick("profile", "all"),
+              DB_LATENCY_MS: pick("db_latency_ms", "0"),
+              UPSTREAM_DELAY_MS: pick("upstream_delay_ms", "400"),
+              STAGES: pick("stages", "1:10,5:10,10:15,20:15,40:15"),
+              PIN_CPU: pick("pin_cpu", "true") === "false" ? "0" : "1",
+            };
+            for (const [key, value] of Object.entries(env)) {
+              fs.appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
+            }
+            console.log(env);
+          '
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.0.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: |
+          npx prisma generate
+          pnpm build
+
+      - name: Apply schema
+        run: npx prisma db push --skip-generate
+
+      - name: Baseline database round-trip time
+        run: |
+          node -e "
+          const { PrismaClient } = require('@prisma/client');
+          const p = new PrismaClient();
+          (async () => {
+            await p.\$queryRawUnsafe('SELECT 1');
+            const samples = [];
+            for (let i = 0; i < 20; i++) {
+              const t = process.hrtime.bigint();
+              await p.\$queryRawUnsafe('SELECT 1');
+              samples.push(Number(process.hrtime.bigint() - t) / 1e6);
+            }
+            samples.sort((a, b) => a - b);
+            console.log('db round trip: p50 ' + samples[10].toFixed(2) + ' ms, min ' + samples[0].toFixed(2) + ' ms');
+            await p.\$disconnect();
+          })();
+          " | tee db-rtt-before.txt
+
+      - name: Emulate cross-region database latency
+        if: env.DB_LATENCY_MS != '0'
+        run: |
+          sudo bash loadtest/ci/db-latency.sh apply "$DB_LATENCY_MS"
+          node -e "
+          const { PrismaClient } = require('@prisma/client');
+          const p = new PrismaClient();
+          (async () => {
+            await p.\$queryRawUnsafe('SELECT 1');
+            const samples = [];
+            for (let i = 0; i < 20; i++) {
+              const t = process.hrtime.bigint();
+              await p.\$queryRawUnsafe('SELECT 1');
+              samples.push(Number(process.hrtime.bigint() - t) / 1e6);
+            }
+            samples.sort((a, b) => a - b);
+            console.log('db round trip (netem): p50 ' + samples[10].toFixed(2) + ' ms, min ' + samples[0].toFixed(2) + ' ms');
+            await p.\$disconnect();
+          })();
+          "
+
+      - name: Seed workspace + API key
+        run: |
+          SEED_OUT=seed.json node loadtest/seed.mjs > seed-key.txt
+          echo "LOADTEST_API_KEY=$(cat seed-key.txt)" >> "$GITHUB_ENV"
+          echo "LOADTEST_WORKSPACE_ID=$(node -p "require('./seed.json').workspaceId")" >> "$GITHUB_ENV"
+          echo "seeded workspace $LOADTEST_WORKSPACE_ID (api key + dashboard-secret paths both measurable)"
+
+      - name: Start stubbed Ethiopian relay
+        run: |
+          nohup node loadtest/stub-upstream.mjs --port 4100 --delay-ms "$UPSTREAM_DELAY_MS" > stub.log 2>&1 &
+          echo $! > stub.pid
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:4100/healthz >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4100/healthz && echo "stub ready"
+
+      - name: Start API
+        run: |
+          export NODE_ENV=production
+          export PORT=3001
+          export LOG_LEVEL=info
+          export SKIP_PRIMARY_VERIFICATION=true
+          export FALLBACK_PROXIES="http://127.0.0.1:4100/verify.php?reference="
+          export TELEBIRR_PROXY_KEY=stub-proxy-key
+          export MPESA_FALLBACK_URL="http://127.0.0.1:4100/mpesa.php"
+          export MPESA_PROXY_KEY=stub-proxy-key
+          export ADMIN_SECRET=lab-admin-secret
+          export DASHBOARD_SECRET=lab-dashboard-secret
+          export VERITAS_APP_URL="http://127.0.0.1:3001"
+          RUN="node dist/index.js"
+          if [ "$PIN_CPU" = "1" ]; then RUN="taskset -c 0 node dist/index.js"; fi
+          nohup env $RUN > api.log 2>&1 &
+          echo $! > api.pid
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3001/ready >/dev/null 2>&1; then echo "API ready after ${i}s"; break; fi
+            sleep 1
+          done
+          curl -sS http://127.0.0.1:3001/ready | head -c 400; echo
+          echo "--- startup log ---"
+          sed -n '1,40p' api.log
+
+      - name: Start-up cost (cold boot to first 200)
+        run: |
+          # Restart the API and time how long /ready takes to answer 200. This is
+          # the cost a user pays when the free tier has spun down.
+          kill "$(cat api.pid)" 2>/dev/null || true
+          sleep 2
+          export NODE_ENV=production PORT=3001 LOG_LEVEL=info \
+            SKIP_PRIMARY_VERIFICATION=true \
+            FALLBACK_PROXIES="http://127.0.0.1:4100/verify.php?reference=" \
+            TELEBIRR_PROXY_KEY=stub-proxy-key \
+            MPESA_FALLBACK_URL="http://127.0.0.1:4100/mpesa.php" \
+            MPESA_PROXY_KEY=stub-proxy-key ADMIN_SECRET=lab-admin-secret \
+            DASHBOARD_SECRET=lab-dashboard-secret VERITAS_APP_URL="http://127.0.0.1:3001"
+          start=$(date +%s.%N)
+          RUN="node dist/index.js"
+          if [ "$PIN_CPU" = "1" ]; then RUN="taskset -c 0 node dist/index.js"; fi
+          nohup env $RUN > api-restart.log 2>&1 &
+          echo $! > api.pid
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3001/ready >/dev/null 2>&1; then break; fi
+            sleep 0.2
+          done
+          # First *authenticated* request afterwards, to include lazy paths.
+          authed=$(curl -sS -o /dev/null -w "%{time_total}" --max-time 60 \
+            -X POST http://127.0.0.1:3001/verify-telebirr \
+            -H "x-api-key: $LOADTEST_API_KEY" -H 'content-type: application/json' \
+            -d '{"reference":"CE2513001XYT"}')
+          end=$(date +%s.%N)
+          awk -v a="$start" -v b="$end" 'BEGIN { printf "time to first ready = %.2f s\n", b - a }' | tee startup-cost.txt
+          echo "first authenticated request = ${authed}s" | tee -a startup-cost.txt
+
+      - name: Database statements per request
+        run: |
+          # The tool subtracts an empty control window, so these are net
+          # per-request statement counts (and it refuses to guess when
+          # performance_schema is off).
+          for scenario in health ready auth_invalid_403 verify_validate_400 permissions_403 verify_telebirr_external verify_mpesa_external; do
+            echo "### $scenario (api-key)"
+            node loadtest/db-traffic.mjs \
+              --base-url http://127.0.0.1:3001 \
+              --api-key "$LOADTEST_API_KEY" \
+              --scenario "$scenario" \
+              --requests 5 \
+              --out "db-traffic-$scenario.json" || echo "db-traffic failed for $scenario"
+          done | tee db-traffic.txt
+          # Same path, dashboard credentials: the mode actually used for live runs.
+          # Piped through tee as well, otherwise this evidence only exists in the
+          # job log (which is not always downloadable).
+          {
+            echo "### verify_validate_400 (dashboard-secret)"
+            node loadtest/db-traffic.mjs \
+              --base-url http://127.0.0.1:3001 \
+              --dashboard-key lab-dashboard-secret \
+              --workspace-id "$LOADTEST_WORKSPACE_ID" \
+              --scenario verify_validate_400 \
+              --requests 5 \
+              --out db-traffic-dashboard.json || echo "db-traffic failed for dashboard-secret"
+          } 2>&1 | tee -a db-traffic.txt
+          node -e "
+            const rows = ['health','ready','auth_invalid_403','verify_validate_400','permissions_403','verify_telebirr_external','verify_mpesa_external']
+              .map((name) => {
+                try {
+                  const j = require('./db-traffic-' + name + '.json');
+                  return \`\${name.padEnd(26)} \${j.sqlPerRequest.toFixed(2)} statements/request, \${j.requestMs.mean.toFixed(1)} ms\`;
+                } catch { return \`\${name.padEnd(26)} (no data)\`; }
+              });
+            console.log('## statements per request');
+            console.log(rows.join('\n'));
+            console.log('');
+            try {
+              const dash = require('./db-traffic-dashboard.json');
+              console.log('dashboard-secret path: ' + dash.sqlPerRequest.toFixed(2) + ' statements/request, ' + dash.requestMs.mean.toFixed(1) + ' ms');
+              console.log('');
+            } catch {}
+            const d = require('./db-traffic-verify_validate_400.json');
+            console.log('shapes for verify_validate_400:');
+            for (const shape of d.statementShapes) console.log('  ' + shape.perRequest.toFixed(2) + 'x  ' + shape.sql);
+          " | tee -a db-traffic.txt
+
+      - name: SQL sequence for one request (performance_schema history)
+        run: |
+          # Ordered statements with their durations: this is what explains a
+          # request that costs several sequential round trips, including the
+          # writes that happen *after* the response (credit refunds, analytics).
+          for scenario in ready verify_validate_400 verify_mpesa_external; do
+            node loadtest/db-traffic.mjs \
+              --base-url http://127.0.0.1:3001 \
+              --api-key "$LOADTEST_API_KEY" \
+              --scenario "$scenario" \
+              --requests 2 \
+              --settle-ms 2500 \
+              --timeline \
+              --out "db-timeline-$scenario.json" >/dev/null 2>>db-timeline-errors.txt \
+              || echo "timeline failed for $scenario"
+          done
+          node -e "
+            for (const name of ['ready', 'verify_validate_400', 'verify_mpesa_external']) {
+              let j;
+              try { j = require('./db-timeline-' + name + '.json'); } catch { console.log(name + ': no data'); continue; }
+              const stmts = j.statementTimeline || [];
+              console.log('### ' + name + ' — ' + stmts.length + ' statements, ' + (j.statementTimelineTotalMs || 0).toFixed(1) + ' ms inside SQL');
+              for (const stmt of stmts) console.log('  ' + String(stmt.ms).padStart(9) + ' ms  ' + stmt.sql);
+            }
+          " | tee db-timeline.txt
+
+      - name: App-reported statements per request
+        run: |
+          # Independent cross-check of db-traffic: the instance counts its own
+          # Prisma statements and exposes them on /status/summary.
+          curl -sS http://127.0.0.1:3001/status/summary > diag-before.json
+          for _ in $(seq 1 10); do
+            curl -sS -o /dev/null --max-time 60 -X POST http://127.0.0.1:3001/verify-mpesa \
+              -H "x-api-key: $LOADTEST_API_KEY" \
+              -H 'content-type: application/json' \
+              -d '{"reference":"SFE4ND9J8K"}'
+          done
+          sleep 5
+          curl -sS http://127.0.0.1:3001/status/summary > diag-after.json
+          node -e "
+            const fs = require('fs');
+            const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8')).diagnostics.database;
+            const before = read('diag-before.json');
+            const after = read('diag-after.json');
+            const requests = after.totals.requests - before.totals.requests;
+            const statements = after.totals.statements - before.totals.statements;
+            console.log('### app self-reported (10 M-Pesa verifications + 2 status reads)');
+            console.log('requests observed ......... ' + requests);
+            console.log('statements ................ ' + statements);
+            console.log('statements per request .... ' + (requests > 0 ? (statements / requests).toFixed(2) : 'n/a'));
+            console.log('mean statement ms ......... ' + after.totals.meanStatementMs);
+            // topTables is cumulative since process start, so diff it against the
+            // earlier snapshot; the list itself is the top 5 of each snapshot.
+            const deltaTables = after.topTables
+              .map((row) => {
+                const previous = before.topTables.find((t) => t.table === row.table);
+                return { table: row.table, statements: row.statements - (previous ? previous.statements : 0) };
+              })
+              .filter((row) => row.statements > 0);
+            console.log('top tables ................ ' + JSON.stringify(after.topTables));
+            console.log('top tables (delta) ........ ' + JSON.stringify(deltaTables));
+            console.log('slowest statements ........ ' + JSON.stringify(after.slowestStatements));
+          " | tee app-statements.txt
+
+      - name: Run harness (lab)
+        run: |
+          node loadtest/run.mjs \
+            --base-url http://127.0.0.1:3001 \
+            --profile "$PROFILE" \
+            --label lab \
+            --api-key "$LOADTEST_API_KEY" \
+            --allow-external \
+            --iterations 25 \
+            --concurrency 10 \
+            --duration 15 \
+            --stages "$STAGES" \
+            --scenarios health,root,status_summary,ready,auth_invalid_403,verify_validate_400,permissions_403,verify_telebirr_external,verify_mpesa_external \
+            --out-dir loadtest-results \
+            | tee loadtest-console.txt
+
+      - name: Server logs on failure
+        if: failure()
+        run: |
+          echo "--- api.log (tail) ---"; tail -n 80 api.log || true
+          echo "--- api-restart.log (tail) ---"; tail -n 80 api-restart.log || true
+
+      - name: Publish report to the branch
+        # Artifacts are only downloadable from the Actions UI; committing the
+        # report keeps it readable from the repo (pushes made with GITHUB_TOKEN
+        # do not re-trigger workflows).
+        if: always()
+        run: bash loadtest/ci/publish-report.sh lab
+
+      - name: Summarise the report as annotations
+        if: always()
+        run: node loadtest/ci/summarize.mjs loadtest-results
+
+      - name: Upload lab artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-lab-${{ github.run_id }}
+          path: |
+            loadtest-results/**
+            loadtest-console.txt
+            db-traffic*.json
+            db-timeline*.json
+            diag-*.json
+            db-timeline.txt
+            app-statements.txt
+            db-traffic.txt
+            startup-cost.txt
+            db-rtt-before.txt
+            api.log
+          retention-days: 30
+          if-no-files-found: warn

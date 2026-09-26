@@ -1,0 +1,64 @@
+{
+  "scenario": "verify_validate_400",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 1544,
+    "mean": 308.8
+  },
+  "responses": [
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 310.2
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 308.9
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 307.9
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 307.8
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 308.7
+    }
+  ],
+  "sqlStatements": 24,
+  "sqlPerRequest": 4.8,
+  "comCountersPerRequest": {
+    "Com_insert": 0.2,
+    "Com_select": 2.4,
+    "Com_stmt_execute": 5,
+    "Com_update": 2.2
+  },
+  "controlNoise": {
+    "statements": 2,
+    "comCounters": {
+      "Com_select": 2,
+      "Com_stmt_execute": 2
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "BEGIN",
+      "count": 12,
+      "perRequest": 2.4
+    },
+    {
+      "sql": "COMMIT",
+      "count": 12,
+      "perRequest": 2.4
+    }
+  ]
+}
