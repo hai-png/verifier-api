@@ -1,5 +1,5 @@
 ### ready — 0 statements, 0.0 ms inside SQL
-### verify_validate_400 — 2 statements, 1.1 ms inside SQL
-      0.133 ms  BEGIN
-      0.968 ms  COMMIT
+### verify_validate_400 — 2 statements, 0.8 ms inside SQL
+      0.106 ms  BEGIN
+      0.721 ms  COMMIT
 ### verify_mpesa_external — 0 statements, 0.0 ms inside SQL
