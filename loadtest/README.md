@@ -113,8 +113,8 @@ ones run at full speed. The load profile ignores pacing on purpose — a staged
 ramp is how you find the throttle boundary, and the report counts `throttled_429`
 separately from errors.
 
-If the credentials are wrong the run still "passes" — every authenticated
-sample is just a 401 — so the harness checks for that and prints
+Wrong credentials must not produce a passing latency run. The harness checks
+the authenticated validation probe, fails its scenario contract, and prints
 `warning: every authenticated scenario returned 401: …`, sets `authHint` in the
 JSON/markdown report, and the workflow raises a `::warning::` annotation. The
 status codes map to causes like this: 401 = the service ignored the credentials
@@ -151,19 +151,45 @@ Measured on a post-fix build (60 ms round trip):
 | `GET /health` | 0 | 0 |
 | `GET /ready` | 1 (`SELECT 1`) | 0 |
 | `POST /verify-cbe`, unknown key | 1 (key lookup) | 0 |
-| `POST /verify-mpesa`, success | ~3 (key lookup, credit decrement, config read) | ~4 (analytics + key-usage batches, delivery-target lookup, or the credit refund on a failure) |
+| `POST /verify-mpesa`, HTTP 200 negative fixture | ~3 (key lookup, credit decrement, config read) | ~4 (analytics + key-usage batches, delivery-target lookup, or the credit refund on a failure) |
 
-The app-side figure is higher than the statement count the MySQL tool reports
-(~3 for the success path) because it also includes the batched
-analytics/usage writes that finish after the response — they do not delay the
-customer, but they do compete for the connection pool.
+These historical SQL estimates are approximate: performance_schema may omit
+prepared statements, and the M-Pesa stub returns a negative business result.
+Use the app-side Prisma counters as a cross-check. They also include batched
+analytics/usage writes finishing after the response; those compete for the
+connection pool even though they do not directly delay that response.
 
 ## Interpreting results
 
 - `TTFB` is time to first byte as seen by the client; `Total` includes body read.
-- `ready` includes one database round trip — compare it with `health` to read the
+- `ready` includes a database round trip (concurrent probes share one in-flight
+  query; completed results are never cached) — compare it with `health` to read the
   database's contribution to latency.
 - `throttled_429` and `quota_402` are reported separately from errors: they are
   policy outcomes, not failures.
 - The load profile's last stage is usually the saturation point; the per-second
   timeline shows when latency starts climbing.
+
+## Measurement corrections (2026-09-26)
+
+- Warmups are excluded from measured percentiles, request counts and budgets.
+- Non-provider scenarios have expected HTTP status contracts. Unexpected statuses
+  fail the run even without an explicit latency/error budget; all-failure runs
+  also fail. Expected 402/429 policy outcomes remain separately classified, not
+  proof of successful verification capacity.
+- Credential diagnostics exclude deliberate permission-denial and provider
+  not-found scenarios. A healthy `/health` cannot mask a rejected validation key.
+- Each unknown-key request generates a new key. Load-stage timeline offsets no
+  longer overlap. Sequential RPS includes pacing time, not just request time.
+- The timeout is a wall-clock deadline, including connection queueing and body
+  read. Peak RSS uses the OS high-water mark rather than end-of-run memory.
+- Run `pnpm test:loadtest` for the zero-dependency harness regression suite.
+- The lab asserts a successful synthetic Telebirr receipt before measuring it,
+  with `VERIFY_CACHE_TTL_MS=0` to exercise the full path. Its M-Pesa stub is still
+  an intentional negative receipt; HTTP 200 there is **not** payment success.
+  The FREE test workspace returns 402 on `/products`, not permission-denied 403.
+- The zero-idle `all` profile readiness probe is **not** a cold-start measurement.
+
+See [the September 26 review](../loadtest-results/review/FINDINGS.md) for measured
+limits, remediation status and the redeployment checklist. Anonymous capacity,
+uncached synthetic-provider capacity, and real bank capacity are distinct.

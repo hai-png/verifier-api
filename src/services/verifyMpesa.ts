@@ -35,7 +35,8 @@ export async function verifyMpesa(
     const skipPrimary = process.env.SKIP_PRIMARY_VERIFICATION === "true";
 
     async function fetchFromUrl(url: string, source: string): Promise<any> {
-        logger.info(`🔎 Fetching receipt data from ${source}: ${url}`);
+        // Relay URLs contain the proxy key and must never enter logs.
+        logger.info(`🔎 Fetching receipt data from ${source}`);
         const response = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
