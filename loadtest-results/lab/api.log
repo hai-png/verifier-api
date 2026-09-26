@@ -1,14 +1,14 @@
-[2026-09-26 06:42:11] [32MINFO[39M: Starting server in production mode
-[2026-09-26 06:42:11] [32MINFO[39M: Node version: v22.23.2
-[2026-09-26 06:42:11] [32MINFO[39M: Platform: linux
-[2026-09-26 06:42:11] [32MINFO[39M: Server listening on port 3001 (runtime initializing in background)
-[2026-09-26 06:42:11] [32MINFO[39M: 🔍 Found Chrome/Chromium at: /usr/bin/google-chrome
-[2026-09-26 06:42:11] [32MINFO[39M: ✅ Chrome/Chromium available for CBE fallback: /usr/bin/google-chrome
-[2026-09-26 06:42:11] [32MINFO[39M: Telebirr verification config: primary disabled, fallback relays 1
-[2026-09-26 06:42:11] [32MINFO[39M: 🌐 Chrome/Chromium version: Google Chrome 153.0.8010.52
-[2026-09-26 06:42:12] [32MINFO[39M: Connected to database successfully
-[2026-09-26 06:42:12] [33MWARN[39M: REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.
-[2026-09-26 06:42:12] [32MINFO[39M: [5cga45q34nf] Incoming GET request to /ready
+[2026-09-26 06:48:13] [32MINFO[39M: Starting server in production mode
+[2026-09-26 06:48:13] [32MINFO[39M: Node version: v22.23.2
+[2026-09-26 06:48:13] [32MINFO[39M: Platform: linux
+[2026-09-26 06:48:13] [32MINFO[39M: Server listening on port 3001 (runtime initializing in background)
+[2026-09-26 06:48:13] [32MINFO[39M: 🔍 Found Chrome/Chromium at: /usr/bin/google-chrome
+[2026-09-26 06:48:13] [32MINFO[39M: ✅ Chrome/Chromium available for CBE fallback: /usr/bin/google-chrome
+[2026-09-26 06:48:13] [32MINFO[39M: Telebirr verification config: primary disabled, fallback relays 1
+[2026-09-26 06:48:13] [32MINFO[39M: 🌐 Chrome/Chromium version: Google Chrome 153.0.8010.52
+[2026-09-26 06:48:14] [32MINFO[39M: Connected to database successfully
+[2026-09-26 06:48:14] [33MWARN[39M: REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.
+[2026-09-26 06:48:14] [32MINFO[39M: [yrjcpznf3ae] Incoming GET request to /ready
 📦 Metadata:
    › {
    ›   "method": "GET",
@@ -17,7 +17,7 @@
    ›   "userAgent": "node",
    ›   "apiKeyWorkspaceId": "none"
    › }
-[2026-09-26 06:42:12] [32MINFO[39M: [umpt5gd1pl9] Incoming GET request to /ready
+[2026-09-26 06:48:14] [32MINFO[39M: [0mvh9e829j9b] Incoming GET request to /ready
 📦 Metadata:
    › {
    ›   "method": "GET",
@@ -26,8 +26,8 @@
    ›   "userAgent": "curl/8.5.0",
    ›   "apiKeyWorkspaceId": "none"
    › }
-[2026-09-26 06:42:12] [32MINFO[39M: Stats cache initialized from database
-[2026-09-26 06:42:12] [32MINFO[39M: [5cga45q34nf] Response sent in 368ms with status 200
+[2026-09-26 06:48:14] [32MINFO[39M: Stats cache initialized from database
+[2026-09-26 06:48:14] [32MINFO[39M: [yrjcpznf3ae] Response sent in 368ms with status 200
 📦 Metadata:
    › {
    ›   "statusCode": 200,
@@ -37,18 +37,18 @@
    ›   "source": "unknown",
    ›   "workspaceId": "none"
    › }
-[2026-09-26 06:42:12] [32MINFO[39M: Keep-alive ping OK in 381ms
-[2026-09-26 06:42:12] [32MINFO[39M: [umpt5gd1pl9] Response sent in 364ms with status 200
+[2026-09-26 06:48:14] [32MINFO[39M: Keep-alive ping OK in 383ms
+[2026-09-26 06:48:14] [32MINFO[39M: [0mvh9e829j9b] Response sent in 366ms with status 200
 📦 Metadata:
    › {
    ›   "statusCode": 200,
-   ›   "responseTime": 364,
+   ›   "responseTime": 366,
    ›   "contentLength": "450",
    ›   "apiKey": "none",
    ›   "source": "unknown",
    ›   "workspaceId": "none"
    › }
-[2026-09-26 06:42:12] [32MINFO[39M: [pny3m7vw63] Incoming GET request to /ready
+[2026-09-26 06:48:14] [32MINFO[39M: [g2erdob4dv7] Incoming GET request to /ready
 📦 Metadata:
    › {
    ›   "method": "GET",
@@ -57,7 +57,7 @@
    ›   "userAgent": "curl/8.5.0",
    ›   "apiKeyWorkspaceId": "none"
    › }
-[2026-09-26 06:42:12] [32MINFO[39M: [pny3m7vw63] Response sent in 62ms with status 200
+[2026-09-26 06:48:14] [32MINFO[39M: [g2erdob4dv7] Response sent in 62ms with status 200
 📦 Metadata:
    › {
    ›   "statusCode": 200,
@@ -67,6 +67,6 @@
    ›   "source": "unknown",
    ›   "workspaceId": "none"
    › }
-[2026-09-26 06:42:12] [32MINFO[39M: Shutting down server...
-[2026-09-26 06:42:12] [32MINFO[39M: HTTP server closed
-[2026-09-26 06:42:12] [32MINFO[39M: Disconnected from database
+[2026-09-26 06:48:15] [32MINFO[39M: Shutting down server...
+[2026-09-26 06:48:15] [32MINFO[39M: HTTP server closed
+[2026-09-26 06:48:15] [32MINFO[39M: Disconnected from database
