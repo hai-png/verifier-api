@@ -74,3 +74,18 @@ test('load stages have distinct timeline offsets', async (t) => {
   assert.equal(report.load.timeline.reduce((n, tick) => n + tick.count, 0),
     report.load.stages.reduce((n, stage) => n + stage.aggregate.count, 0));
 });
+test('healthy anonymous paths cannot mask rejected authenticated credentials', async (t) => {
+  const url = await fixture(t, (req, res) => {
+    res.statusCode = req.url === '/health' ? 200 : 401;
+    res.end('{}');
+  });
+  const { code, report } = await run(t, url, ['--scenarios', 'health,verify_validate_400', '--api-key', 'test-only']);
+  assert.equal(code, 1);
+  assert.match(report.authHint, /401/);
+});
+test('expected permission rejection is not mistaken for bad credentials', async (t) => {
+  const url = await fixture(t, (_, res) => { res.statusCode = 403; res.end(); });
+  const { code, report } = await run(t, url, ['--scenarios', 'permissions_403', '--api-key', 'test-only']);
+  assert.equal(code, 0);
+  assert.equal(report.authHint, null);
+});
