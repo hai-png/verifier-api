@@ -288,6 +288,13 @@ The app pings its own `/ready` every 5 minutes while it is awake, which keeps
 the instance from idling out. After a spin-down (deploy, manual sleep, crash)
 nothing wakes it until real traffic arrives.
 
+Measured with `--profile coldstart --coldstart-sleep 1200` (20 minutes idle,
+`loadtest-results/live/`): the first request after the spin-down pays Render's
+~30 s boot plus schema push; in the lab the same cold boot to first `200` costs
+2.4 s and the first authenticated request afterwards 0.8 s (JIT + connection
+pool warm-up). That is the number to quote users when they report "the first
+verification of the day is slow".
+
 `.github/workflows/keep-alive.yml` is the external half of that mechanism —
 **scheduled workflows only run from the repository's default branch**. This repo
 deploys from `selfhosted`, so unless that file also exists on `main` the cron
@@ -311,7 +318,8 @@ verify this without a shell.
 
 ### 4. Measured capacity
 
-Against the current free-tier instance (staged ramp, cheap endpoints):
+Against the current free-tier instance (staged ramp, cheap endpoints, run
+36215753142):
 
 | Concurrent clients | RPS | p50 | p95 |
 |---|---|---|---|
@@ -324,6 +332,30 @@ Against the current free-tier instance (staged ramp, cheap endpoints):
 Throughput plateaus at ~140 rps and latency starts climbing after ~25
 concurrent requests: that is the free plan's shared-CPU ceiling. No 5xx and no
 429s were observed during the ramp.
+
+A second live run of the same code (36216663965) reproduced the shape but with
+every scenario ~50 ms slower — including `/health`, which touches no database at
+all. So treat the absolute numbers as ±50 ms of network noise and compare
+`endpoint − /health` instead.
+
+The lab gives the per-request database cost without the network noise (single
+pinned CPU, MySQL with a 60 ms emulated cross-region round trip, statements
+counted by `loadtest/db-traffic.mjs`):
+
+| Endpoint | SQL statements / request | Warm p50 |
+|---|---|---|
+| `GET /health` | 0 | 0.5 ms |
+| `GET /ready` | 1 (`SELECT 1`) | 61 ms |
+| `POST /verify-cbe`, unknown key | 1 (key lookup) | 62 ms |
+| `GET /products`, verify-only key | 2 | 123 ms |
+| `POST /verify-mpesa`, synthetic receipt | 2.8 | 716 ms (400 ms of it the stubbed provider) |
+| `POST /verify-cbe`, malformed reference | 5 | 413 ms |
+
+Every statement is a sequential round trip, so with a cross-region database the
+database part of one verification is `statements × ~150 ms` — the malformed
+request above spends ~750 ms of round trips *after* a change, and ~300 ms
+before it, purely on charging and refunding a credit the customer never used.
+Section 1 (region alignment) is still the cheapest fix by far.
 
 ### 5. Authenticated load tests must be paced
 
