@@ -562,6 +562,7 @@ async function main() {
   /** @type {any} */
   const report = {
     label: options.label,
+    workflowRunId: process.env.GITHUB_RUN_ID ?? null,
     baseUrl: options.baseUrl,
     startedAt: startedAt.toISOString(),
     profile: options.profile,

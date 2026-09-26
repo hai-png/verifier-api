@@ -127,7 +127,16 @@ jobs:
         run: |
           npx prisma generate
           pnpm build
-          pnpm test
+          set +e
+          pnpm test > build-test.txt 2>&1
+          result=$?
+          cat build-test.txt
+          if [ "$result" -ne 0 ]; then
+            grep -A 18 -E 'not ok|error TS|Error:' build-test.txt | head -100 | while IFS= read -r line; do
+              echo "::warning::$line"
+            done
+          fi
+          exit "$result"
 
       - name: Apply schema
         run: npx prisma db push --skip-generate
