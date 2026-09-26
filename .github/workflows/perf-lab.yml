@@ -128,7 +128,8 @@ jobs:
           npx prisma generate
           pnpm build
           set +e
-          pnpm test > build-test.txt 2>&1
+          # Unit tests exercise enabled-cache behavior; only the capacity lab disables it.
+          VERIFY_CACHE_TTL_MS=60000 pnpm test > build-test.txt 2>&1
           result=$?
           cat build-test.txt
           if [ "$result" -ne 0 ]; then
