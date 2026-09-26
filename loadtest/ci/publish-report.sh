@@ -45,7 +45,10 @@ for attempt in 1 2 3 4 5 6; do
   git fetch -q origin "$BRANCH" 2>/dev/null || true
 
   # Already on the remote (an earlier attempt of this loop published it): done.
-  if [ -n "${FETCH_HEAD:-}" ] && git merge-base --is-ancestor HEAD FETCH_HEAD 2>/dev/null; then
+  # NOTE: FETCH_HEAD here must be the *git* ref written by fetch, not the
+  # ${FETCH_HEAD} shell variable — non-interactive bash never sets that one, and
+  # guarding on it silently skipped every recovery attempt.
+  if git merge-base --is-ancestor HEAD FETCH_HEAD 2>/dev/null; then
     echo "report commit is already on ${BRANCH} (attempt ${attempt})"
     exit 0
   fi
@@ -56,19 +59,31 @@ for attempt in 1 2 3 4 5 6; do
   fi
   echo "push attempt ${attempt} failed: $(tail -n 2 /tmp/push-error.txt | tr '\n' ' ')"
 
-  # Replay OUR commits (those not already in FETCH_HEAD) on top of the branch.
-  # NOTE: the upstream must be the merge base, not HEAD — `git rebase --onto X HEAD`
-  # replays an empty range, drops the report commit, and the following push then
-  # looks like a no-op success. That is how reports were lost silently.
-  BASE="$(git merge-base HEAD FETCH_HEAD 2>/dev/null || true)"
-  if [ -n "$BASE" ] && [ "$BASE" != "$(git rev-parse HEAD)" ]; then
-    git rebase --onto FETCH_HEAD "$BASE" >/dev/null 2>&1 \
-      || { git rebase --abort >/dev/null 2>&1 || true; }
+  # Rebuild our report commit on top of whatever landed first.
+  #
+  # NOT a rebase: actions/checkout does a depth-1 shallow clone, so there is no
+  # common ancestor to rebase onto — `git merge-base` returns nothing and the
+  # retry could never recover (which is how reports were lost). Copying the
+  # report files aside, moving to the branch tip and re-adding them needs no
+  # history at all.
+  BACKUP="${RUNNER_TEMP:-/tmp}/report-backup"
+  rm -rf "$BACKUP"
+  mkdir -p "$BACKUP"
+  cp -r loadtest-results "$BACKUP/" 2>/dev/null || true
+  git reset --hard FETCH_HEAD >/dev/null 2>&1 \
+    || git checkout -f FETCH_HEAD >/dev/null 2>&1 \
+    || true
+  cp -r "$BACKUP/loadtest-results/." loadtest-results/ 2>/dev/null || true
+  git add -f loadtest-results >/dev/null 2>&1 || true
+  if ! git diff --cached --quiet; then
+    git commit -q -m "ci(${LABEL}): publish load test report for run ${GITHUB_RUN_ID:-local} [skip ci]" || true
   fi
   sleep $((attempt * 5))
 done
 
-# Visible in the Actions UI, so a lost report is never silent again.
-echo "::warning::could not publish the report after retries (it is still in the run artifact)"
-echo "local HEAD: $(git rev-parse --short HEAD); branch tip: $(git rev-parse --short FETCH_HEAD 2>/dev/null || echo unknown)"
+# Visible in the Actions UI *and* through the API (annotations are readable even
+# when job logs are not), including the reason the last push was rejected.
+PUSH_ERROR="$(tail -n 3 /tmp/push-error.txt 2>/dev/null | tr '\n' ' ' | tr -s ' ')"
+echo "::warning::could not publish the report after retries — local $(git rev-parse --short HEAD), branch tip $(git rev-parse --short FETCH_HEAD 2>/dev/null || echo unknown); last push error: ${PUSH_ERROR}"
+echo "local HEAD: $(git rev-parse --short HEAD)"
 exit 0
