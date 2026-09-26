@@ -1,0 +1,68 @@
+{
+  "scenario": "verify_telebirr_external",
+  "authMode": "api-key",
+  "requests": 5,
+  "settleMs": 4000,
+  "requestMs": {
+    "total": 3761,
+    "mean": 752.2
+  },
+  "responses": [
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 728.2
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 726.1
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 725.6
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 727.1
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 853.5
+    }
+  ],
+  "sqlStatements": 16,
+  "sqlPerRequest": 3.2,
+  "comCountersPerRequest": {
+    "Com_insert": 0.4,
+    "Com_select": 2.6,
+    "Com_stmt_execute": 4.2,
+    "Com_stmt_prepare": 0.8,
+    "Com_update": 1.2
+  },
+  "controlNoise": {
+    "statements": 4,
+    "comCounters": {
+      "Com_insert": 1,
+      "Com_select": 3,
+      "Com_stmt_execute": 6,
+      "Com_stmt_prepare": 1,
+      "Com_update": 1
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "BEGIN",
+      "count": 8,
+      "perRequest": 1.6
+    },
+    {
+      "sql": "COMMIT",
+      "count": 8,
+      "perRequest": 1.6
+    }
+  ]
+}
