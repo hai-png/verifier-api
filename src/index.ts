@@ -35,6 +35,7 @@ import { verifyResultCache } from './middleware/verifyResultCache';
 import { quotaRefundHook } from './utils/quotaCharge';
 import { invalidateWorkspaceDeliveryCache } from './utils/workspaceEvents';
 import { getWorkspaceId } from './utils/workspaceContext';
+import { validateCbeRequest } from './middleware/validateCbeRequest';
 import { rateLimiter } from './middleware/rateLimiter';
 import { verifyImageGate, permissionGate, verifyQuotaGate } from './middleware/tierGate';
 import { verifyWebhookHook } from './middleware/verifyWebhookHook';
@@ -245,6 +246,10 @@ app.use('/verify-mpesa', rateLimiter);
 app.use('/verify-awash', rateLimiter);
 app.use('/verify-zemen', rateLimiter);
 app.use('/verify-image', rateLimiter);
+
+// Reject malformed CBE input without reserving/refunding credits. Auth and
+// throttling still run first; valid requests retain all quota checks.
+app.use('/verify-cbe', validateCbeRequest);
 
 // Monthly verification quotas (separate from per-minute rate limits)
 // Validate batch entitlement/permissions before any quota is deducted.

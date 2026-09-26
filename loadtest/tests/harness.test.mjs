@@ -66,3 +66,11 @@ test('deadline terminates a response that keeps streaming', async (t) => {
   assert.equal(classify(result), 'client_timeout');
   assert.ok(result.totalMs < 1000);
 });
+test('load stages have distinct timeline offsets', async (t) => {
+  const url = await fixture(t, (_, res) => setTimeout(() => res.end('{}'), 50));
+  const { code, report } = await run(t, url, ['--profile', 'load', '--stages', '1:1.1,1:1.1']);
+  assert.equal(code, 0);
+  assert.ok(report.load.timeline.some((tick) => tick.second >= 2));
+  assert.equal(report.load.timeline.reduce((n, tick) => n + tick.count, 0),
+    report.load.stages.reduce((n, stage) => n + stage.aggregate.count, 0));
+});

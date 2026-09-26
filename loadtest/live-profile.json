@@ -1,21 +1,17 @@
 {
   "_comment": "Parameters for push-triggered loadtest-live runs. workflow_dispatch inputs override these when the workflow is started manually from the Actions tab.",
   "base_url": "https://verify.noveld.com.et",
-  "profile": "latency",
-  "scenarios": "health,root,status_summary,ready,auth_missing_401,auth_invalid_403,verify_validate_400",
+  "profile": "load",
+  "scenarios": "health,root,status_summary,ready,auth_missing_401,auth_invalid_403",
   "concurrency": "10",
   "duration": "20",
   "iterations": "25",
   "auth_pace_rps": "0.12",
-  "stages": "1:15,5:15,10:15,25:20,50:20,100:120",
+  "stages": "1:15,5:15,10:20,25:25,50:30",
   "coldstart_sleep": "0",
   "allow_external": false,
   "_notes": [
-    "auth_pace_rps keeps authenticated scenarios inside the workspace rate limit:",
-    "config.freeRateLimit is 10 requests per 60s window (PRO 60, grandfathered FREE 30),",
-    "and the dashboard path keys its bucket on workspace+IP. Unpaced authenticated",
-    "requests measure the 429 path, not the verification path.",
-    "Anonymous scenarios are never paced.",
-    "For the aggressive saturation ramp switch to: profile=load with the stages above."
+    "Bounded anonymous ramp approved for isolated deployment; no real provider calls.",
+    "Authenticated latency is measured separately with auth_pace_rps=0.12."
   ]
 }
