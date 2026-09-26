@@ -1,2 +1,2 @@
-time to first ready = 3.15 s
-first authenticated request = 1.067526s
+time to first ready = 3.08 s
+first authenticated request = 1.066238s
