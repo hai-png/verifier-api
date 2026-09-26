@@ -167,7 +167,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 function credentialHint(report, targets) {
   const authenticated = new Set(
-    targets.filter((t) => t.scenario.group === 'authenticated').map((t) => t.name),
+    targets.filter((t) => t.scenario.group === 'authenticated' && !t.scenario.external && t.name !== 'permissions_403').map((t) => t.name),
   );
   if (!report.authenticated || authenticated.size === 0) return null;
 
@@ -177,7 +177,7 @@ function credentialHint(report, targets) {
       for (const [name, agg] of Object.entries(stage.byScenario ?? {})) {
         if (!authenticated.has(name)) continue;
         const classes = seen.get(name) ?? new Set();
-        for (const klass of Object.keys(agg.classes ?? {})) classes.add(klass);
+        for (const klass of Object.keys(agg.responseClasses ?? agg.classes ?? {})) classes.add(klass);
         seen.set(name, classes);
       }
     }
@@ -248,6 +248,7 @@ function recordSample(store, name, result, startedAtMs) {
     scenario: name,
     status: result.status,
     class: klass,
+    responseClass: classify(result),
     ttfbMs: result.ttfbMs,
     totalMs: result.totalMs,
     connectMs: result.connectMs,
@@ -271,18 +272,20 @@ function recordSample(store, name, result, startedAtMs) {
 
 /** Sequential (concurrency = 1) latency measurement — the clean warm baseline. */
 async function runLatency({ client, targets, iterations, warmup, timeoutMs, pacer }) {
-  const store = { samples: [], byScenario: {}, problems: [], warmup: [] };
+  const store = { samples: [], byScenario: {}, problems: [], warmup: [], durationMs: 0 };
   for (const task of targets) {
     for (let i = 0; i < warmup; i += 1) {
       await pacer.wait(task.name);
       const result = await client.request({ ...task.descriptor, label: task.name, timeout: timeoutMs });
       store.warmup.push(recordSample({ samples: [], byScenario: {}, problems: [] }, task.name, result, 0));
     }
+    const measuredAt = Date.now();
     for (let i = 0; i < iterations; i += 1) {
       await pacer.wait(task.name);
       const result = await client.request({ ...task.descriptor, label: task.name, timeout: timeoutMs });
       recordSample(store, task.name, result, i);
     }
+    store.durationMs += Date.now() - measuredAt;
   }
   return store;
 }
@@ -313,7 +316,10 @@ function aggregate(samples) {
   const ttfb = summarize(samples.map((s) => s.ttfbMs));
   const total = summarize(samples.map((s) => s.totalMs));
   const classes = {};
+  const responseClasses = {};
   for (const sample of samples) {
+    const responseClass = sample.responseClass ?? sample.class;
+    responseClasses[responseClass] = (responseClasses[responseClass] || 0) + 1;
     classes[sample.class] = (classes[sample.class] || 0) + 1;
   }
   const problems = samples.filter((s) => PROBLEM_CLASSES.has(s.class));
@@ -322,6 +328,7 @@ function aggregate(samples) {
     ttfb,
     total,
     classes,
+    responseClasses,
     problemCount: problems.length,
     errorRate: samples.length ? problems.length / samples.length : 0,
   };
@@ -620,7 +627,7 @@ async function main() {
         stages: [{
           label: profile === 'smoke' ? 'smoke (1 each)' : `sequential ×${options.iterations}`,
           aggregate: agg,
-          rps: agg.count / ((agg.total.mean * agg.count) / 1000 || 1),
+          rps: agg.count / (store.durationMs / 1000 || 1),
           byScenario: Object.fromEntries(Object.entries(store.byScenario).map(([name, samples]) => [name, aggregate(samples)])),
         }],
         timeline: [],
@@ -691,7 +698,7 @@ async function main() {
   if (report.authHint) console.error(`warning: ${report.authHint}`);
   const os = await import('node:os');
   report.memory = {
-    peakRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    peakRssMb: Math.round(process.resourceUsage().maxRSS / 1024),
     freeMemMb: Math.round(os.freemem() / 1024 / 1024),
   };
 
@@ -722,7 +729,12 @@ async function main() {
       });
     }
   }
-  report.budgets = budgets.length ? budgets : null;
+  budgets.push({
+    name: 'scenario contracts',
+    passed: !report.failures.some((s) => s.class === 'unexpected_status'),
+    detail: 'Unexpected endpoint status codes invalidate the run, independently of transport budgets.',
+  });
+  report.budgets = budgets;
 
   // ── Persist ────────────────────────────────────────────────────────────────
   fs.mkdirSync(options.outDir, { recursive: true });
