@@ -1,0 +1,198 @@
+### auth_invalid_403
+{
+  "scenario": "auth_invalid_403",
+  "requests": 5,
+  "requestMs": {
+    "total": 174,
+    "mean": 34.8
+  },
+  "responses": [
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 35.667987
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 34.115628
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 34.162397
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 34.464708
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 34.121551
+    }
+  ],
+  "sqlStatements": 0,
+  "sqlPerRequest": 0,
+  "distinctShapes": 0,
+  "shapes": []
+}
+### verify_validate_400
+{
+  "scenario": "verify_validate_400",
+  "requests": 5,
+  "requestMs": {
+    "total": 1529,
+    "mean": 305.8
+  },
+  "responses": [
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 344.764357
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 280.62984
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 403.874296
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 219.223899
+    },
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 279.913517
+    }
+  ],
+  "sqlStatements": 31,
+  "sqlPerRequest": 6.2,
+  "distinctShapes": 3,
+  "shapes": [
+    {
+      "count": 15,
+      "perRequest": 3,
+      "sql": "N,N,N,N,N"
+    },
+    {
+      "count": 15,
+      "perRequest": 3,
+      "sql": "N,N,N,N,N,N"
+    },
+    {
+      "count": 1,
+      "perRequest": 0.2,
+      "sql": "N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N,N"
+    }
+  ]
+}
+### verify_telebirr_external
+{
+  "scenario": "verify_telebirr_external",
+  "requests": 5,
+  "requestMs": {
+    "total": 3180,
+    "mean": 636
+  },
+  "responses": [
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 638.362339
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 638.970024
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 633.164747
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 638.351025
+    },
+    {
+      "status": 404,
+      "class": "not_found_404",
+      "totalMs": 630.050733
+    }
+  ],
+  "sqlStatements": 30,
+  "sqlPerRequest": 6,
+  "distinctShapes": 2,
+  "shapes": [
+    {
+      "count": 15,
+      "perRequest": 3,
+      "sql": "N,N,N,N,N"
+    },
+    {
+      "count": 15,
+      "perRequest": 3,
+      "sql": "N,N,N,N,N,N"
+    }
+  ]
+}
+### verify_mpesa_external
+{
+  "scenario": "verify_mpesa_external",
+  "requests": 5,
+  "requestMs": {
+    "total": 3113,
+    "mean": 622.6
+  },
+  "responses": [
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 624.922602
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 622.602115
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 622.391183
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 620.638642
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 622.04025
+    }
+  ],
+  "sqlStatements": 30,
+  "sqlPerRequest": 6,
+  "distinctShapes": 2,
+  "shapes": [
+    {
+      "count": 15,
+      "perRequest": 3,
+      "sql": "N,N,N,N,N"
+    },
+    {
+      "count": 15,
+      "perRequest": 3,
+      "sql": "N,N,N,N,N,N"
+    }
+  ]
+}
