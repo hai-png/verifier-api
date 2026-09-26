@@ -18,6 +18,7 @@ import { verifyCacheStats } from '../middleware/verifyResultCache';
 import { billingConfigCacheState } from '../config/billingConfig';
 import { workspaceDeliveryCacheState } from '../utils/workspaceEvents';
 import { quotaRefundState } from '../utils/quotaCharge';
+import { dbMetricsSnapshot } from '../utils/dbMetrics';
 
 /**
  * Lightweight process diagnostics.
@@ -56,6 +57,9 @@ function buildDiagnostics() {
         },
         rateLimiter: rateLimiterState(),
         quotaRefunds: quotaRefundState(),
+        // The number that matters for capacity planning: how many SQL statements
+        // one request costs, measured on this instance (see DEPLOYMENT.md).
+        database: dbMetricsSnapshot(),
         config: {
             redisConfigured: Boolean(process.env.REDIS_URL),
             databaseConfigured: Boolean(process.env.DATABASE_URL),

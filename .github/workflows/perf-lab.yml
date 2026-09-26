@@ -303,6 +303,35 @@ jobs:
             }
           " | tee db-timeline.txt
 
+      - name: App-reported statements per request
+        run: |
+          # Independent cross-check of db-traffic: the instance counts its own
+          # Prisma statements and exposes them on /status/summary.
+          curl -sS http://127.0.0.1:3001/status/summary > diag-before.json
+          for _ in $(seq 1 10); do
+            curl -sS -o /dev/null --max-time 60 -X POST http://127.0.0.1:3001/verify-mpesa \
+              -H "x-api-key: $LOADTEST_API_KEY" \
+              -H 'content-type: application/json' \
+              -d '{"reference":"SFE4ND9J8K"}'
+          done
+          sleep 5
+          curl -sS http://127.0.0.1:3001/status/summary > diag-after.json
+          node -e "
+            const fs = require('fs');
+            const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8')).diagnostics.database;
+            const before = read('diag-before.json');
+            const after = read('diag-after.json');
+            const requests = after.totals.requests - before.totals.requests;
+            const statements = after.totals.statements - before.totals.statements;
+            console.log('### app self-reported (10 M-Pesa verifications + 2 status reads)');
+            console.log('requests observed ......... ' + requests);
+            console.log('statements ................ ' + statements);
+            console.log('statements per request .... ' + (requests > 0 ? (statements / requests).toFixed(2) : 'n/a'));
+            console.log('mean statement ms ......... ' + after.totals.meanStatementMs);
+            console.log('top tables ................ ' + JSON.stringify(after.topTables));
+            console.log('slowest statements ........ ' + JSON.stringify(after.slowestStatements));
+          " | tee app-statements.txt
+
       - name: Run harness (lab)
         run: |
           node loadtest/run.mjs \

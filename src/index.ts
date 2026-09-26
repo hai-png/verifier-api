@@ -29,6 +29,7 @@ import publicStatusRouter from './routes/publicStatus';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
 import { requestLogger, initializeStatsCache, flushUsageLogs } from './middleware/requestLogger';
+import { recordHttpRequest } from './utils/dbMetrics';
 import { apiKeyAuth, flushKeyUsageCounters } from './middleware/apiKeyAuth';
 import { verifyResultCache } from './middleware/verifyResultCache';
 import { quotaRefundHook } from './utils/quotaCharge';
@@ -189,6 +190,12 @@ app.use(cookieParser());
 
 // Add request logging middleware
 app.use(requestLogger);
+// One integer increment per request; combined with the Prisma counters it
+// yields "statements per request" on /status/summary without lab tooling.
+app.use((_req, _res, next) => {
+    recordHttpRequest();
+    next();
+});
 
 // Refund the monthly verification credit when a charged request fails without
 // ever reaching a provider (400/403/5xx). See utils/quotaCharge.ts.
