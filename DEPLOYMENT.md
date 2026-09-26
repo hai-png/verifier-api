@@ -420,7 +420,7 @@ that line first. What each status means:
 
 | What the authenticated scenarios returned | What it means | Fix |
 |---|---|---|
-| **401** | the service ignored `x-dashboard-key` — its `DASHBOARD_SECRET` differs from the repository secret `LOADTEST_DASHBOARD_SECRET`, or is unset | copy the Render environment value into the repo secret (or set `LOADTEST_API_KEY` instead — see below). An empty `DASHBOARD_SECRET` also disables dashboard auth for the Next.js UI |
+| **401** | the service ignored `x-dashboard-key` — its `DASHBOARD_SECRET` differs from the repository secret `LOADTEST_DASHBOARD_SECRET`, or is unset | copy the Render environment value into the repo secret (or set `LOADTEST_API_KEY` instead — see below). An empty `DASHBOARD_SECRET` also disables dashboard auth for the Next.js UI. `GET /status/summary` → `diagnostics.config.dashboardSecretConfigured` tells you whether the service has one at all (booleans only, never the value) |
 | **404** | the secret matched but `LOADTEST_WORKSPACE_ID` does not exist in that database | use a workspace id from *that* deployment |
 | **403** | `x-api-key` was recognised but the key is inactive/revoked | mint a fresh key in the dashboard |
 | **402** | the workspace is out of monthly credits | top up, or use a workspace with credits |

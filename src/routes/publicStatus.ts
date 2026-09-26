@@ -63,6 +63,14 @@ function buildDiagnostics() {
         config: {
             redisConfigured: Boolean(process.env.REDIS_URL),
             databaseConfigured: Boolean(process.env.DATABASE_URL),
+            // Booleans only — enough to diagnose "the service ignored my
+            // x-dashboard-key" or "why did it not sleep" from outside, without
+            // disclosing any secret value.
+            dashboardSecretConfigured: Boolean(process.env.DASHBOARD_SECRET),
+            keepAliveUrlConfigured: Boolean(
+                process.env.RENDER_EXTERNAL_URL || process.env.VERITAS_APP_URL,
+            ),
+            keepAlivePingerEnabled: (process.env.KEEP_ALIVE_PINGER ?? 'true').toLowerCase() !== 'false',
             telebirrRelays: (process.env.FALLBACK_PROXIES || '').split(',').map(v => v.trim()).filter(Boolean).length,
             primaryVerificationSkipped: process.env.SKIP_PRIMARY_VERIFICATION === 'true',
         },
