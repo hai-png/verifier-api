@@ -13,10 +13,14 @@ DEST="loadtest-results/${LABEL}"
 BRANCH="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
 
 mkdir -p "$DEST"
-for file in loadtest-console.txt api.log api-restart.log db-traffic.txt startup-cost.txt db-rtt-before.txt stub.log; do
+for file in loadtest-console.txt api.log api-restart.log db-traffic.txt db-timeline.txt app-statements.txt startup-cost.txt db-rtt-before.txt stub.log; do
   if [ -f "$file" ]; then cp "$file" "$DEST/" 2>/dev/null || true; fi
 done
 find loadtest-results -maxdepth 1 -type f \( -name '*.json' -o -name '*.md' \) -exec cp {} "$DEST/" \; 2>/dev/null || true
+# Per-scenario tool output (db-traffic-*.json, db-timeline-*.json, diag-*.json)
+for extra in db-traffic-*.json db-timeline-*.json diag-*.json; do
+  [ -f "$extra" ] && cp "$extra" "$DEST/" 2>/dev/null || true
+done
 
 # Keep only the newest handful of runs to avoid unbounded repository growth.
 ls -1dt loadtest-results/*/ 2>/dev/null | tail -n +6 | while read -r old; do

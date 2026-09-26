@@ -49,7 +49,10 @@ async function refund(charge: QuotaCharge): Promise<void> {
         // Imported lazily so the policy helpers in this module stay unit
         // testable without a generated Prisma client.
         const { prisma } = await import('./prisma');
-        await prisma.workspace.update({
+        // updateMany, not update: it does not ask for the updated row back, so
+        // the round trip stays a single statement (an `update` costs a
+        // BEGIN/UPDATE/COMMIT sequence in the measured profile).
+        await prisma.workspace.updateMany({
             where: { id: charge.workspaceId },
             data: { verificationCredits: { increment: charge.units } },
         });
