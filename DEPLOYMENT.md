@@ -290,10 +290,24 @@ nothing wakes it until real traffic arrives.
 
 Measured with `--profile coldstart --coldstart-sleep 1200` (20 minutes idle,
 `loadtest-results/live/`): the first request after the spin-down pays Render's
-~30 s boot plus schema push; in the lab the same cold boot to first `200` costs
-2.4 s and the first authenticated request afterwards 0.8 s (JIT + connection
-pool warm-up). That is the number to quote users when they report "the first
-verification of the day is slow".
+container boot, the boot-time `prisma db push` (schema introspection against a
+remote database) *and* TiDB Serverless' own resume, because both scale to zero.
+In the lab the same cold boot to first `200` costs 2.4 s and the first
+authenticated request afterwards 0.8 s (JIT + connection pool warm-up).
+
+Three things keep the first request of the day tolerable:
+
+1. **Keep the pair awake.** `.github/workflows/keep-alive.yml` pings `/ready`
+   (which does a real `SELECT 1`) every 5 minutes — that keeps Render *and*
+   TiDB warm. It only runs from the repository's default branch, so it must
+   exist on `main`.
+2. **Do not push the schema on every boot in steady state.** `SKIP_SCHEMA_PUSH=true`
+   skips the boot-time `prisma db push`; run it once per release instead
+   (`npx prisma db push` from a shell, or a Render pre-deploy command).
+3. **Fail fast instead of hanging.** Requests that arrive before the runtime is
+   ready now wait at most `STARTUP_WAIT_MS` (default 15 s) and then get
+   `503 + Retry-After` instead of a 90 s hang, which Cloudflare turns into an
+   opaque 524.
 
 `.github/workflows/keep-alive.yml` is the external half of that mechanism —
 **scheduled workflows only run from the repository's default branch**. This repo
