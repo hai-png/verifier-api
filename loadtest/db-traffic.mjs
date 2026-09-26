@@ -39,6 +39,10 @@ const { values } = parseArgs({
     // The API batches analytics writes (2s interval by default), so wait for a
     // flush before reading the counters or the request cost looks too low.
     'settle-ms': { type: 'string', default: '4000' },
+    // Ordered SQL sequence (text + duration) for the measured window, from
+    // performance_schema.events_statements_history_long. Only meaningful for
+    // small samples — it is a server-wide ring buffer.
+    timeline: { type: 'boolean', default: false },
     out: { type: 'string' },
   },
 });
@@ -95,6 +99,34 @@ async function snapshotCom() {
   return map;
 }
 
+/** Highest event id currently recorded, plus this connection's thread id. */
+async function historyCursor() {
+  const [row] = await prisma.$queryRawUnsafe(
+    'SELECT (SELECT COALESCE(MAX(EVENT_ID), 0) FROM performance_schema.events_statements_history_long) AS maxEventId, (SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = CONNECTION_ID()) AS threadId',
+  );
+  return { maxEventId: Number(row?.maxEventId ?? 0), threadId: Number(row?.threadId ?? 0) };
+}
+
+/**
+ * Every statement the *application* ran after `cursor`, in order. The tool's own
+ * queries are filtered out by thread id, so this is the app's real sequence —
+ * the thing you need to explain a request that costs six round trips.
+ */
+async function historySince(cursor) {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT SQL_TEXT AS sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms, THREAD_ID AS threadId, EVENT_ID AS eventId
+     FROM performance_schema.events_statements_history_long
+     WHERE EVENT_ID > ? AND THREAD_ID <> ? AND SQL_TEXT IS NOT NULL
+     ORDER BY EVENT_ID`,
+    cursor.maxEventId,
+    cursor.threadId,
+  );
+  return rows.map((row) => ({
+    sql: normalize(String(row.sql)),
+    ms: Number(row.ms ?? 0),
+  }));
+}
+
 /** Collapse literals and whitespace so shapes aggregate. */
 function normalize(sql) {
   return sql
@@ -136,7 +168,8 @@ function sum(map) {
  * Run `fn` between two counter snapshots and return the raw deltas.
  * `fn` returns { elapsed, value }.
  */
-async function measureWindow(fn) {
+async function measureWindow(fn, { withHistory = false } = {}) {
+  const cursor = withHistory ? await historyCursor() : null;
   const digestsBefore = await snapshotDigests();
   const comBefore = await snapshotCom();
   const outcome = await fn();
@@ -148,6 +181,7 @@ async function measureWindow(fn) {
     com: diff(comBefore, comAfter),
     elapsedMs: outcome.elapsed,
     result: outcome.value,
+    timeline: cursor ? await historySince(cursor) : null,
   };
 }
 
@@ -184,7 +218,7 @@ async function main() {
       results.push(await client.request({ ...scenario.request({ auth }), label: scenarioName }));
     }
     return { elapsed: Date.now() - started, value: results };
-  });
+  }, { withHistory: values.timeline });
 
   const digests = subtractNoise(warm.digests, control.digests);
   const com = subtractNoise(warm.com, control.com);
@@ -216,6 +250,12 @@ async function main() {
     },
     statementShapes,
   };
+
+  if (warm.timeline) {
+    // Strip the per-request sleeps (if any) so the sequence reads as requests.
+    report.statementTimeline = warm.timeline;
+    report.statementTimelineTotalMs = warm.timeline.reduce((total, stmt) => total + stmt.ms, 0);
+  }
 
   console.log(JSON.stringify(report, null, 2));
   if (values.out) {

@@ -278,6 +278,31 @@ jobs:
             for (const shape of d.statementShapes) console.log('  ' + shape.perRequest.toFixed(2) + 'x  ' + shape.sql);
           " | tee -a db-traffic.txt
 
+      - name: SQL sequence for one request (performance_schema history)
+        run: |
+          # Ordered statements with their durations: this is what explains a
+          # request that costs several sequential round trips, including the
+          # writes that happen *after* the response (credit refunds, analytics).
+          for scenario in ready verify_validate_400 verify_mpesa_external; do
+            node loadtest/db-traffic.mjs \
+              --base-url http://127.0.0.1:3001 \
+              --api-key "$LOADTEST_API_KEY" \
+              --scenario "$scenario" \
+              --requests 2 \
+              --settle-ms 2500 \
+              --timeline \
+              --out "db-timeline-$scenario.json" >/dev/null || echo "timeline failed for $scenario"
+          done
+          node -e "
+            for (const name of ['ready', 'verify_validate_400', 'verify_mpesa_external']) {
+              let j;
+              try { j = require('./db-timeline-' + name + '.json'); } catch { console.log(name + ': no data'); continue; }
+              const stmts = j.statementTimeline || [];
+              console.log('### ' + name + ' — ' + stmts.length + ' statements, ' + (j.statementTimelineTotalMs || 0).toFixed(1) + ' ms inside SQL');
+              for (const stmt of stmts) console.log('  ' + String(stmt.ms).padStart(9) + ' ms  ' + stmt.sql);
+            }
+          " | tee db-timeline.txt
+
       - name: Run harness (lab)
         run: |
           node loadtest/run.mjs \
