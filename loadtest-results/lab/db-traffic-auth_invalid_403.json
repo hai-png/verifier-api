@@ -11,17 +11,7 @@
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 66.1
-    },
-    {
-      "status": 403,
-      "class": "forbidden_403",
-      "totalMs": 64.2
-    },
-    {
-      "status": 403,
-      "class": "forbidden_403",
-      "totalMs": 63.8
+      "totalMs": 65.1
     },
     {
       "status": 403,
@@ -31,7 +21,17 @@
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 63.7
+      "totalMs": 63.8
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 64.5
+    },
+    {
+      "status": 403,
+      "class": "forbidden_403",
+      "totalMs": 63.8
     }
   ],
   "sqlStatements": 0,
