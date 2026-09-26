@@ -156,7 +156,7 @@ async function historySince(cursor) {
   const rows =
     cursor.source === THREAD_HISTORY
       ? await prisma.$queryRawUnsafe(
-          `SELECT SQL_TEXT AS sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms
+          `SELECT SQL_TEXT AS sqlText, ROUND(TIMER_WAIT / 1000000000, 3) AS durationMs
            FROM performance_schema.${THREAD_HISTORY}
            WHERE THREAD_ID = ? AND EVENT_ID > ? AND SQL_TEXT IS NOT NULL
            ORDER BY EVENT_ID`,
@@ -164,7 +164,7 @@ async function historySince(cursor) {
           cursor.maxEventId,
         )
       : await prisma.$queryRawUnsafe(
-          `SELECT SQL_TEXT AS sql, ROUND(TIMER_WAIT / 1000000000, 3) AS ms
+          `SELECT SQL_TEXT AS sqlText, ROUND(TIMER_WAIT / 1000000000, 3) AS durationMs
            FROM performance_schema.${LONG_HISTORY}
            WHERE EVENT_ID > ? AND THREAD_ID <> ? AND SQL_TEXT IS NOT NULL
            ORDER BY EVENT_ID`,
@@ -172,8 +172,8 @@ async function historySince(cursor) {
           cursor.threadId,
         );
   return rows.map((row) => ({
-    sql: normalize(String(row.sql)),
-    ms: Number(row.ms ?? 0),
+    sql: normalize(String(row.sqlText)),
+    ms: Number(row.durationMs ?? 0),
   }));
 }
 

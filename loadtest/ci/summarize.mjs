@@ -76,6 +76,10 @@ if (report.coldStart) {
   );
 }
 
+if (report.authHint) {
+  console.log(`::warning title=credentials rejected::${report.authHint}`);
+}
+
 const classes = {};
 for (const failure of report.failures ?? []) {
   classes[failure.class] = (classes[failure.class] ?? 0) + 1;
