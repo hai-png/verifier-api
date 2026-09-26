@@ -616,6 +616,11 @@ whether a change helped without any lab tooling:
 curl -s https://verify.noveld.com.et/status/summary | jq .diagnostics.database
 ```
 
+Identical single-reference verifications are served from a 60 s positive-result
+cache (`VERIFY_CACHE_TTL_MS`, per workspace, `x-verify-cache: hit` in the
+response) and concurrent duplicates are coalesced into one provider call —
+see DEPLOYMENT.md for what that means for freshness.
+
 `loadtest/README.md` documents the zero-dependency load harness (`loadtest/run.mjs`)
 and the two CI workflows that run it against the live deployment and against a
 local instance with a real MySQL and emulated cross-region latency.
