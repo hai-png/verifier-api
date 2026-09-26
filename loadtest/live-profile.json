@@ -1,8 +1,8 @@
 {
   "_comment": "Parameters for push-triggered loadtest-live runs. workflow_dispatch inputs override these when the workflow is started manually from the Actions tab.",
   "base_url": "https://verify.noveld.com.et",
-  "profile": "load",
-  "scenarios": "health,root,status_summary,ready,auth_missing_401,auth_invalid_403",
+  "profile": "latency",
+  "scenarios": "health,root,status_summary,ready,auth_missing_401,auth_invalid_403,verify_validate_400",
   "concurrency": "10",
   "duration": "20",
   "iterations": "25",
@@ -11,7 +11,7 @@
   "coldstart_sleep": "0",
   "allow_external": false,
   "_notes": [
-    "Bounded anonymous ramp approved for isolated deployment; no real provider calls.",
-    "Authenticated latency is measured separately with auth_pace_rps=0.12."
+    "Safe default: paced latency only. Run the bounded load ramp explicitly on an approved isolated target.",
+    "Authenticated latency is paced at 0.12 requests/second to avoid FREE-tier throttling."
   ]
 }

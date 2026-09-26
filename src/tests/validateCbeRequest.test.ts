@@ -16,8 +16,8 @@ test('legacy, embedded suffix and new CBE references preserve acceptance', () =>
     { reference: 'abcdefghijk123456789' },
   ]) assert.equal(cbeRequestError(input), null);
 });
-test('early validation blocks downstream billing for GET and POST only on root', () => {
-  for (const method of ['GET', 'POST']) {
+test('early validation blocks downstream billing for GET, HEAD and POST only on root', () => {
+  for (const method of ['GET', 'HEAD', 'POST']) {
     let status = 0; let nextCalls = 0;
     const res = { status(code: number) { status = code; return this; }, json() {} };
     validateCbeRequest({ method, path: '/', body: {}, query: {} } as any, res as any, () => { nextCalls++; });

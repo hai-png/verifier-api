@@ -19,8 +19,8 @@ export function cbeRequestError(input: unknown): string | null {
 /** After authentication and rate limiting, but before any credit reservation. */
 export function validateCbeRequest(req: Request, res: Response, next: NextFunction): void {
   // Only validate the route's supported methods and exact path.
-  if (!['GET', 'POST'].includes(req.method) || !['/', ''].includes(req.path)) return next();
-  const error = cbeRequestError(req.method === 'GET' ? req.query : req.body);
+  if (!['GET', 'HEAD', 'POST'].includes(req.method) || !['/', ''].includes(req.path)) return next();
+  const error = cbeRequestError(req.method === 'POST' ? req.body : req.query);
   if (error) {
     res.status(400).json({ success: false, error });
     return;
