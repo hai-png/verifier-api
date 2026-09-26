@@ -4,55 +4,55 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 626,
-    "mean": 125.2
+    "total": 686,
+    "mean": 137.2
   },
   "responses": [
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 126
+      "totalMs": 186.1
     },
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 125.1
+      "totalMs": 124.1
     },
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 124.6
+      "totalMs": 124.4
     },
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 125.1
+      "totalMs": 126.1
     },
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 124.9
+      "totalMs": 124.2
     }
   ],
   "sqlStatements": 1,
   "sqlPerRequest": 0.2,
   "comCountersPerRequest": {
-    "Com_insert": 0.2,
-    "Com_select": 2,
-    "Com_stmt_execute": 2.2,
+    "Com_select": 2.2,
+    "Com_stmt_execute": 2,
     "Com_stmt_prepare": 0.2
   },
   "controlNoise": {
-    "statements": 3,
+    "statements": 4,
     "comCounters": {
+      "Com_insert": 1,
       "Com_select": 3,
-      "Com_stmt_execute": 5,
+      "Com_stmt_execute": 6,
       "Com_update": 1
     }
   },
   "statementShapes": [
     {
-      "sql": "BEGIN",
+      "sql": "SELECT ?",
       "count": 1,
       "perRequest": 0.2
     }

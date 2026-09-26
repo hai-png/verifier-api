@@ -1,13 +1,13 @@
-[2026-09-26 07:03:13] [32MINFO[39M: Starting server in production mode
-[2026-09-26 07:03:13] [32MINFO[39M: Node version: v22.23.2
-[2026-09-26 07:03:13] [32MINFO[39M: Platform: linux
-[2026-09-26 07:03:13] [32MINFO[39M: Server listening on port 3001 (runtime initializing in background)
-[2026-09-26 07:03:13] [32MINFO[39M: 🔍 Found Chrome/Chromium at: /usr/bin/google-chrome
-[2026-09-26 07:03:13] [32MINFO[39M: ✅ Chrome/Chromium available for CBE fallback: /usr/bin/google-chrome
-[2026-09-26 07:03:13] [32MINFO[39M: Telebirr verification config: primary disabled, fallback relays 1
-[2026-09-26 07:03:13] [32MINFO[39M: Connected to database successfully
-[2026-09-26 07:03:13] [33MWARN[39M: REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.
-[2026-09-26 07:03:14] [32MINFO[39M: [laryepzfbn] Incoming GET request to /ready
+[2026-09-26 09:09:34] [32MINFO[39M: Starting server in production mode
+[2026-09-26 09:09:34] [32MINFO[39M: Node version: v22.23.2
+[2026-09-26 09:09:34] [32MINFO[39M: Platform: linux
+[2026-09-26 09:09:34] [32MINFO[39M: Server listening on port 3001 (runtime initializing in background)
+[2026-09-26 09:09:34] [32MINFO[39M: 🔍 Found Chrome/Chromium at: /usr/bin/google-chrome
+[2026-09-26 09:09:34] [32MINFO[39M: ✅ Chrome/Chromium available for CBE fallback: /usr/bin/google-chrome
+[2026-09-26 09:09:34] [32MINFO[39M: Telebirr verification config: primary disabled, fallback relays 1
+[2026-09-26 09:09:34] [32MINFO[39M: Connected to database successfully
+[2026-09-26 09:09:34] [33MWARN[39M: REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.
+[2026-09-26 09:09:34] [32MINFO[39M: [rkh33zw5xl] Incoming GET request to /ready
 📦 Metadata:
    › {
    ›   "method": "GET",
@@ -16,19 +16,19 @@
    ›   "userAgent": "node",
    ›   "apiKeyWorkspaceId": "none"
    › }
-[2026-09-26 07:03:14] [32MINFO[39M: Stats cache initialized from database
-[2026-09-26 07:03:14] [32MINFO[39M: [laryepzfbn] Response sent in 369ms with status 200
+[2026-09-26 09:09:34] [32MINFO[39M: Stats cache initialized from database
+[2026-09-26 09:09:34] [32MINFO[39M: [rkh33zw5xl] Response sent in 368ms with status 200
 📦 Metadata:
    › {
    ›   "statusCode": 200,
-   ›   "responseTime": 369,
+   ›   "responseTime": 368,
    ›   "contentLength": "450",
    ›   "apiKey": "none",
    ›   "source": "unknown",
    ›   "workspaceId": "none"
    › }
-[2026-09-26 07:03:14] [32MINFO[39M: Keep-alive ping OK in 385ms
-[2026-09-26 07:03:14] [32MINFO[39M: [z7d4niq2rua] Incoming GET request to /ready
+[2026-09-26 09:09:35] [32MINFO[39M: Keep-alive ping OK in 384ms
+[2026-09-26 09:09:35] [32MINFO[39M: [anuxxfrdx1r] Incoming GET request to /ready
 📦 Metadata:
    › {
    ›   "method": "GET",
@@ -37,26 +37,7 @@
    ›   "userAgent": "curl/8.5.0",
    ›   "apiKeyWorkspaceId": "none"
    › }
-[2026-09-26 07:03:14] [32MINFO[39M: [z7d4niq2rua] Response sent in 64ms with status 200
-📦 Metadata:
-   › {
-   ›   "statusCode": 200,
-   ›   "responseTime": 64,
-   ›   "contentLength": "450",
-   ›   "apiKey": "none",
-   ›   "source": "unknown",
-   ›   "workspaceId": "none"
-   › }
-[2026-09-26 07:03:14] [32MINFO[39M: [2vpbhb7wyyy] Incoming GET request to /ready
-📦 Metadata:
-   › {
-   ›   "method": "GET",
-   ›   "url": "/ready",
-   ›   "ip": "::ffff:127.0.0.1",
-   ›   "userAgent": "curl/8.5.0",
-   ›   "apiKeyWorkspaceId": "none"
-   › }
-[2026-09-26 07:03:14] [32MINFO[39M: [2vpbhb7wyyy] Response sent in 63ms with status 200
+[2026-09-26 09:09:35] [32MINFO[39M: [anuxxfrdx1r] Response sent in 63ms with status 200
 📦 Metadata:
    › {
    ›   "statusCode": 200,
@@ -66,6 +47,25 @@
    ›   "source": "unknown",
    ›   "workspaceId": "none"
    › }
-[2026-09-26 07:03:14] [32MINFO[39M: Shutting down server...
-[2026-09-26 07:03:14] [32MINFO[39M: HTTP server closed
-[2026-09-26 07:03:14] [32MINFO[39M: Disconnected from database
+[2026-09-26 09:09:35] [32MINFO[39M: [scgx3rx0iw] Incoming GET request to /ready
+📦 Metadata:
+   › {
+   ›   "method": "GET",
+   ›   "url": "/ready",
+   ›   "ip": "::ffff:127.0.0.1",
+   ›   "userAgent": "curl/8.5.0",
+   ›   "apiKeyWorkspaceId": "none"
+   › }
+[2026-09-26 09:09:35] [32MINFO[39M: [scgx3rx0iw] Response sent in 62ms with status 200
+📦 Metadata:
+   › {
+   ›   "statusCode": 200,
+   ›   "responseTime": 62,
+   ›   "contentLength": "450",
+   ›   "apiKey": "none",
+   ›   "source": "unknown",
+   ›   "workspaceId": "none"
+   › }
+[2026-09-26 09:09:35] [32MINFO[39M: Shutting down server...
+[2026-09-26 09:09:35] [32MINFO[39M: HTTP server closed
+[2026-09-26 09:09:35] [32MINFO[39M: Disconnected from database
