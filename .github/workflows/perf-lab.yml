@@ -374,6 +374,10 @@ jobs:
             loadtest-results/**
             loadtest-console.txt
             db-traffic*.json
+            db-timeline*.json
+            diag-*.json
+            db-timeline.txt
+            app-statements.txt
             db-traffic.txt
             startup-cost.txt
             db-rtt-before.txt
