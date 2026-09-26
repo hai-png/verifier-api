@@ -1,0 +1,262 @@
+name: perf-lab
+
+# Synthetic lab: the real API server + real MySQL + a stubbed Ethiopian relay,
+# all on one machine, so we can separate *application* cost from *provider*
+# cost and reproduce the production topology (a database in another region,
+# a slow relay, one CPU).
+#
+# Two knobs make the lab a good stand-in for production:
+#   db_latency_ms   — adds netem delay to loopback MySQL traffic, emulating the
+#                     Render (us-west) ↔ TiDB (us-east) round trip.
+#   upstream_delay_ms — how fast the stubbed relay answers.
+# The API process is pinned to a single CPU (taskset) because Render's free
+# plan gives a fraction of a core.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Harness profile'
+        required: false
+        type: choice
+        options: [latency, load, all, soak]
+        default: 'latency'
+      db_latency_ms:
+        description: 'Artificial one-way delay on MySQL loopback traffic (ms, 0 = off)'
+        required: false
+        default: '0'
+      upstream_delay_ms:
+        description: 'Delay the stubbed relay adds to every response (ms)'
+        required: false
+        default: '400'
+      stages:
+        description: 'Ramp stages for the load profile'
+        required: false
+        default: '1:10,5:10,10:15,20:15,40:15'
+      pin_cpu:
+        description: 'Pin the API to a single CPU'
+        required: false
+        type: boolean
+        default: true
+  push:
+    paths:
+      - 'loadtest/**'
+      - 'src/**'
+      - 'prisma/**'
+      - '.github/workflows/perf-lab.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-lab-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/verifier
+      PROFILE: ${{ github.event.inputs.profile || 'latency' }}
+      DB_LATENCY_MS: ${{ github.event.inputs.db_latency_ms || '0' }}
+      UPSTREAM_DELAY_MS: ${{ github.event.inputs.upstream_delay_ms || '400' }}
+      STAGES: ${{ github.event.inputs.stages || '1:10,5:10,10:15,20:15,40:15' }}
+      PIN_CPU: ${{ github.event.inputs.pin_cpu == 'false' && '0' || '1' }}
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: verifier
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.0.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: |
+          npx prisma generate
+          pnpm build
+
+      - name: Apply schema
+        run: npx prisma db push --skip-generate
+
+      - name: Baseline database round-trip time
+        run: |
+          node -e "
+          const { PrismaClient } = require('@prisma/client');
+          const p = new PrismaClient();
+          (async () => {
+            await p.\$queryRawUnsafe('SELECT 1');
+            const samples = [];
+            for (let i = 0; i < 20; i++) {
+              const t = process.hrtime.bigint();
+              await p.\$queryRawUnsafe('SELECT 1');
+              samples.push(Number(process.hrtime.bigint() - t) / 1e6);
+            }
+            samples.sort((a, b) => a - b);
+            console.log('db round trip: p50 ' + samples[10].toFixed(2) + ' ms, min ' + samples[0].toFixed(2) + ' ms');
+            await p.\$disconnect();
+          })();
+          " | tee db-rtt-before.txt
+
+      - name: Emulate cross-region database latency
+        if: env.DB_LATENCY_MS != '0'
+        run: |
+          sudo bash loadtest/ci/db-latency.sh apply "$DB_LATENCY_MS"
+          node -e "
+          const { PrismaClient } = require('@prisma/client');
+          const p = new PrismaClient();
+          (async () => {
+            await p.\$queryRawUnsafe('SELECT 1');
+            const samples = [];
+            for (let i = 0; i < 20; i++) {
+              const t = process.hrtime.bigint();
+              await p.\$queryRawUnsafe('SELECT 1');
+              samples.push(Number(process.hrtime.bigint() - t) / 1e6);
+            }
+            samples.sort((a, b) => a - b);
+            console.log('db round trip (netem): p50 ' + samples[10].toFixed(2) + ' ms, min ' + samples[0].toFixed(2) + ' ms');
+            await p.\$disconnect();
+          })();
+          "
+
+      - name: Seed workspace + API key
+        run: |
+          echo "LOADTEST_API_KEY=$(node loadtest/seed.mjs)" >> "$GITHUB_ENV"
+
+      - name: Start stubbed Ethiopian relay
+        run: |
+          nohup node loadtest/stub-upstream.mjs --port 4100 --delay-ms "$UPSTREAM_DELAY_MS" > stub.log 2>&1 &
+          echo $! > stub.pid
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:4100/healthz >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4100/healthz && echo "stub ready"
+
+      - name: Start API
+        run: |
+          export NODE_ENV=production
+          export PORT=3001
+          export LOG_LEVEL=info
+          export SKIP_PRIMARY_VERIFICATION=true
+          export FALLBACK_PROXIES="http://127.0.0.1:4100/verify.php?reference="
+          export TELEBIRR_PROXY_KEY=stub-proxy-key
+          export MPESA_FALLBACK_URL="http://127.0.0.1:4100/mpesa.php"
+          export MPESA_PROXY_KEY=stub-proxy-key
+          export ADMIN_SECRET=lab-admin-secret
+          export DASHBOARD_SECRET=lab-dashboard-secret
+          export VERITAS_APP_URL="http://127.0.0.1:3001"
+          RUN="node dist/index.js"
+          if [ "$PIN_CPU" = "1" ]; then RUN="taskset -c 0 node dist/index.js"; fi
+          nohup env $RUN > api.log 2>&1 &
+          echo $! > api.pid
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3001/ready >/dev/null 2>&1; then echo "API ready after ${i}s"; break; fi
+            sleep 1
+          done
+          curl -sS http://127.0.0.1:3001/ready | head -c 400; echo
+          echo "--- startup log ---"
+          sed -n '1,40p' api.log
+
+      - name: Start-up cost (cold boot to first 200)
+        run: |
+          # Restart the API and time how long /ready takes to answer 200. This is
+          # the cost a user pays when the free tier has spun down.
+          kill "$(cat api.pid)" 2>/dev/null || true
+          sleep 2
+          export NODE_ENV=production PORT=3001 LOG_LEVEL=info \
+            SKIP_PRIMARY_VERIFICATION=true \
+            FALLBACK_PROXIES="http://127.0.0.1:4100/verify.php?reference=" \
+            TELEBIRR_PROXY_KEY=stub-proxy-key \
+            MPESA_FALLBACK_URL="http://127.0.0.1:4100/mpesa.php" \
+            MPESA_PROXY_KEY=stub-proxy-key ADMIN_SECRET=lab-admin-secret \
+            DASHBOARD_SECRET=lab-dashboard-secret VERITAS_APP_URL="http://127.0.0.1:3001"
+          start=$(date +%s.%N)
+          RUN="node dist/index.js"
+          if [ "$PIN_CPU" = "1" ]; then RUN="taskset -c 0 node dist/index.js"; fi
+          nohup env $RUN > api-restart.log 2>&1 &
+          echo $! > api.pid
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3001/ready >/dev/null 2>&1; then break; fi
+            sleep 0.2
+          done
+          # First *authenticated* request afterwards, to include lazy paths.
+          authed=$(curl -sS -o /dev/null -w "%{time_total}" --max-time 60 \
+            -X POST http://127.0.0.1:3001/verify-telebirr \
+            -H "x-api-key: $LOADTEST_API_KEY" -H 'content-type: application/json' \
+            -d '{"reference":"CE2513001XYT"}')
+          end=$(date +%s.%N)
+          awk -v a="$start" -v b="$end" 'BEGIN { printf "time to first ready = %.2f s\n", b - a }' | tee startup-cost.txt
+          echo "first authenticated request = ${authed}s" | tee -a startup-cost.txt
+
+      - name: Database statements per request
+        run: |
+          for scenario in auth_invalid_403 verify_validate_400 verify_telebirr_external verify_mpesa_external; do
+            echo "### $scenario"
+            node loadtest/db-traffic.mjs \
+              --base-url http://127.0.0.1:3001 \
+              --api-key "$LOADTEST_API_KEY" \
+              --scenario "$scenario" \
+              --requests 5 \
+              --out "db-traffic-$scenario.json" || echo "db-traffic failed for $scenario"
+          done | tee db-traffic.txt
+
+      - name: Run harness (lab)
+        run: |
+          node loadtest/run.mjs \
+            --base-url http://127.0.0.1:3001 \
+            --profile "$PROFILE" \
+            --label lab \
+            --api-key "$LOADTEST_API_KEY" \
+            --allow-external \
+            --iterations 25 \
+            --concurrency 10 \
+            --duration 15 \
+            --stages "$STAGES" \
+            --scenarios health,root,status_summary,ready,auth_invalid_403,verify_validate_400,permissions_403,verify_telebirr_external,verify_mpesa_external \
+            --out-dir loadtest-results \
+            | tee loadtest-console.txt
+
+      - name: Server logs on failure
+        if: failure()
+        run: |
+          echo "--- api.log (tail) ---"; tail -n 80 api.log || true
+          echo "--- api-restart.log (tail) ---"; tail -n 80 api-restart.log || true
+
+      - name: Upload lab artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-lab-${{ github.run_id }}
+          path: |
+            loadtest-results/**
+            loadtest-console.txt
+            db-traffic*.json
+            db-traffic.txt
+            startup-cost.txt
+            db-rtt-before.txt
+            api.log
+          retention-days: 30
+          if-no-files-found: warn
