@@ -27,7 +27,13 @@ function newestReport(directory, extension) {
   if (!fs.existsSync(directory)) return null;
   const files = fs
     .readdirSync(directory)
-    .filter((name) => name.endsWith(extension))
+    .filter((name) => {
+      if (!name.endsWith(extension)) return false;
+      if (!process.env.GITHUB_RUN_ID) return true;
+      try {
+        return JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8')).workflowRunId === process.env.GITHUB_RUN_ID;
+      } catch { return false; }
+    })
     .map((name) => ({ name, at: fs.statSync(path.join(directory, name)).mtimeMs }))
     .sort((a, b) => b.at - a.at);
   return files.length ? path.join(directory, files[0].name) : null;
