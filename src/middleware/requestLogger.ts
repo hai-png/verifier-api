@@ -3,6 +3,45 @@ import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { getWorkspaceContext } from '../utils/workspaceContext';
 import { getRequestIp } from '../utils/requestIp';
+import { createWriteBehind } from '../utils/writeBehind';
+
+// ─── Usage-log write-behind ───────────────────────────────────────────────────
+// One INSERT per request is 1 database round trip per request — ~150 ms against
+// a cross-region database, on the same tiny connection pool the request path
+// uses. Buffer them and insert with createMany instead.
+const USAGE_LOG_FLUSH_MS = Number(process.env.USAGE_LOG_FLUSH_MS ?? 2_000);
+const USAGE_LOG_MAX_BATCH = Number(process.env.USAGE_LOG_MAX_BATCH ?? 500);
+
+interface UsageLogEntry {
+  apiKeyId: string;
+  endpoint: string;
+  method: string;
+  statusCode: number;
+  responseTime: number;
+  ip: string;
+}
+
+const usageLogWriter = createWriteBehind<UsageLogEntry>({
+  name: 'usage-log',
+  intervalMs: USAGE_LOG_FLUSH_MS,
+  maxBatchSize: USAGE_LOG_MAX_BATCH,
+  flush: async (batch) => {
+    await prisma.usageLog.createMany({ data: batch });
+  },
+});
+
+/** Persist buffered usage logs (called during graceful shutdown). */
+export const flushUsageLogs = async (): Promise<void> => {
+  await usageLogWriter.flush();
+};
+
+/** Observability for /status/summary. */
+export const usageLogBufferSize = (): number => usageLogWriter.size();
+export const usageLogStats = () => ({
+  buffered: usageLogWriter.size(),
+  flushedBatches: usageLogWriter.flushCount(),
+  dropped: usageLogWriter.droppedCount(),
+});
 
 // In-memory cache for quick stats access
 const statsCache = {
@@ -137,23 +176,18 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
       logger.warn(`[${requestId}] Error occurred with status ${res.statusCode}`);
     }
 
-    // Store usage log in database only for API key auth (not dashboard auth)
-    // Dashboard requests are internal management calls, not customer-facing API consumption
-    try {
-      if (context?.source === 'api_key' && (req as any).apiKeyData) {
-        await prisma.usageLog.create({
-          data: {
-            apiKeyId: (req as any).apiKeyData.id,
-            endpoint,
-            method: req.method,
-            statusCode: res.statusCode,
-            responseTime,
-            ip: requestIp
-          }
-        });
-      }
-    } catch (error) {
-      logger.error('Error logging API usage:', error);
+    // Store usage log for API key auth only (not dashboard auth) — dashboard
+    // requests are internal management calls, not billable API consumption.
+    // Buffered and flushed in batches; see usageLogWriter above.
+    if (context?.source === 'api_key' && (req as any).apiKeyData) {
+      usageLogWriter.push({
+        apiKeyId: (req as any).apiKeyData.id,
+        endpoint,
+        method: req.method,
+        statusCode: res.statusCode,
+        responseTime,
+        ip: requestIp,
+      });
     }
   });
 

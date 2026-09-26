@@ -42,7 +42,10 @@ async function main() {
     data: {
       name: 'Load Test Workspace',
       tier: 'FREE',
-      grandfathered: true, // legacy free: keeps rate limit realistic but roomy
+      // NOTE: grandfathered (legacy free) would pin the rate limiter to the
+      // hardcoded LEGACY_FREE_RATE_LIMIT, which floods the lab with 429s and
+      // hides real latency. Modern FREE uses config.freeRateLimit instead.
+      grandfathered: false,
       verificationCredits: 5_000_000,
       verificationCreditsMonthly: 5_000_000,
       verificationCreditsResetAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),

@@ -1,7 +1,7 @@
 {
   "_comment": "Parameters for push-triggered loadtest-live runs. workflow_dispatch inputs override these when the workflow is started manually from the Actions tab.",
   "base_url": "https://verify.noveld.com.et",
-  "profile": "load",
+  "profile": "latency",
   "scenarios": "",
   "concurrency": "10",
   "duration": "20",

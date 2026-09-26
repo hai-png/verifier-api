@@ -253,6 +253,90 @@ curl -X POST https://fitlife-hub-api.hbetseha.workers.dev/api/payments/verify-te
 
 ---
 
+## Performance, regions and capacity
+
+Measured on the live deployment (see `loadtest/README.md` and
+`loadtest-results/`). Read this before tuning anything else.
+
+### 1. The database region must match the Render region
+
+`verify.noveld.com.et` resolves through Cloudflare to
+`verifier-api-selfhosted.onrender.com`, i.e. a Render instance in **US West
+(Oregon)**. A TiDB Serverless cluster created in **us-east-1** (as Step 1
+suggests) puts a ~150 ms round trip between the app and its database:
+
+| Endpoint | Database round trips | Warm p50 |
+|---|---|---|
+| `GET /health` (no database) | 0 | 37 ms |
+| `GET /status/summary` (no database) | 0 | 39 ms |
+| `GET /ready` (`SELECT 1`) | 1 | **194 ms** |
+| `POST /verify-cbe` with an unknown key | 1 | **199 ms** |
+
+A single verification issues several sequential queries, so this is the
+difference between a ~200 ms and a ~1 s verification.
+
+**Fix (pick one):**
+
+- Recreate the TiDB Serverless cluster in **us-west-2 (Oregon)** and paste the
+  new `DATABASE_URL` into Render (fastest, no code change), or
+- Move the Render service to **us-east** (Ohio/Virginia) — Render's free plan
+  offers us-east too.
+
+### 2. Cold starts
+
+The app pings its own `/ready` every 5 minutes while it is awake, which keeps
+the instance from idling out. After a spin-down (deploy, manual sleep, crash)
+nothing wakes it until real traffic arrives.
+
+`.github/workflows/keep-alive.yml` is the external half of that mechanism —
+**scheduled workflows only run from the repository's default branch**. This repo
+deploys from `selfhosted`, so unless that file also exists on `main` the cron
+never fires. Merge `.github/workflows/keep-alive.yml` into `main` (or make
+`main` the deploy branch) and the 5-minute ping keeps both Render and TiDB warm.
+
+### 3. Connection pool sizing
+
+Prisma sizes its pool from the CPU count it can see, which inside a container
+can be the *host's* core count. On a 0.1-CPU free instance that over-provisions
+connections, and TiDB Serverless caps connections per cluster. Pin it in the
+connection string:
+
+```
+mysql://user:pass@host:4000/db?sslaccept=accept_invalid_certs&connection_limit=5&pool_timeout=20
+```
+
+`GET /status/summary` now reports the CPU count the process sees
+(`diagnostics.process.reportedCpuCount`), plus memory and cache state, so you can
+verify this without a shell.
+
+### 4. Measured capacity
+
+Against the current free-tier instance (staged ramp, cheap endpoints):
+
+| Concurrent clients | RPS | p50 | p95 |
+|---|---|---|---|
+| 1 | 7 | 91 ms | 256 ms |
+| 10 | 58 | 93 ms | 262 ms |
+| 25 | 134 | 106 ms | 393 ms |
+| 50 | 135 | 209 ms | 841 ms |
+| 100 | 141 | 309 ms | 1892 ms |
+
+Throughput plateaus at ~140 rps and latency starts climbing after ~25
+concurrent requests: that is the free plan's shared-CPU ceiling. No 5xx and no
+429s were observed during the ramp.
+
+### 5. Proxy and client IP
+
+`getRequestIp()` trusts `CF-Connecting-IP`, then `X-Forwarded-For`, then
+`X-Real-IP`. Web traffic arrives through Cloudflare, which sets those headers
+correctly. A direct call to the `*.onrender.com` URL can forge them, so the
+per-IP public verification limit and the dashboard rate limit are best-effort:
+they protect against accidental floods, not against a determined attacker.
+If you need hard limits, put the origin behind Cloudflare Tunnel or an
+IP allowlist.
+
+---
+
 ## Free tier limitations
 
 | Service | Free tier limit | What happens when exceeded |

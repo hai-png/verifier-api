@@ -28,8 +28,12 @@ import internalStatusRouter from './routes/internalStatus';
 import publicStatusRouter from './routes/publicStatus';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
-import { requestLogger, initializeStatsCache } from './middleware/requestLogger';
-import { apiKeyAuth } from './middleware/apiKeyAuth';
+import { requestLogger, initializeStatsCache, flushUsageLogs } from './middleware/requestLogger';
+import { apiKeyAuth, flushKeyUsageCounters } from './middleware/apiKeyAuth';
+import { verifyResultCache } from './middleware/verifyResultCache';
+import { quotaRefundHook } from './utils/quotaCharge';
+import { invalidateWorkspaceDeliveryCache } from './utils/workspaceEvents';
+import { getWorkspaceId } from './utils/workspaceContext';
 import { rateLimiter } from './middleware/rateLimiter';
 import { verifyImageGate, permissionGate, verifyQuotaGate } from './middleware/tierGate';
 import { verifyWebhookHook } from './middleware/verifyWebhookHook';
@@ -166,6 +170,13 @@ async function initializeRuntime(): Promise<void> {
     }
 }
 
+// Render terminates TLS in front of the app (and Cloudflare usually sits in
+// front of Render), so X-Forwarded-* is the only source of client/protocol
+// information. `getRequestIp()` prefers CF-Connecting-IP and falls back to
+// X-Forwarded-For — see src/utils/requestIp.ts for the residual spoofing risk
+// when the *.onrender.com URL is called directly.
+app.set('trust proxy', true);
+
 app.use(cors({
     origin: true, // Allow all origins — the dashboard runs on a different domain
     credentials: true, // Allow cookies for session auth
@@ -175,6 +186,10 @@ app.use(cookieParser());
 
 // Add request logging middleware
 app.use(requestLogger);
+
+// Refund the monthly verification credit when a charged request fails without
+// ever reaching a provider (400/403/5xx). See utils/quotaCharge.ts.
+app.use(quotaRefundHook);
 
 // Register admin routes BEFORE API key authentication
 app.use('/admin', adminRouter);
@@ -237,6 +252,13 @@ const jsonErrorHandler: ErrorRequestHandler = async (err, req, res, next): Promi
 
 app.use(jsonErrorHandler);
 
+// Coalesce concurrent identical verifications + replay recent successful ones.
+// Mounted after auth/rate-limit/quota gates so every request is still
+// authenticated, throttled and billed exactly as before.
+for (const path of ['/verify', '/verify-cbe', '/verify-telebirr', '/verify-dashen', '/verify-abyssinia', '/verify-cbebirr', '/verify-mpesa', '/verify-awash', '/verify-zemen']) {
+    app.use(path, verifyResultCache);
+}
+
 // ✅ Attach routers to paths
 app.use('/verify-cbe', CBERouter);
 app.use('/verify-telebirr', telebirrRouter);
@@ -253,8 +275,18 @@ app.use('/products', permissionGate('webhooks'), productsRouter);
 app.use('/orders', permissionGate('webhooks'), ordersRouter);
 app.use('/payouts', permissionGate('webhooks'), payoutsRouter);
 app.use('/payment-links', permissionGate('webhooks'), paymentLinksRouter);
-app.use('/webhooks', permissionGate('webhooks'), webhooksRouter);
-app.use('/notifications', permissionGate('webhooks'), notificationsRouter);
+// Webhook/channel mutations must invalidate the "this workspace has no delivery
+// targets" cache used by emitWorkspaceEvent.
+const invalidateDeliveryCacheAfterMutation: RequestHandler = (req, res, next) => {
+    if (req.method !== 'GET') {
+        res.on('finish', () => {
+            if (res.statusCode < 400) invalidateWorkspaceDeliveryCache(getWorkspaceId(req));
+        });
+    }
+    next();
+};
+app.use('/webhooks', permissionGate('webhooks'), invalidateDeliveryCacheAfterMutation, webhooksRouter);
+app.use('/notifications', permissionGate('webhooks'), invalidateDeliveryCacheAfterMutation, notificationsRouter);
 
 
 const runtimeGuestPaths = ['/', '/health', '/ready', '/status'];
@@ -400,11 +432,21 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 });
 
 // Graceful shutdown
+const flushBufferedWrites = async () => {
+    // Write-behind buffers hold usage logs + API key counters; flush them before
+    // the database connection is closed so no analytics are lost on redeploy.
+    await Promise.all([
+        flushUsageLogs().catch((error) => logger.error('Failed to flush usage logs:', error)),
+        flushKeyUsageCounters().catch((error) => logger.error('Failed to flush key usage counters:', error)),
+    ]);
+};
+
 const gracefulShutdown = async () => {
     logger.info('Shutting down server...');
     stopKeepAlivePinger();
     await closeCBEBrowser();
     if (!server) {
+        await flushBufferedWrites();
         await stopWebhookQueueWorker();
         await stopNotificationQueueWorker();
         await disconnectPrisma();
@@ -414,6 +456,7 @@ const gracefulShutdown = async () => {
 
     server.close(async () => {
         logger.info('HTTP server closed');
+        await flushBufferedWrites();
         await stopWebhookQueueWorker();
         await stopNotificationQueueWorker();
         await disconnectPrisma();

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { runSmartVerify } from '../services/verifyUniversal';
 import logger from '../utils/logger';
+import { MemoryWindowCounter } from '../utils/expiringStore';
 
 const router = Router();
 
@@ -15,16 +16,11 @@ interface UniversalVerifyBody {
 // on exact verify paths). For regular/hosted use, authenticate with x-api-key.
 const PUBLIC_WINDOW_MS = 60 * 60 * 1000;
 const PUBLIC_MAX_PER_WINDOW = 10;
-const publicThrottle = new Map<string, { count: number; windowStart: number }>();
+// Bounded + self-sweeping: this used to keep one entry per visitor IP forever.
+const publicThrottle = new MemoryWindowCounter();
 
 function publicAllowed(ip: string): boolean {
-    const now = Date.now();
-    const entry = publicThrottle.get(ip);
-    if (!entry || now - entry.windowStart > PUBLIC_WINDOW_MS) {
-        publicThrottle.set(ip, { count: 1, windowStart: now });
-        return true;
-    }
-    entry.count += 1;
+    const entry = publicThrottle.increment(ip, PUBLIC_WINDOW_MS);
     return entry.count <= PUBLIC_MAX_PER_WINDOW;
 }
 
