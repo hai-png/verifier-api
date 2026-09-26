@@ -183,6 +183,10 @@ jobs:
             $API_KEY_ARGS \
             | tee loadtest-console.txt
 
+      - name: Summarise the report as annotations
+        if: always()
+        run: node loadtest/ci/summarize.mjs loadtest-results
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4

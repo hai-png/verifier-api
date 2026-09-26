@@ -43,10 +43,15 @@ for attempt in 1 2 3 4 5 6; do
     exit 0
   fi
   echo "push attempt ${attempt} failed: $(tail -n 2 /tmp/push-error.txt | tr '\n' ' ')"
-  # Another workflow pushed a report in the meantime — replay our commit on top.
+  # Another push (a workflow or a human) landed first — replay our commit on
+  # top of it. `git fetch` + `git rebase` works on a detached HEAD too, unlike
+  # `git pull --rebase`, which is why a race used to lose the report silently.
   git fetch -q origin "$BRANCH" || true
-  git pull --rebase --autostash origin "$BRANCH" >/dev/null 2>&1 \
-    || { git rebase --abort >/dev/null 2>&1 || true; git reset --hard FETCH_HEAD >/dev/null 2>&1 || true; }
+  git rebase --onto FETCH_HEAD "$(git rev-parse HEAD)" 2>/dev/null \
+    || git rebase --abort >/dev/null 2>&1 \
+    || true
+  git fetch -q origin "$BRANCH" || true
+  git rebase FETCH_HEAD >/dev/null 2>&1 || { git rebase --abort >/dev/null 2>&1 || true; }
   sleep $((attempt * 5))
 done
 
