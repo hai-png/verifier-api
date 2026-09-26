@@ -1,0 +1,49 @@
+{
+  "scenario": "verify_mpesa_external",
+  "authMode": "api-key",
+  "requests": 2,
+  "settleMs": 2500,
+  "requestMs": {
+    "total": 1426,
+    "mean": 713
+  },
+  "responses": [
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 713.1
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 712.5
+    }
+  ],
+  "sqlStatements": 3,
+  "sqlPerRequest": 1.5,
+  "comCountersPerRequest": {
+    "Com_select": 1.5,
+    "Com_stmt_execute": 2.5,
+    "Com_update": 1
+  },
+  "controlNoise": {
+    "statements": 3,
+    "comCounters": {
+      "Com_insert": 1,
+      "Com_select": 2,
+      "Com_stmt_execute": 4
+    }
+  },
+  "statementShapes": [
+    {
+      "sql": "COMMIT",
+      "count": 2,
+      "perRequest": 1
+    },
+    {
+      "sql": "BEGIN",
+      "count": 1,
+      "perRequest": 0.5
+    }
+  ]
+}

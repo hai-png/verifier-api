@@ -1,3 +1,3 @@
-ready: no data
-verify_validate_400: no data
-verify_mpesa_external: no data
+### ready — 0 statements, 0.0 ms inside SQL
+### verify_validate_400 — 0 statements, 0.0 ms inside SQL
+### verify_mpesa_external — 0 statements, 0.0 ms inside SQL

@@ -1,0 +1,36 @@
+{
+  "scenario": "ready",
+  "authMode": "api-key",
+  "requests": 2,
+  "settleMs": 2500,
+  "requestMs": {
+    "total": 127,
+    "mean": 63.5
+  },
+  "responses": [
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 64.1
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 62.6
+    }
+  ],
+  "sqlStatements": 0,
+  "sqlPerRequest": 0,
+  "comCountersPerRequest": {
+    "Com_select": 1,
+    "Com_stmt_execute": 1
+  },
+  "controlNoise": {
+    "statements": 0,
+    "comCounters": {
+      "Com_select": 1,
+      "Com_stmt_execute": 2
+    }
+  },
+  "statementShapes": []
+}
