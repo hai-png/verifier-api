@@ -7,15 +7,11 @@
   "duration": "20",
   "iterations": "25",
   "auth_pace_rps": "0.12",
-  "stages": "1:15,5:15,10:15,25:20,50:20,100:120",
+  "stages": "1:15,5:15,10:20,25:25,50:30",
   "coldstart_sleep": "0",
   "allow_external": false,
   "_notes": [
-    "auth_pace_rps keeps authenticated scenarios inside the workspace rate limit:",
-    "config.freeRateLimit is 10 requests per 60s window (PRO 60, grandfathered FREE 30),",
-    "and the dashboard path keys its bucket on workspace+IP. Unpaced authenticated",
-    "requests measure the 429 path, not the verification path.",
-    "Anonymous scenarios are never paced.",
-    "For the aggressive saturation ramp switch to: profile=load with the stages above."
+    "Safe default: paced latency only. Run the bounded load ramp explicitly on an approved isolated target.",
+    "Authenticated latency is paced at 0.12 requests/second to avoid FREE-tier throttling."
   ]
 }

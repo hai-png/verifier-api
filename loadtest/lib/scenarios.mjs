@@ -44,30 +44,35 @@ export const authHeaders = ({ auth, apiKey } = {}) =>
 
 export const SCENARIOS = {
   health: {
+    expectedStatuses: [200],
     group: 'public',
     external: false,
     describe: 'GET /health — liveness, no database, no upstream',
     request: () => ({ method: 'GET', path: '/health' }),
   },
   root: {
+    expectedStatuses: [200],
     group: 'public',
     external: false,
     describe: 'GET / — static metadata payload',
     request: () => ({ method: 'GET', path: '/' }),
   },
   status_summary: {
+    expectedStatuses: [200],
     group: 'public',
     external: false,
     describe: 'GET /status/summary — public capability summary',
     request: () => ({ method: 'GET', path: '/status/summary' }),
   },
   ready: {
+    expectedStatuses: [200],
     group: 'public',
     external: false,
     describe: 'GET /ready — liveness + one database round trip (SELECT 1)',
     request: () => ({ method: 'GET', path: '/ready' }),
   },
   auth_missing_401: {
+    expectedStatuses: [401],
     group: 'public',
     external: false,
     describe: 'POST /verify-cbe without a key — rejection path, no database',
@@ -79,6 +84,7 @@ export const SCENARIOS = {
     }),
   },
   auth_invalid_403: {
+    expectedStatuses: [403],
     group: 'public',
     external: false,
     describe: 'POST /verify-cbe with an unknown key — one hashed-key database lookup',
@@ -90,9 +96,10 @@ export const SCENARIOS = {
     }),
   },
   verify_validate_400: {
+    expectedStatuses: [400],
     group: 'authenticated',
     external: false,
-    describe: 'POST /verify-cbe with a malformed reference — auth + quota + validation',
+    describe: 'POST /verify-cbe with a malformed reference — auth + rate limit + early validation (no quota reservation)',
     request: (ctx) => ({
       method: 'POST',
       path: '/verify-cbe',
@@ -101,9 +108,10 @@ export const SCENARIOS = {
     }),
   },
   permissions_403: {
+    expectedStatuses: [403],
     group: 'authenticated',
     external: false,
-    describe: 'GET /products with a verify-only key — permission gate path',
+    describe: 'GET /products with a verify-only key — entitlement (402 on FREE) or permission (403) gate',
     request: (ctx) => ({
       method: 'GET',
       path: '/products',
