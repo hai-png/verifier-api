@@ -410,7 +410,33 @@ mint a key. Note that it also bypasses per-key permissions, so a
 permission-denied scenario such as `/products` will answer `200` rather than
 `403` under it.
 
-### 6. What the response cache changes
+### 6. When a live run says "credentials rejected"
+
+A report can read `Authenticated: yes (dashboard-secret)` and still have measured
+nothing: if the service ignores the credentials, every authenticated sample is a
+401 and the report looks like a fast, error-free verification path. The harness
+detects this and prints a warning (and marks the report with `authHint`), so read
+that line first. What each status means:
+
+| What the authenticated scenarios returned | What it means | Fix |
+|---|---|---|
+| **401** | the service ignored `x-dashboard-key` — its `DASHBOARD_SECRET` differs from the repository secret `LOADTEST_DASHBOARD_SECRET`, or is unset | copy the Render environment value into the repo secret (or set `LOADTEST_API_KEY` instead — see below). An empty `DASHBOARD_SECRET` also disables dashboard auth for the Next.js UI |
+| **404** | the secret matched but `LOADTEST_WORKSPACE_ID` does not exist in that database | use a workspace id from *that* deployment |
+| **403** | `x-api-key` was recognised but the key is inactive/revoked | mint a fresh key in the dashboard |
+| **402** | the workspace is out of monthly credits | top up, or use a workspace with credits |
+| **429** | pacing is too fast for the workspace's limit (`config.freeRateLimit`, default 10 per 60 s) | lower `--auth-pace-rps` |
+
+Two ways to authenticate a live run, in the order the workflow prefers them:
+
+1. `LOADTEST_API_KEY` — a real `sk_live_…` key from the dashboard (Settings →
+   API keys). Works regardless of `DASHBOARD_SECRET`, and exercises the exact
+   customer path including per-key permissions.
+2. `LOADTEST_DASHBOARD_SECRET` + `LOADTEST_WORKSPACE_ID` — no key minting needed,
+   but the value must be byte-identical to the service's `DASHBOARD_SECRET`.
+   Note this path bypasses per-key permissions, so a `permissions_403` scenario
+   answers 200 instead of 403.
+
+### 7. What the response cache changes
 
 `VERIFY_CACHE_TTL_MS` (default 60 s) makes identical single-reference
 verifications share one provider call:
@@ -428,7 +454,7 @@ receipt's status can move from pending to paid), set `VERIFY_CACHE_TTL_MS=0`.
 `diagnostics.caches.verificationResults` on `/status/summary` reports hits,
 coalesced duplicates and entries.
 
-### 7. Is the database still the bottleneck? Ask the instance
+### 8. Is the database still the bottleneck? Ask the instance
 
 Every SQL statement Prisma runs is counted (cheaply, from the `query` event) and
 reported on the public status endpoint, so a deployed instance can answer
@@ -456,7 +482,7 @@ writes that follow the response are batched into `createMany`/single updates.
 If you see a number far above that, something started querying per request
 again — check `topTables` before reaching for `EXPLAIN`.
 
-### 8. Proxy and client IP
+### 9. Proxy and client IP
 
 `getRequestIp()` trusts `CF-Connecting-IP`, then `X-Forwarded-For`, then
 `X-Real-IP`. Web traffic arrives through Cloudflare, which sets those headers

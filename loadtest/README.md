@@ -113,6 +113,15 @@ ones run at full speed. The load profile ignores pacing on purpose — a staged
 ramp is how you find the throttle boundary, and the report counts `throttled_429`
 separately from errors.
 
+If the credentials are wrong the run still "passes" — every authenticated
+sample is just a 401 — so the harness checks for that and prints
+`warning: every authenticated scenario returned 401: …`, sets `authHint` in the
+JSON/markdown report, and the workflow raises a `::warning::` annotation. The
+status codes map to causes like this: 401 = the service ignored the credentials
+(wrong `DASHBOARD_SECRET`, or an inactive `x-api-key`), 404 = the dashboard
+workspace id does not exist on that deployment, 402 = out of credits, 429 =
+pacing too fast for the workspace rate limit.
+
 `loadtest-live` uses whichever credentials exist (Settings → Secrets and
 variables → Actions), preferring in this order:
 
