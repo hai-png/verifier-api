@@ -300,6 +300,15 @@ app.use('/notifications', permissionGate('webhooks'), invalidateDeliveryCacheAft
 
 
 const runtimeGuestPaths = ['/', '/health', '/ready', '/status'];
+
+// How long a non-guest request waits for the runtime before being told to
+// retry. Both Render (free tier) and TiDB Serverless scale to zero, so the
+// first request after an idle period can wait on a database resume. Holding the
+// connection for 90s exceeded Cloudflare's origin timeout and turned a slow
+// start into an opaque 524; a short wait plus Retry-After lets the client
+// retry instead. Raise it with STARTUP_WAIT_MS if your platform is slower.
+const STARTUP_WAIT_MS = Math.max(0, Number(process.env.STARTUP_WAIT_MS ?? 15_000));
+const STARTUP_RETRY_AFTER_SECONDS = Math.max(1, Math.ceil(STARTUP_WAIT_MS / 1000));
 const waitForRuntime: RequestHandler = async (req, res, next) => {
     if (runtimeGuestPaths.some(p => req.path === p || req.path.startsWith(`${p}/`))) {
         return next();
@@ -307,7 +316,7 @@ const waitForRuntime: RequestHandler = async (req, res, next) => {
     if (startupState.ready) {
         return next();
     }
-    const deadline = Date.now() + 90_000;
+    const deadline = Date.now() + STARTUP_WAIT_MS;
     while (Date.now() < deadline) {
         if (startupState.ready) {
             return next();
@@ -321,7 +330,12 @@ const waitForRuntime: RequestHandler = async (req, res, next) => {
         }
         await new Promise(resolve => setTimeout(resolve, 100));
     }
-    return res.status(503).json({ success: false, error: 'Service still initializing' });
+    res.set('Retry-After', String(STARTUP_RETRY_AFTER_SECONDS));
+    return res.status(503).json({
+        success: false,
+        error: 'Service is starting up. Retry in a few seconds.',
+        retryAfterSeconds: STARTUP_RETRY_AFTER_SECONDS,
+    });
 };
 app.use(waitForRuntime);
 
