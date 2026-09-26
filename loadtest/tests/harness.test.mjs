@@ -89,3 +89,24 @@ test('expected permission rejection is not mistaken for bad credentials', async 
   assert.equal(code, 0);
   assert.equal(report.authHint, null);
 });
+test('CI annotations never substitute historical reports for the current run', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'loadtest-summary-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(dir, 'old.json'), JSON.stringify({ workflowRunId: 'old', label: 'stale' }));
+  async function summarize() {
+    const child = spawn(process.execPath, ['loadtest/ci/summarize.mjs', dir], {
+      env: { ...process.env, GITHUB_RUN_ID: 'current' },
+    });
+    let output = '';
+    child.stdout.on('data', (data) => { output += data; });
+    child.stderr.resume();
+    const [code] = await once(child, 'exit');
+    assert.equal(code, 0);
+    return output;
+  }
+  assert.match(await summarize(), /no JSON report found/);
+  await fs.writeFile(path.join(dir, 'current.json'), JSON.stringify({ workflowRunId: 'current', label: 'fresh' }));
+  const output = await summarize();
+  assert.match(output, /fresh/);
+  assert.doesNotMatch(output, /stale/);
+});

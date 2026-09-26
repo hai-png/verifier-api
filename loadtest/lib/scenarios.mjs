@@ -99,7 +99,7 @@ export const SCENARIOS = {
     expectedStatuses: [400],
     group: 'authenticated',
     external: false,
-    describe: 'POST /verify-cbe with a malformed reference — auth + quota + validation',
+    describe: 'POST /verify-cbe with a malformed reference — auth + rate limit + early validation (no quota reservation)',
     request: (ctx) => ({
       method: 'POST',
       path: '/verify-cbe',
@@ -111,7 +111,7 @@ export const SCENARIOS = {
     expectedStatuses: [403],
     group: 'authenticated',
     external: false,
-    describe: 'GET /products with a verify-only key — permission gate path',
+    describe: 'GET /products with a verify-only key — entitlement (402 on FREE) or permission (403) gate',
     request: (ctx) => ({
       method: 'GET',
       path: '/products',
