@@ -1,10 +1,11 @@
-sleeping 1200s before the cold-start probe (letting the free tier idle out)…
 
 target        https://verify.noveld.com.et
-resolved      216.24.57.18 (4), 216.24.57.16 (4)  cname=verifier-api-selfhosted.onrender.com
-profile       coldstart
-connections   created=1 reused=2
-cold start    first TTFB 955.9 ms (sleep 1200s)
+resolved      216.24.57.16 (4), 216.24.57.18 (4)  cname=verifier-api-selfhosted.onrender.com
+profile       latency
+connections   created=1 reused=167
 
-report  loadtest-results/live-coldstart-2026-09-26T04-31-01-807Z.md
-json    loadtest-results/live-coldstart-2026-09-26T04-31-01-807Z.json
+stage                reqs     rps      p50      p95      p99       max   err
+sequential ×25        168     7.0     86.2    251.0    313.4     398.9     0
+
+report  loadtest-results/live-latency-2026-09-26T04-39-39-524Z.md
+json    loadtest-results/live-latency-2026-09-26T04-39-39-524Z.json
