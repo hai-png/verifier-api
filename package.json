@@ -6,8 +6,13 @@
   "scripts": {
     "dev": "nodemon --watch src --exec ts-node src/index.ts",
     "build": "npx prisma generate && (npx tsc || true)",
-    "test": "pnpm build && node --test dist/tests/statusMonitorSignature.test.js dist/tests/statusProbeService.test.js dist/tests/verificationHelpers.test.js dist/tests/verifyAwashAndRouting.test.js",
-    "start": "node dist/index.js"
+    "test": "pnpm build && node --test dist/tests/statusMonitorSignature.test.js dist/tests/statusProbeService.test.js dist/tests/verificationHelpers.test.js dist/tests/verifyAwashAndRouting.test.js dist/tests/writeBehind.test.js dist/tests/expiringStore.test.js dist/tests/verifyResultCache.test.js dist/tests/quotaCharge.test.js dist/tests/dbMetrics.test.js",
+    "start": "node dist/index.js",
+    "loadtest": "node loadtest/run.mjs",
+    "loadtest:db-traffic": "node loadtest/db-traffic.mjs",
+    "loadtest:seed": "node loadtest/seed.mjs",
+    "stub:upstream": "node loadtest/stub-upstream.mjs",
+    "typecheck": "npx prisma generate && npx tsc --noEmit"
   },
   "keywords": [],
   "author": "Leul Zenebe",

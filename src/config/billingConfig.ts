@@ -144,8 +144,43 @@ export function validateBillingConfigUpdate(input: unknown): Partial<BillingConf
   return update;
 }
 
+// ─── Cache ────────────────────────────────────────────────────────────────────
+// getBillingConfig() is called on every authenticated request — twice per
+// verification (rate limiter + quota gate). Each call is a database round trip,
+// which is ~150 ms against a cross-region database. The pricing row changes
+// rarely, so cache it briefly and invalidate on write.
+const BILLING_CONFIG_CACHE_TTL_MS = Number(process.env.BILLING_CONFIG_CACHE_TTL_MS ?? 30_000);
+
+let cachedBillingConfig: { value: BillingConfig; expiresAt: number } | null = null;
+let inflightBillingConfig: Promise<BillingConfig> | null = null;
+
+/** Drop the cached pricing row (called after an admin update). */
+export function invalidateBillingConfigCache(): void {
+  cachedBillingConfig = null;
+  inflightBillingConfig = null;
+}
+
+export function billingConfigCacheState(): { cached: boolean; expiresInMs: number | null; ttlMs: number } {
+  return {
+    cached: cachedBillingConfig !== null,
+    expiresInMs: cachedBillingConfig ? Math.max(0, cachedBillingConfig.expiresAt - Date.now()) : null,
+    ttlMs: BILLING_CONFIG_CACHE_TTL_MS,
+  };
+}
+
 export async function getBillingConfig(): Promise<BillingConfig> {
-  const record = await prisma.planPricingConfig.findUnique({
+  const now = Date.now();
+  if (BILLING_CONFIG_CACHE_TTL_MS > 0 && cachedBillingConfig && cachedBillingConfig.expiresAt > now) {
+    return cachedBillingConfig.value;
+  }
+  // Coalesce concurrent misses (a burst of requests must not fan out into the
+  // same query on every worker).
+  if (BILLING_CONFIG_CACHE_TTL_MS > 0 && inflightBillingConfig) {
+    return inflightBillingConfig;
+  }
+
+  const load = async (): Promise<BillingConfig> => {
+    const record = await prisma.planPricingConfig.findUnique({
     where: { id: 'default' },
     select: {
       proPriceMonthlyETB: true,
@@ -176,7 +211,23 @@ export async function getBillingConfig(): Promise<BillingConfig> {
     },
   });
 
-  return record ?? DEFAULT_BILLING_CONFIG;
+    return record ?? DEFAULT_BILLING_CONFIG;
+  };
+
+  if (BILLING_CONFIG_CACHE_TTL_MS <= 0) {
+    return load();
+  }
+
+  inflightBillingConfig = load()
+    .then((value) => {
+      cachedBillingConfig = { value, expiresAt: Date.now() + BILLING_CONFIG_CACHE_TTL_MS };
+      return value;
+    })
+    .finally(() => {
+      inflightBillingConfig = null;
+    });
+
+  return inflightBillingConfig;
 }
 
 export async function updateBillingConfig(input: unknown): Promise<BillingConfig> {
@@ -192,5 +243,6 @@ export async function updateBillingConfig(input: unknown): Promise<BillingConfig
   });
 
   const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...config } = record;
+  invalidateBillingConfigCache();
   return config;
 }

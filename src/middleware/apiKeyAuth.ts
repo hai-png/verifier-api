@@ -2,12 +2,56 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
+import { createWriteBehind } from '../utils/writeBehind';
 import { AppError, ErrorType, sendErrorResponse } from '../utils/errorHandler';
 import {
   BILLING_PAYMENT_OPERATION,
   INTERNAL_OPERATION_HEADER,
   markTrustedInternalOperation,
 } from '../utils/trustedInternalOperation';
+
+// ─── Key usage counters (write-behind) ────────────────────────────────────────
+// `lastUsed` + `usageCount` are analytics, not authorization data. Issuing one
+// UPDATE per authenticated request doubles the write load on the hot path, so
+// counters are coalesced per key and flushed in one batched transaction.
+const KEY_USAGE_FLUSH_MS = Number(process.env.KEY_USAGE_FLUSH_MS ?? 5_000);
+
+const keyUsageWriter = createWriteBehind<{ id: string; at: Date }>({
+  name: 'api-key-usage',
+  intervalMs: KEY_USAGE_FLUSH_MS,
+  maxBatchSize: 500,
+  flush: async (batch) => {
+    const counts = new Map<string, { count: number; at: Date }>();
+    for (const entry of batch) {
+      const current = counts.get(entry.id);
+      if (current) {
+        current.count += 1;
+        if (entry.at > current.at) current.at = entry.at;
+      } else {
+        counts.set(entry.id, { count: 1, at: entry.at });
+      }
+    }
+    await prisma.$transaction(
+      [...counts.entries()].map(([id, { count, at }]) =>
+        prisma.apiKey.update({
+          where: { id },
+          data: { lastUsed: at, usageCount: { increment: count } },
+        })
+      )
+    );
+  },
+});
+
+/** Persist buffered key-usage counters (called during graceful shutdown). */
+export const flushKeyUsageCounters = async (): Promise<void> => {
+  await keyUsageWriter.flush();
+};
+
+export const keyUsageStats = () => ({
+  buffered: keyUsageWriter.size(),
+  flushedBatches: keyUsageWriter.flushCount(),
+  dropped: keyUsageWriter.droppedCount(),
+});
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
 const DASHBOARD_SECRET = process.env.DASHBOARD_SECRET ?? '';
@@ -179,13 +223,9 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
       return res.status(403).json({ success: false, error: 'Invalid API key' });
     }
 
-    // Update usage stats (fire-and-forget, don't block the request)
-    prisma.apiKey
-      .update({
-        where: { id: keyData.id },
-        data: { lastUsed: new Date(), usageCount: { increment: 1 } },
-      })
-      .catch((e) => logger.error('Failed to update key usage stats:', e));
+    // Update usage stats through the write-behind buffer (never blocks the
+    // request, and N requests collapse into a single batched transaction).
+    keyUsageWriter.push({ id: keyData.id, at: new Date() });
 
     (req as any).apiKeyData = keyData;
     next();

@@ -253,6 +253,247 @@ curl -X POST https://fitlife-hub-api.hbetseha.workers.dev/api/payments/verify-te
 
 ---
 
+## Performance, regions and capacity
+
+Measured on the live deployment (see `loadtest/README.md` and
+`loadtest-results/`). Read this before tuning anything else.
+
+### 1. The database region must match the Render region
+
+`verify.noveld.com.et` resolves through Cloudflare to
+`verifier-api-selfhosted.onrender.com`, i.e. a Render instance in **US West
+(Oregon)**. A TiDB Serverless cluster created in **us-east-1** (as Step 1
+suggests) puts a ~150 ms round trip between the app and its database:
+
+| Endpoint | Database round trips | Warm p50 |
+|---|---|---|
+| `GET /health` (no database) | 0 | 37 ms |
+| `GET /status/summary` (no database) | 0 | 39 ms |
+| `GET /ready` (`SELECT 1`) | 1 | **194 ms** |
+| `POST /verify-cbe` with an unknown key | 1 | **199 ms** |
+
+A single verification issues several sequential queries, so this is the
+difference between a ~200 ms and a ~1 s verification.
+
+**Fix (pick one):**
+
+- Recreate the TiDB Serverless cluster in **us-west-2 (Oregon)** and paste the
+  new `DATABASE_URL` into Render (fastest, no code change), or
+- Move the Render service to **us-east** (Ohio/Virginia) — Render's free plan
+  offers us-east too.
+
+### 2. Cold starts
+
+The app pings its own `/ready` every 5 minutes while it is awake, which keeps
+the instance from idling out. After a spin-down (deploy, manual sleep, crash)
+nothing wakes it until real traffic arrives.
+
+Measured with `--profile coldstart --coldstart-sleep 1200` (20 minutes idle,
+run 36217057046): the first request cost **956 ms**, the next two 258 ms and
+231 ms. That is *not* a cold start — the instance never slept. The in-process
+pinger in `src/index.ts` fetches `${RENDER_EXTERNAL_URL}/ready` every 5 minutes,
+and because that request arrives through Render's front door it resets the
+inactivity timer, so an awake instance keeps itself (and TiDB) warm forever.
+
+A genuine cold start only happens when Render restarts the container (deploy,
+platform maintenance, crash) and nothing wakes it for 15 minutes. That path
+pays Render's container boot, the boot-time `prisma db push` (schema
+introspection against a remote database) *and* TiDB Serverless' own resume,
+because both scale to zero. In the lab the same cold boot to first `200` costs
+2.4 s and the first authenticated request afterwards 0.8 s (JIT + connection
+pool warm-up).
+
+To measure the real thing you have to stop the pinger first
+(`KEEP_ALIVE_PINGER=false`), then idle 20 minutes.
+
+Three things keep the first request of the day tolerable:
+
+1. **Keep the pair awake.** `.github/workflows/keep-alive.yml` pings `/ready`
+   (which does a real `SELECT 1`) every 5 minutes — that keeps Render *and*
+   TiDB warm. It only runs from the repository's default branch, so it must
+   exist on `main`.
+2. **Do not push the schema on every boot in steady state.** `SKIP_SCHEMA_PUSH=true`
+   skips the boot-time `prisma db push`; run it once per release instead
+   (`npx prisma db push` from a shell, or a Render pre-deploy command).
+3. **Fail fast instead of hanging.** Requests that arrive before the runtime is
+   ready now wait at most `STARTUP_WAIT_MS` (default 15 s) and then get
+   `503 + Retry-After` instead of a 90 s hang, which Cloudflare turns into an
+   opaque 524.
+
+`.github/workflows/keep-alive.yml` is the external half of that mechanism —
+**scheduled workflows only run from the repository's default branch**. This repo
+deploys from `selfhosted`, so unless that file also exists on `main` the cron
+never fires. Merge `.github/workflows/keep-alive.yml` into `main` (or make
+`main` the deploy branch) and the 5-minute ping keeps both Render and TiDB warm.
+
+### 3. Connection pool sizing
+
+Prisma sizes its pool from the CPU count it can see, which inside a container
+can be the *host's* core count. On a 0.1-CPU free instance that over-provisions
+connections, and TiDB Serverless caps connections per cluster. Pin it in the
+connection string:
+
+```
+mysql://user:pass@host:4000/db?sslaccept=accept_invalid_certs&connection_limit=5&pool_timeout=20
+```
+
+`GET /status/summary` now reports the CPU count the process sees
+(`diagnostics.process.reportedCpuCount`), plus memory and cache state, so you can
+verify this without a shell.
+
+### 4. Measured capacity
+
+Against the current free-tier instance (staged ramp, cheap endpoints, run
+36215753142):
+
+| Concurrent clients | RPS | p50 | p95 |
+|---|---|---|---|
+| 1 | 7 | 91 ms | 256 ms |
+| 10 | 58 | 93 ms | 262 ms |
+| 25 | 134 | 106 ms | 393 ms |
+| 50 | 135 | 209 ms | 841 ms |
+| 100 | 141 | 309 ms | 1892 ms |
+
+Throughput plateaus at ~140 rps and latency starts climbing after ~25
+concurrent requests: that is the free plan's shared-CPU ceiling. No 5xx and no
+429s were observed during the ramp.
+
+A second live run of the same code (36216663965) reproduced the shape but with
+every scenario ~50 ms slower — including `/health`, which touches no database at
+all. So treat the absolute numbers as ±50 ms of network noise and compare
+`endpoint − /health` instead.
+
+The lab gives the per-request database cost without the network noise (single
+pinned CPU, MySQL with a 60 ms emulated cross-region round trip, statements
+counted by `loadtest/db-traffic.mjs`):
+
+| Endpoint | SQL statements / request | Warm p50 |
+|---|---|---|
+| `GET /health` | 0 | 0.5 ms |
+| `GET /ready` | 1 (`SELECT 1`) | 61 ms |
+| `POST /verify-cbe`, unknown key | 1 (key lookup) | 62 ms |
+| `GET /products`, verify-only key | 2 | 123 ms |
+| `POST /verify-mpesa`, synthetic receipt | 2.8 | 716 ms (400 ms of it the stubbed provider) |
+| `POST /verify-cbe`, malformed reference | 5 | 413 ms |
+
+Every statement is a sequential round trip, so with a cross-region database the
+database part of one verification is `statements × ~150 ms` — the malformed
+request above spends ~750 ms of round trips *after* a change, and ~300 ms
+before it, purely on charging and refunding a credit the customer never used.
+Section 1 (region alignment) is still the cheapest fix by far.
+
+### 5. Authenticated load tests must be paced
+
+A workspace is allowed `config.freeRateLimit` requests per fixed 60 s window
+(default **10** for FREE, 60 for PRO and 30 for a grandfathered FREE workspace),
+and the dashboard auth path keys its bucket on `workspace + client IP`. A load
+test on the authenticated endpoints therefore spends its first few requests on
+real work and then measures nothing but `429`s.
+
+When you point the harness at the deployment, pace the authenticated scenarios:
+
+```bash
+node loadtest/run.mjs --base-url https://verify.noveld.com.et \
+  --profile latency --auth-pace-rps 0.12 \
+  --scenarios health,ready,verify_validate_400 \
+  --dashboard-secret "$DASHBOARD_SECRET" --workspace-id "$WORKSPACE_ID"
+```
+
+`--auth-pace-rps` delays only scenarios in the `authenticated` group, so the
+anonymous surface is still measured at full speed. To characterise the throttle
+boundary instead, ramp deliberately and read the `throttled_429` column — that
+is what the load profile is for.
+
+The dashboard path (`x-dashboard-key` + `x-workspace-id`, both server-side only)
+is the practical way to authenticate a live run: it needs no database access to
+mint a key. Note that it also bypasses per-key permissions, so a
+permission-denied scenario such as `/products` will answer `200` rather than
+`403` under it.
+
+### 6. When a live run says "credentials rejected"
+
+A report can read `Authenticated: yes (dashboard-secret)` and still have measured
+nothing: if the service ignores the credentials, every authenticated sample is a
+401 and the report looks like a fast, error-free verification path. The harness
+detects this and prints a warning (and marks the report with `authHint`), so read
+that line first. What each status means:
+
+| What the authenticated scenarios returned | What it means | Fix |
+|---|---|---|
+| **401** | the service ignored `x-dashboard-key` — its `DASHBOARD_SECRET` differs from the repository secret `LOADTEST_DASHBOARD_SECRET`, or is unset | copy the Render environment value into the repo secret (or set `LOADTEST_API_KEY` instead — see below). An empty `DASHBOARD_SECRET` also disables dashboard auth for the Next.js UI. `GET /status/summary` → `diagnostics.config.dashboardSecretConfigured` tells you whether the service has one at all (booleans only, never the value) |
+| **404** | the secret matched but `LOADTEST_WORKSPACE_ID` does not exist in that database | use a workspace id from *that* deployment |
+| **403** | `x-api-key` was recognised but the key is inactive/revoked | mint a fresh key in the dashboard |
+| **402** | the workspace is out of monthly credits | top up, or use a workspace with credits |
+| **429** | pacing is too fast for the workspace's limit (`config.freeRateLimit`, default 10 per 60 s) | lower `--auth-pace-rps` |
+
+Two ways to authenticate a live run, in the order the workflow prefers them:
+
+1. `LOADTEST_API_KEY` — a real `sk_live_…` key from the dashboard (Settings →
+   API keys). Works regardless of `DASHBOARD_SECRET`, and exercises the exact
+   customer path including per-key permissions.
+2. `LOADTEST_DASHBOARD_SECRET` + `LOADTEST_WORKSPACE_ID` — no key minting needed,
+   but the value must be byte-identical to the service's `DASHBOARD_SECRET`.
+   Note this path bypasses per-key permissions, so a `permissions_403` scenario
+   answers 200 instead of 403.
+
+### 7. What the response cache changes
+
+`VERIFY_CACHE_TTL_MS` (default 60 s) makes identical single-reference
+verifications share one provider call:
+
+- positive results only — a 404/422 ("receipt not found") is never cached,
+  because the receipt may exist a moment later;
+- concurrent duplicates are coalesced (two requests, one upstream call);
+- the key is workspace + endpoint + body, so tenants cannot read each other's
+  results, and `/verify-batch`, `/verify-image` and `/verify/public` are
+  excluded;
+- every response says what happened: `x-verify-cache: hit` or `coalesced`.
+
+If your product needs every request to hit the provider (for example because a
+receipt's status can move from pending to paid), set `VERIFY_CACHE_TTL_MS=0`.
+`diagnostics.caches.verificationResults` on `/status/summary` reports hits,
+coalesced duplicates and entries.
+
+### 8. Is the database still the bottleneck? Ask the instance
+
+Every SQL statement Prisma runs is counted (cheaply, from the `query` event) and
+reported on the public status endpoint, so a deployed instance can answer
+"what does one request cost" without lab tooling:
+
+```bash
+curl -s https://verify.noveld.com.et/status/summary \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["diagnostics"]["database"], indent=2))'
+```
+
+What to look at:
+
+| Field | Meaning |
+|---|---|
+| `totals.statementsPerRequest` | average SQL statements per handled HTTP request since start |
+| `window.statementsPerRequest` | the same, over the last 60 seconds (what it is doing *now*) |
+| `totals.meanStatementMs` | mean statement duration — on a warm local pool this is ~1 ms; if it is ~150 ms you are paying the cross-region round trip described in section 1 |
+| `topTables` / `byVerb` | where the statements go |
+| `slowestStatements` | the three slowest statement shapes (truncated to 120 chars) |
+
+Reference points measured on this deployment: `/health` costs 0 statements,
+`/ready` costs 1, an authenticated verification costs 2–3 on the success path
+(api-key lookup, quota decrement, plus the batched analytics flush) and the
+writes that follow the response are batched into `createMany`/single updates.
+If you see a number far above that, something started querying per request
+again — check `topTables` before reaching for `EXPLAIN`.
+
+### 9. Proxy and client IP
+
+`getRequestIp()` trusts `CF-Connecting-IP`, then `X-Forwarded-For`, then
+`X-Real-IP`. Web traffic arrives through Cloudflare, which sets those headers
+correctly. A direct call to the `*.onrender.com` URL can forge them, so the
+per-IP public verification limit and the dashboard rate limit are best-effort:
+they protect against accidental floods, not against a determined attacker.
+If you need hard limits, put the origin behind Cloudflare Tunnel or an
+IP allowlist.
+
+---
+
 ## Free tier limitations
 
 | Service | Free tier limit | What happens when exceeded |

@@ -1,0 +1,8 @@
+{
+  "_comment": "Parameters for push-triggered perf-lab runs. workflow_dispatch inputs override these when started manually from the Actions tab.",
+  "profile": "all",
+  "db_latency_ms": "30",
+  "upstream_delay_ms": "400",
+  "stages": "1:10,5:10,10:15,20:15,40:15",
+  "pin_cpu": true
+}

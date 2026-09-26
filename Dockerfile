@@ -82,5 +82,15 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/scripts ./scripts
 
-# Apply schema (idempotent — only creates missing tables/columns, preserves data)
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/index.js"]
+# Boot sequence.
+#
+# Schema: `prisma db push` is idempotent and creates missing tables/columns on a
+# fresh database, but it also costs several seconds on every cold start and can
+# be destructive (the upstream migration history is incomplete, which is why the
+# previous CMD passed --accept-data-loss). It now runs WITHOUT --accept-data-loss,
+# its failure is not fatal, and it can be skipped entirely with
+# SKIP_SCHEMA_PUSH=true once the schema is in place.
+#
+# Signals: `exec` keeps node as PID 1 so Render's SIGTERM reaches the process
+# (graceful shutdown flushes the write-behind buffers and closes the browser).
+CMD ["sh", "-c", "if [ \"$SKIP_SCHEMA_PUSH\" != \"true\" ]; then npx prisma db push --skip-generate || echo 'WARNING: prisma db push failed - starting the API anyway; apply the schema manually'; fi; exec node dist/index.js"]
