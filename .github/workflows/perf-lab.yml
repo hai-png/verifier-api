@@ -361,6 +361,10 @@ jobs:
         if: always()
         run: bash loadtest/ci/publish-report.sh lab
 
+      - name: Summarise the report as annotations
+        if: always()
+        run: node loadtest/ci/summarize.mjs loadtest-results
+
       - name: Upload lab artifacts
         if: always()
         uses: actions/upload-artifact@v4
