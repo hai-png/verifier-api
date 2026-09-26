@@ -4,19 +4,19 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 621,
-    "mean": 124.2
+    "total": 684,
+    "mean": 136.8
   },
   "responses": [
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 125.1
+      "totalMs": 125.9
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 123.9
+      "totalMs": 124.4
     },
     {
       "status": 400,
@@ -26,34 +26,46 @@
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 123.9
+      "totalMs": 184.9
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 123.9
+      "totalMs": 124.7
     }
   ],
-  "sqlStatements": 1,
-  "sqlPerRequest": 0.2,
+  "sqlStatements": 6,
+  "sqlPerRequest": 1.2,
   "comCountersPerRequest": {
-    "Com_select": 2.2,
-    "Com_stmt_execute": 2
+    "Com_insert": 0.2,
+    "Com_select": 2.8,
+    "Com_stmt_execute": 2.8,
+    "Com_stmt_prepare": 0.2,
+    "Com_update": 0.2
   },
   "controlNoise": {
-    "statements": 4,
+    "statements": 2,
     "comCounters": {
       "Com_insert": 1,
-      "Com_select": 3,
-      "Com_stmt_execute": 6,
-      "Com_update": 1
+      "Com_select": 1,
+      "Com_stmt_execute": 3
     }
   },
   "statementShapes": [
     {
+      "sql": "BEGIN",
+      "count": 2,
+      "perRequest": 0.4
+    },
+    {
+      "sql": "COMMIT",
+      "count": 2,
+      "perRequest": 0.4
+    },
+    {
       "sql": "SELECT ?",
-      "count": 1,
-      "perRequest": 0.2
+      "count": 2,
+      "perRequest": 0.4
     }
   ]
 }

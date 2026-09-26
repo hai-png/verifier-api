@@ -1,8 +1,8 @@
 ### app self-reported (10 M-Pesa verifications + 2 status reads)
 requests observed ......... 11
-statements ................ 77
-statements per request .... 7.00
-mean statement ms ......... 68.64
-top tables ................ [{"table":"apikey","statements":101},{"table":"workspace","statements":73},{"table":"usagelog","statements":26},{"table":"planpricingconfig","statements":4},{"table":"notificationchannel","statements":3}]
-top tables (delta) ........ [{"table":"apikey","statements":16},{"table":"workspace","statements":20},{"table":"usagelog","statements":5}]
-slowest statements ........ [{"sql":"COMMIT","ms":224},{"sql":"\n      SELECT ip, COUNT(*) as count\n      FROM UsageLog\n      GROUP BY ip\n    ","ms":122},{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":122}]
+statements ................ 73
+statements per request .... 6.64
+mean statement ms ......... 66.89
+top tables ................ [{"table":"apikey","statements":108},{"table":"workspace","statements":75},{"table":"usagelog","statements":28},{"table":"planpricingconfig","statements":4},{"table":"webhook","statements":3}]
+top tables (delta) ........ [{"table":"apikey","statements":16},{"table":"workspace","statements":20},{"table":"usagelog","statements":4}]
+slowest statements ........ [{"sql":"COMMIT","ms":152},{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":123},{"sql":"INSERT INTO `verifier`.`UsageLog` (`apiKeyId`,`endpoint`,`method`,`statusCode`,`responseTime`,`ip`,`createdAt`) VALUES (…","ms":121}]
