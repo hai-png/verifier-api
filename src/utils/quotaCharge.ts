@@ -44,18 +44,78 @@ export function quotaRefundState(): { refunds: number; failures: number; refunde
     return { ...state };
 }
 
+/**
+ * Credit writes as ONE autocommit statement.
+ *
+ * Prisma runs `workspace.updateMany` as BEGIN / UPDATE / COMMIT — three round
+ * trips (lab timeline: 183 ms at a 60 ms RTT) — and holds the workspace row
+ * lock across two of them. Every verification for a workspace serializes on
+ * that row, so the lock hold time directly caps per-workspace throughput and
+ * inflated quota p95 under load. A single conditional UPDATE is equally atomic
+ * (`verificationCredits >= units` is checked under the row lock) and holds the
+ * lock only for the statement itself.
+ *
+ * Falls back to Prisma's updateMany if the raw statement ever fails.
+ */
+let rawCreditWritesDisabled = process.env.QUOTA_SINGLE_STATEMENT === 'false';
+
+type CreditDb = {
+    $executeRaw: (query: TemplateStringsArray, ...values: unknown[]) => Promise<number>;
+    workspace: { updateMany: (args: any) => Promise<{ count: number }> };
+};
+
+async function creditDb(db?: CreditDb): Promise<CreditDb> {
+    if (db) return db;
+    // Imported lazily so the policy helpers in this module stay unit
+    // testable without a generated Prisma client.
+    const { prisma } = await import('./prisma');
+    return prisma as unknown as CreditDb;
+}
+
+function disableRaw(error: unknown): void {
+    rawCreditWritesDisabled = true;
+    logger.error('Single-statement credit write failed; falling back to Prisma updateMany for this process.', {
+        error: (error as Error)?.message,
+    });
+}
+
+/** Deduct `units` if the balance covers them. Returns true when charged. */
+export async function chargeVerificationCredits(workspaceId: string, units: number, db?: CreditDb): Promise<boolean> {
+    const client = await creditDb(db);
+    if (!rawCreditWritesDisabled) {
+        try {
+            const affected = await client.$executeRaw`UPDATE \`Workspace\` SET \`verificationCredits\` = \`verificationCredits\` - ${units} WHERE \`id\` = ${workspaceId} AND \`verificationCredits\` >= ${units}`;
+            return Number(affected) > 0;
+        } catch (error) {
+            disableRaw(error);
+        }
+    }
+    const updated = await client.workspace.updateMany({
+        where: { id: workspaceId, verificationCredits: { gte: units } },
+        data: { verificationCredits: { decrement: units } },
+    });
+    return updated.count > 0;
+}
+
+export async function refundVerificationCredits(workspaceId: string, units: number, db?: CreditDb): Promise<void> {
+    const client = await creditDb(db);
+    if (!rawCreditWritesDisabled) {
+        try {
+            await client.$executeRaw`UPDATE \`Workspace\` SET \`verificationCredits\` = \`verificationCredits\` + ${units} WHERE \`id\` = ${workspaceId}`;
+            return;
+        } catch (error) {
+            disableRaw(error);
+        }
+    }
+    await client.workspace.updateMany({
+        where: { id: workspaceId },
+        data: { verificationCredits: { increment: units } },
+    });
+}
+
 async function refund(charge: QuotaCharge): Promise<void> {
     try {
-        // Imported lazily so the policy helpers in this module stay unit
-        // testable without a generated Prisma client.
-        const { prisma } = await import('./prisma');
-        // updateMany, not update: it does not ask for the updated row back, so
-        // the round trip stays a single statement (an `update` costs a
-        // BEGIN/UPDATE/COMMIT sequence in the measured profile).
-        await prisma.workspace.updateMany({
-            where: { id: charge.workspaceId },
-            data: { verificationCredits: { increment: charge.units } },
-        });
+        await refundVerificationCredits(charge.workspaceId, charge.units);
         state.refunds += 1;
         state.refundedUnits += charge.units;
         logger.info(`Refunded ${charge.units} verification credit(s) to workspace ${charge.workspaceId}`);

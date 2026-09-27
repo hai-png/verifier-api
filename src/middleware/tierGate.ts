@@ -12,7 +12,7 @@ import {
 } from '../config/plans';
 import { getBillingConfig, type BillingConfig } from '../config/billingConfig';
 import { isTrustedBillingPaymentVerification } from '../utils/trustedInternalOperation';
-import { markQuotaCharged } from '../utils/quotaCharge';
+import { markQuotaCharged, chargeVerificationCredits } from '../utils/quotaCharge';
 
 const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
 
@@ -438,23 +438,16 @@ export const verifyQuotaGate = async (
     return;
   }
 
-  const updated = await prisma.workspace.updateMany({
-    where: {
-      id: account.creditHolderId,
-      verificationCredits: { gte: units },
-    },
-    data: {
-      verificationCredits: { decrement: units },
-    },
-  });
+  // One autocommit statement (see chargeVerificationCredits for why).
+  const charged = await chargeVerificationCredits(account.creditHolderId, units);
 
   // Remember the charge so the response hook can refund it when the request is
   // rejected after this point without ever reaching the provider.
-  if (updated.count > 0) {
+  if (charged) {
     markQuotaCharged(req, { workspaceId: account.creditHolderId, units });
   }
 
-  if (updated.count === 0) {
+  if (!charged) {
     res.status(402).json({
       success: false,
       error: 'Monthly verification quota reached.',
