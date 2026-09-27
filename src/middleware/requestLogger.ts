@@ -35,6 +35,15 @@ export const flushUsageLogs = async (): Promise<void> => {
   await usageLogWriter.flush();
 };
 
+/**
+ * Drain the buffer completely, for shutdown. A single flush() returns the
+ * in-flight promise without writing whatever arrived during it, so the process
+ * could disconnect Prisma and exit with rows still queued.
+ */
+export const drainUsageLogs = async (): Promise<void> => {
+  await usageLogWriter.drain();
+};
+
 /** Observability for /status/summary. */
 export const usageLogBufferSize = (): number => usageLogWriter.size();
 export const usageLogStats = () => ({

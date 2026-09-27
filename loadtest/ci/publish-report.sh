@@ -32,7 +32,7 @@ done
 
 git config user.name "github-actions[bot]" 2>/dev/null || true
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com" 2>/dev/null || true
-git add -f loadtest-results >/dev/null 2>&1 || true
+git add loadtest-results >/dev/null 2>&1 || true
 if git diff --cached --quiet; then
   echo "no report changes to publish — nothing new under loadtest-results/"
   ls -1 loadtest-results/ | head -20
@@ -76,7 +76,7 @@ for attempt in 1 2 3 4 5 6; do
     || git checkout -f FETCH_HEAD >/dev/null 2>&1 \
     || true
   cp -r "$BACKUP/loadtest-results/." loadtest-results/ 2>/dev/null || true
-  git add -f loadtest-results >/dev/null 2>&1 || true
+  git add loadtest-results >/dev/null 2>&1 || true
   if ! git diff --cached --quiet; then
     git commit -q -m "ci(${LABEL}): publish load test report for run ${GITHUB_RUN_ID:-local} [skip ci]" || true
   fi

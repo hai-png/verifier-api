@@ -48,6 +48,11 @@ export const flushKeyUsageCounters = async (): Promise<void> => {
   await keyUsageWriter.flush();
 };
 
+/** Drain the buffer completely, for shutdown. See writeBehind.drain(). */
+export const drainKeyUsageCounters = async (): Promise<void> => {
+  await keyUsageWriter.drain();
+};
+
 export const keyUsageStats = () => ({
   buffered: keyUsageWriter.size(),
   flushedBatches: keyUsageWriter.flushCount(),

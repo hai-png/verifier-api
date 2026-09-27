@@ -32,6 +32,12 @@ export interface WriteBehind<T> {
     push: (item: T) => void;
     /** Drain the buffer now (used on shutdown and by tests). */
     flush: () => Promise<void>;
+    /**
+     * Flush repeatedly until the buffer is empty. `flush()` alone returns the
+     * in-flight promise without writing whatever arrived during it, so a
+     * shutdown could disconnect the database with rows still queued.
+     */
+    drain: (maxRounds?: number) => Promise<void>;
     /** Stop the timer permanently; buffered items stay until `flush()` is called. */
     stop: () => void;
     size: () => number;
@@ -68,6 +74,26 @@ export function createWriteBehind<T>(options: WriteBehindOptions<T>): WriteBehin
         // Never keep the process alive just to flush analytics.
         timer.unref?.();
     };
+
+    /**
+     * Drain the buffer completely, for shutdown.
+     *
+     * `flush()` returns the in-flight promise without draining whatever arrived
+     * during it, so a plain flush on SIGTERM could return while rows were still
+     * queued — the process then disconnects Prisma and exits, losing them. This
+     * loops until the buffer is empty or the attempt budget is exhausted.
+     */
+    async function drain(maxRounds = 10): Promise<void> {
+        for (let round = 0; round < maxRounds; round += 1) {
+            if (buffer.length === 0 && !inFlight) return;
+            await flush();
+            if (buffer.length === 0) return;
+        }
+        if (buffer.length > 0) {
+            droppedCount += buffer.length;
+            buffer = [];
+        }
+    }
 
     async function flush(): Promise<void> {
         // Serialize flushes so two batches cannot be written out of order.
@@ -111,6 +137,7 @@ export function createWriteBehind<T>(options: WriteBehindOptions<T>): WriteBehin
             }
         },
         flush,
+    drain,
         stop: () => {
             stopped = true;
             stopTimer();

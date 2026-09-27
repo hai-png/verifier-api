@@ -15,8 +15,10 @@ dist/
 # TypeScript incremental compilation output
 *.tsbuildinfo
 
-# Customer receipt uploads (multer destination) and the transient
-# loadtest-results/ artefacts. loadtest/ci/publish-report.sh used `git add -f`,
-# so remove that force-add if these are ever re-added.
+# Customer receipt uploads (multer destination).
 uploads/
-loadtest-results/
+
+# loadtest-results/ deliberately stays tracked: the CI report publisher commits
+# there by design, and `git add loadtest-results` (no -f) only works while the
+# directory is not ignored. Note the committed reports include a server log with
+# request bodies and a 6-character API key prefix — see the prelaunch notes.

@@ -28,9 +28,9 @@ import internalStatusRouter from './routes/internalStatus';
 import publicStatusRouter from './routes/publicStatus';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
-import { requestLogger, initializeStatsCache, flushUsageLogs } from './middleware/requestLogger';
+import { requestLogger, initializeStatsCache, flushUsageLogs, drainUsageLogs } from './middleware/requestLogger';
 import { recordHttpRequest } from './utils/dbMetrics';
-import { apiKeyAuth, flushKeyUsageCounters } from './middleware/apiKeyAuth';
+import { apiKeyAuth, flushKeyUsageCounters, drainKeyUsageCounters } from './middleware/apiKeyAuth';
 import { quotaRefundHook } from './utils/quotaCharge';
 import { invalidateWorkspaceDeliveryCache } from './utils/workspaceEvents';
 import { getWorkspaceId } from './utils/workspaceContext';
@@ -471,19 +471,20 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 
 // Graceful shutdown
 const flushBufferedWrites = async () => {
-    // Write-behind buffers hold usage logs + API key counters; flush them before
-    // the database connection is closed so no analytics are lost on redeploy.
+    // Write-behind buffers hold usage logs + API key counters; drain them fully
+    // before the database connection is closed so no analytics are lost on
+    // redeploy. A single flush() call can return while rows are still queued.
     await Promise.all([
-        flushUsageLogs().catch((error) => logger.error('Failed to flush usage logs:', error)),
-        flushKeyUsageCounters().catch((error) => logger.error('Failed to flush key usage counters:', error)),
+        drainUsageLogs().catch((error) => logger.error('Failed to flush usage logs:', error)),
+        drainKeyUsageCounters().catch((error) => logger.error('Failed to flush key usage counters:', error)),
     ]);
 };
 
 const gracefulShutdown = async () => {
     logger.info('Shutting down server...');
     stopKeepAlivePinger();
-    await closeCBEBrowser();
     if (!server) {
+        await closeCBEBrowser();
         await flushBufferedWrites();
         await stopWebhookQueueWorker();
         await stopNotificationQueueWorker();
@@ -492,21 +493,37 @@ const gracefulShutdown = async () => {
         return;
     }
 
+    // Stop accepting new connections first, then release resources. Closing
+    // Chromium before the server used to eat into the 10s budget, and
+    // server.close() waits on keep-alive sockets that have no idle timeout.
     server.close(async () => {
         logger.info('HTTP server closed');
+        await closeCBEBrowser();
         await flushBufferedWrites();
         await stopWebhookQueueWorker();
         await stopNotificationQueueWorker();
         await disconnectPrisma();
         process.exit(0);
     });
+    (server as unknown as { closeIdleConnections?: () => void }).closeIdleConnections?.();
 
     // Force close after 10 seconds
     setTimeout(() => {
         logger.error('Forced shutdown after timeout');
         process.exit(1);
-    }, 10000);
+    }, 10000).unref?.();
 };
+
+// Node treats an unhandled rejection as fatal and exits immediately, which skips
+// the drain above and loses buffered usage rows. Log, then shut down cleanly.
+process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection:', reason);
+    void gracefulShutdown();
+});
+process.on('uncaughtException', (error) => {
+    logger.error('Uncaught exception:', error);
+    void gracefulShutdown();
+});
 
 // Listen for termination signals
 process.on('SIGTERM', gracefulShutdown);

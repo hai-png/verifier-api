@@ -1,0 +1,21 @@
+# Cloudflare Pages / static-host security headers.
+#
+# `web/next.config.ts` uses output: "export", and static export does not support
+# a `headers()` block, so these have to live here (or at the CDN) rather than in
+# the Next config. There were no CSP/HSTS/X-Frame-Options anywhere in the repo.
+#
+# The dashboard is a static SPA that calls the API cross-origin with a bearer
+# token from localStorage, so the policy has to allow that API origin explicitly
+# rather than 'self'.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://verify.noveld.com.et https://*.onrender.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
