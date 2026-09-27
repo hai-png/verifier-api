@@ -10,7 +10,11 @@ services:
     # cutover. Do NOT recreate/delete the existing database. See DEPLOYMENT.md.
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /
+    # Probe the database, not the static metadata document. `/` answers 200 with
+    # no dependency on anything, so a dead or scaled-to-zero database looked
+    # healthy to Render and to any uptime check. `/ready` runs SELECT 1 and
+    # returns 503 when the database is unreachable.
+    healthCheckPath: /ready
     # The CBE legacy verifier needs a real Chromium binary. The previous
     # `env: node` service ignored Dockerfile entirely, so Render started the
     # app without Chromium and every Puppeteer fallback failed immediately.
