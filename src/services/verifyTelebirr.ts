@@ -1,6 +1,7 @@
 import axios, { AxiosError } from "axios";
 import * as cheerio from "cheerio";
 import logger from '../utils/logger';
+import { cachedHttpAgent, cachedHttpsAgent } from '../utils/dnsCache';
 import type {
     TelebirrProbeDetails,
     TelebirrRouteStatus
@@ -374,6 +375,8 @@ async function fetchFromPrimarySource(reference: string, baseUrl: string): Promi
         const response = await axios.get(url, {
             timeout: 30_000,
             maxRedirects: 5,
+            httpAgent: cachedHttpAgent,
+            httpsAgent: cachedHttpsAgent,
             headers: {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                 'Accept-Language': 'am-ET,am;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -497,6 +500,11 @@ async function fetchFromProxySource(
             // Parse 4xx JSON responses from the relay so an invalid key is
             // reported as configuration failure instead of a misleading 404.
             validateStatus: status => status >= 200 && status < 500,
+            // Cached DNS + keep-alive: the .et zone's nameservers routinely
+            // answer in 1-4 s, which a per-request resolver re-pays on every
+            // verification inside the relay budget.
+            httpAgent: cachedHttpAgent,
+            httpsAgent: cachedHttpsAgent,
             headers: {
                 'Accept': 'application/json',
                 'User-Agent': 'VerifierAPI/1.0'
@@ -553,32 +561,45 @@ async function fetchFromProxySource(
             );
         }
 
-        const isTransportFailure =
-            !axiosError.response ||
-            (axiosError.response.status ?? 0) >= 500 ||
-            axiosError.code === 'ETIMEDOUT' ||
-            axiosError.code === 'ECONNABORTED' ||
-            axiosError.code === 'ECONNREFUSED';
-
-        if (isTransportFailure) {
-            logger.warn('Telebirr relay is unreachable or timed out.', {
+        if (axiosError.response) {
+            // The relay itself answered with 5xx. Two distinct cases:
+            //  - JSON error body: the relay's own upstream (Ethiotelecom)
+            //    fetch failed inside its CURLOPT_TIMEOUT — surface its reason,
+            //    which is far more actionable than a generic relay timeout.
+            //  - Anything else (HTML error page, empty body): the relay's web
+            //    server is unhealthy (PHP-FPM down, gateway error).
+            const body = axiosError.response.data;
+            const relayReason =
+                body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
+                    ? (body as { error: string }).error
+                    : undefined;
+            logger.warn('Telebirr relay responded with a server error.', {
                 relay: relayLabel,
-                code: axiosError.code,
-                status: axiosError.response?.status
+                status: axiosError.response.status,
+                upstream: Boolean(relayReason)
             });
             throw new TelebirrVerificationError(
-                'The fallback relay is unreachable or timed out.',
-                axiosError.message,
+                relayReason
+                    ? 'The relay could not reach the Telebirr receipt service.'
+                    : 'The relay returned a server error.',
+                relayReason ?? `Relay responded with HTTP ${axiosError.response.status}.`,
                 'transport'
             );
         }
 
-        logger.info('Telebirr relay rejected the receipt request.', {
+        // Everything left is a no-response network failure (DNS, connection
+        // reset, refused, timeout). A 4xx never reaches this catch — the
+        // validateStatus above accepts it into the success path — so nothing
+        // here may be reported as "receipt not found".
+        logger.warn('Telebirr relay is unreachable or timed out.', {
             relay: relayLabel,
-            status: axiosError.response?.status
+            code: axiosError.code
         });
-
-        return null;
+        throw new TelebirrVerificationError(
+            'The fallback relay is unreachable or timed out.',
+            axiosError.message,
+            'transport'
+        );
     }
 }
 
@@ -781,7 +802,11 @@ async function verifyWithTelebirrProxyPool(
 ): Promise<TelebirrReceipt | null> {
     const proxyTimeoutMs = positiveInteger(
         env.TELEBIRR_PROXY_TIMEOUT_MS,
-        18_000
+        // Relay upstream cap (verify.php CURLOPT_TIMEOUT, 10 s) + PHP
+        // overhead + US<->Ethiopia transit (~1.5 s) ~= 12 s. 13 s lets a
+        // relay that failed its upstream STILL answer inside the API budget,
+        // so the failure is attributed truthfully instead of timing out.
+        13_000
     );
     const hedgeDelayMs = positiveInteger(
         env.TELEBIRR_HEDGE_DELAY_MS,
@@ -793,7 +818,8 @@ async function verifyWithTelebirrProxyPool(
     );
     const totalTimeoutMs = positiveInteger(
         env.TELEBIRR_TOTAL_TIMEOUT_MS,
-        20_000
+        // Hedge delay (1 s) + per-relay budget (13 s).
+        15_000
     );
     const failureThreshold = positiveInteger(
         env.TELEBIRR_PROXY_FAILURE_THRESHOLD,

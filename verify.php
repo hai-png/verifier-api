@@ -33,8 +33,16 @@ function fetchReceipt($url) {
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    // Connect cap 5 s: a relay whose route to Ethiotelecom is broken must
+    // fail inside the API's per-relay budget (13 s default) so the failure is
+    // attributed truthfully instead of the API timing out on silence.
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+    // Total cap 10 s (was 15): 10 + PHP overhead + US<->ET transit ~= 12 s,
+    // leaving headroom under the API's TELEBIRR_PROXY_TIMEOUT_MS.
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    // Force IPv4: some .et hosts publish AAAA records that black-hole, which
+    // stalls the fetch beyond every timeout above.
+    curl_setopt($ch, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_setopt($ch, CURLOPT_ENCODING, '');
     curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     curl_setopt($ch, CURLOPT_HTTPHEADER, [

@@ -117,6 +117,65 @@ What a working proxy looks like:
 - M-Pesa with a correct-but-nonexistent ref → `{"responseCode":"2032","responseDescription":"The transaction receipt number does not exist."}` (a legit Safaricom reply — the chain works)
 - Telebirr may timeout with `Ethiotelecom is unreachable` if Ethio Telecom's receipt server is down or blocking the Plesk IP — this is a backend/provider issue, not a config problem.
 
+### 2e: Telebirr relay redundancy (multiple relays)
+
+`FALLBACK_PROXIES` is a **comma-separated list**. One relay means every Telebirr
+verification depends on a single Ethiopian box: when that box (or its route to
+Ethiotelecom) degrades, all verifications fail after the full timeout budget.
+Additional relays are used as a hedged pool — the first entry is *preferred*,
+the second request starts 1 s later, the fastest healthy relay wins, and a relay
+that fails twice in a row is circuit-broken for 60 s.
+
+**To add a second relay:**
+
+1. Stand up another PHP host that can reach `transactioninfo.ethiotelecom.et`
+   (a different Ethiopian provider/VPS is ideal — path diversity is the point).
+   Plesk is not required; any host with outbound HTTPS + PHP works.
+2. Upload the same `verify.php` from this repo. Set the SAME
+   `TELEBIRR_PROXY_KEY` you use for relay #1 (the API sends one key to every
+   relay — there is no per-relay key).
+3. Enable HTTPS on that host (Let's Encrypt or equivalent) — the API only
+   accepts `https://` relay URLs.
+4. Test it exactly like Step 2d: wrong key → 401 JSON; correct key → either a
+   receipt or `Ethiotelecom is unreachable` within ~10 s. Both prove the chain.
+5. In Render: **Environment** → edit `FALLBACK_PROXIES` to a comma-separated
+   list, e.g.:
+   ```
+   https://proxy.noveld.com.et/verify.php?reference=,https://relay2.example.et/verify.php?reference=
+   ```
+   Saving an environment variable triggers an automatic redeploy.
+6. Optional: set `TELEBIRR_PROXY_LABELS` (comma-separated, ≤32 chars each,
+   `[A-Za-z0-9 ._-]` only) to give the relays public names for the status page:
+   ```
+   TELEBIRR_PROXY_LABELS=Plesk Addis,Backup Relay
+   ```
+7. Verify after redeploy:
+   - Boot log: `Telebirr verification config: primary disabled, fallback relays 2`
+   - `curl https://verify.noveld.com.et/status/summary` → `"telebirrRelays":2`
+   - `caches.dns.entries` > 0 after the first verification (relay-host DNS is
+     now cached — the `.et` zone regularly costs 1–4 s per lookup).
+
+**Timeout arithmetic (defaults after 2026-09-27):**
+
+| Layer | Setting | Value |
+|---|---|---|
+| Relay upstream fetch | `verify.php` `CURLOPT_CONNECTTIMEOUT` | 5 s |
+| Relay upstream fetch | `verify.php` `CURLOPT_TIMEOUT` | 10 s |
+| API per-relay budget | `TELEBIRR_PROXY_TIMEOUT_MS` (env) | 13 s |
+| API whole-pool deadline | `TELEBIRR_TOTAL_TIMEOUT_MS` (env) | 15 s |
+| API hedge delay | `TELEBIRR_HEDGE_DELAY_MS` (env) | 1 s |
+
+The per-relay budget must stay **above** the relay's own total cap + transit
+(relay 10 s + PHP + US↔ET transit ≈ 12 s), so a relay that fails its upstream
+still *answers* inside the API budget and the error says
+"The relay could not reach the Telebirr receipt service" instead of the API
+giving up on silence. The pool deadline must stay above hedge delay + per-relay
+budget. If you change one layer, re-check the others.
+
+A relay 502 with a JSON body is treated as a transport failure (it counts
+against the circuit breaker); a 401/400 JSON body is a *configuration* error
+and is surfaced loudly instead of being masked as "receipt not found".
+
 ---
 
 ## Step 3: Deploy the verifier-api on Render (free)

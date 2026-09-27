@@ -19,6 +19,7 @@ import { billingConfigCacheState } from '../config/billingConfig';
 import { workspaceDeliveryCacheState } from '../utils/workspaceEvents';
 import { quotaRefundState } from '../utils/quotaCharge';
 import { dbMetricsSnapshot } from '../utils/dbMetrics';
+import { dnsCacheStats } from '../utils/dnsCache';
 
 /**
  * Lightweight process diagnostics.
@@ -50,6 +51,9 @@ function buildDiagnostics() {
             billingConfig: billingConfigCacheState(),
             verificationResults: verifyCacheStats(),
             workspaceDelivery: workspaceDeliveryCacheState(),
+            // Relay-host DNS answers (.et zone lookups are slow); a non-zero
+            // entry count means repeated relay requests skip the resolver.
+            dns: dnsCacheStats(),
         },
         buffers: {
             usageLogs: usageLogStats(),
