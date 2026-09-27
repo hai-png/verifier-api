@@ -35,6 +35,7 @@ register_shutdown_function(function (): void {
     respond([
         "success" => false,
         "error" => "Relay script terminated before completing (stage: {$__stage}).",
+        "relayVersion" => RELAY_VERSION,
         "details" => sprintf(
             'elapsedMs=%d stage=%s maxExecutionTime=%s memoryLimit=%s lastError=%s',
             round((microtime(true) - $__startedAt) * 1000),
@@ -46,6 +47,11 @@ register_shutdown_function(function (): void {
     ], 502);
 });
 
+// Bump when the response contract or timeout behaviour changes. The 401 path
+// below is the cheapest place to read it, because it never touches the upstream
+// provider — useful for confirming which build is actually deployed.
+const RELAY_VERSION = '2026-09-27.bounded';
+
 // Prefer an environment variable when the hosting panel supports one. Otherwise
 // replace the placeholder below before uploading this file.
 $TELEBIRR_PROXY_KEY = getenv('TELEBIRR_PROXY_KEY') ?: 'YOUR_SECRET_PROXY_KEY_HERE';
@@ -55,7 +61,8 @@ $TELEBIRR_PROXY_KEY = getenv('TELEBIRR_PROXY_KEY') ?: 'YOUR_SECRET_PROXY_KEY_HER
 if (!isset($_GET['key']) || !hash_equals($TELEBIRR_PROXY_KEY, (string) $_GET['key'])) {
     respond([
         "success" => false,
-        "error" => "Unauthorized: Invalid or missing proxy key"
+        "error" => "Unauthorized: Invalid or missing proxy key",
+        "relayVersion" => RELAY_VERSION
     ], 401);
     exit;
 }
