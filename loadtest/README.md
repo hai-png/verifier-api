@@ -193,8 +193,6 @@ connection pool even though they do not directly delay that response.
 See [the September 26 review](../loadtest-results/review/FINDINGS.md) for measured
 limits, remediation status and the redeployment checklist. Anonymous capacity,
 uncached synthetic-provider capacity, and real bank capacity are distinct.
-<<<<<<< ours
-=======
 
 ## Browser-session dashboard path (not dashboard-secret auth)
 

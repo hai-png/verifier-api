@@ -1,330 +1,410 @@
 Already up to date
-Done in 249ms using pnpm v11.0.0
-$ pnpm build && node --test dist/tests/statusMonitorSignature.test.js dist/tests/statusProbeService.test.js dist/tests/verificationHelpers.test.js dist/tests/verifyAwashAndRouting.test.js dist/tests/writeBehind.test.js dist/tests/expiringStore.test.js dist/tests/verifyResultCache.test.js dist/tests/quotaCharge.test.js dist/tests/dbMetrics.test.js dist/tests/validateCbeRequest.test.js dist/tests/singleFlight.test.js dist/tests/verificationEngine.test.js dist/tests/verificationPipeline.test.js dist/tests/verifyDashenRetry.test.js
+Done in 272ms using pnpm v11.0.0
+$ pnpm build && node --test dist/tests/statusMonitorSignature.test.js dist/tests/statusProbeService.test.js dist/tests/verificationHelpers.test.js dist/tests/verifyAwashAndRouting.test.js dist/tests/writeBehind.test.js dist/tests/expiringStore.test.js dist/tests/verifyResultCache.test.js dist/tests/quotaCharge.test.js dist/tests/dbMetrics.test.js dist/tests/validateCbeRequest.test.js dist/tests/singleFlight.test.js dist/tests/verificationEngine.test.js dist/tests/verificationPipeline.test.js dist/tests/verifyDashenRetry.test.js dist/tests/latencyFixes.test.js
 $ npx prisma generate && npx tsc
 Prisma schema loaded from prisma/schema.prisma
 
-✔ Generated Prisma Client (v6.19.3) to ./node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client in 192ms
+✔ Generated Prisma Client (v6.19.3) to ./node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client in 213ms
 
 Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
 
-Tip: Want to turn off tips and other hints? https://pris.ly/tip-4-nohints
+Tip: Need your database queries to be 1000x faster? Accelerate offers you that and more: https://pris.ly/tip-2-accelerate
 
 TAP version 13
 # Subtest: classifyStatement finds the verb and the table
 ok 1 - classifyStatement finds the verb and the table
   ---
-  duration_ms: 2.480495
+  duration_ms: 1.797738
   type: 'test'
   ...
 # Subtest: statements per request is derived from both counters
 ok 2 - statements per request is derived from both counters
   ---
-  duration_ms: 1.28246
+  duration_ms: 0.941278
   type: 'test'
   ...
 # Subtest: the rolling window only counts the last minute
 ok 3 - the rolling window only counts the last minute
   ---
-  duration_ms: 0.349204
+  duration_ms: 0.254736
   type: 'test'
   ...
 # Subtest: empty counters report nulls instead of dividing by zero
 ok 4 - empty counters report nulls instead of dividing by zero
   ---
-  duration_ms: 0.251921
+  duration_ms: 0.206145
   type: 'test'
   ...
 # Subtest: the slowest-statement list stays bounded
 ok 5 - the slowest-statement list stays bounded
   ---
-  duration_ms: 2.121496
+  duration_ms: 1.34372
   type: 'test'
   ...
 # Subtest: counts hits within a window and resets after it expires
 ok 6 - counts hits within a window and resets after it expires
   ---
-  duration_ms: 1.157696
+  duration_ms: 3.040299
   type: 'test'
   ...
 # Subtest: tracks keys independently and exposes the window start for Retry-After
 ok 7 - tracks keys independently and exposes the window start for Retry-After
   ---
-  duration_ms: 0.211902
+  duration_ms: 0.3051
   type: 'test'
   ...
 # Subtest: sweeps expired entries instead of growing without bound
 ok 8 - sweeps expired entries instead of growing without bound
   ---
-  duration_ms: 4.80151
+  duration_ms: 9.619658
   type: 'test'
   ...
 # Subtest: evicts the oldest keys when the store is full
 ok 9 - evicts the oldest keys when the store is full
   ---
-  duration_ms: 1.753704
+  duration_ms: 5.405627
+  type: 'test'
+  ...
+# Subtest: expired billing config is served stale while one background refresh runs
+ok 10 - expired billing config is served stale while one background refresh runs
+  ---
+  duration_ms: 77.081579
+  type: 'test'
+  ...
+# [2026-09-27 02:39:38] [33MWARN[39M: Background billing config refresh failed; serving cached value.
+# 📦 Metadata:
+#    › {
+#    ›   "error": "db down"
+#    › }
+# [2026-09-27 02:39:38] [33MWARN[39M: Background billing config refresh failed; serving cached value.
+# 📦 Metadata:
+#    › {
+#    ›   "error": "db down"
+#    › }
+# [2026-09-27 02:39:38] [31MERROR[39M: Single-query API key lookup failed; falling back to Prisma include for this process.
+# 📦 Metadata:
+#    › {
+#    ›   "error": "dialect"
+#    › }
+# [2026-09-27 02:39:38] [31MERROR[39M: Single-statement credit write failed; falling back to Prisma updateMany for this process.
+# 📦 Metadata:
+#    › {
+#    ›   "error": "dialect"
+#    › }
+# Subtest: failed background refresh keeps serving the cached value
+ok 11 - failed background refresh keeps serving the cached value
+  ---
+  duration_ms: 76.97386
+  type: 'test'
+  ...
+# Subtest: invalidation during a refresh prevents a stale overwrite
+ok 12 - invalidation during a refresh prevents a stale overwrite
+  ---
+  duration_ms: 1.125512
+  type: 'test'
+  ...
+# Subtest: raw scalar coercion matches Prisma types
+ok 13 - raw scalar coercion matches Prisma types
+  ---
+  duration_ms: 1.204711
+  type: 'test'
+  ...
+# Subtest: api key lookup maps a single joined row into key + workspace
+ok 14 - api key lookup maps a single joined row into key + workspace
+  ---
+  duration_ms: 1.630115
+  type: 'test'
+  ...
+# Subtest: api key lookup falls back to Prisma include when raw SQL fails
+ok 15 - api key lookup falls back to Prisma include when raw SQL fails
+  ---
+  duration_ms: 1.323763
+  type: 'test'
+  ...
+# Subtest: secrets in query strings are redacted from logged URLs
+ok 16 - secrets in query strings are redacted from logged URLs
+  ---
+  duration_ms: 0.398985
+  type: 'test'
+  ...
+# Subtest: pool size: default when absent, explicit URL kept, env override wins
+ok 17 - pool size: default when absent, explicit URL kept, env override wins
+  ---
+  duration_ms: 0.61007
+  type: 'test'
+  ...
+# Subtest: credit charge is one conditional UPDATE; zero rows means insufficient credits
+ok 18 - credit charge is one conditional UPDATE; zero rows means insufficient credits
+  ---
+  duration_ms: 1.780015
+  type: 'test'
+  ...
+# Subtest: credit charge falls back to Prisma updateMany when raw SQL fails
+ok 19 - credit charge falls back to Prisma updateMany when raw SQL fails
+  ---
+  duration_ms: 1.577977
   type: 'test'
   ...
 # Subtest: refunds credits when no provider lookup happened
-ok 10 - refunds credits when no provider lookup happened
+ok 20 - refunds credits when no provider lookup happened
   ---
-  duration_ms: 1.224004
+  duration_ms: 1.052686
   type: 'test'
   ...
 # Subtest: does not refund provider-facing outcomes
-ok 11 - does not refund provider-facing outcomes
+ok 21 - does not refund provider-facing outcomes
   ---
-  duration_ms: 0.252522
+  duration_ms: 0.217987
   type: 'test'
   ...
 # Subtest: charges are tracked per request
-ok 12 - charges are tracked per request
+ok 22 - charges are tracked per request
   ---
-  duration_ms: 0.995107
+  duration_ms: 0.932792
   type: 'test'
   ...
 # Subtest: 100 concurrent readiness checks share one operation, not its completed result
-ok 13 - 100 concurrent readiness checks share one operation, not its completed result
+ok 23 - 100 concurrent readiness checks share one operation, not its completed result
   ---
-  duration_ms: 1.651925
+  duration_ms: 2.361051
   type: 'test'
   ...
 # Subtest: failure is shared, then a fresh check can recover
-ok 14 - failure is shared, then a fresh check can recover
+ok 24 - failure is shared, then a fresh check can recover
   ---
-  duration_ms: 0.30576
+  duration_ms: 0.515914
   type: 'test'
   ...
 # Subtest: accepts a valid status monitor signature
-ok 15 - accepts a valid status monitor signature
+ok 25 - accepts a valid status monitor signature
   ---
-  duration_ms: 1.945517
+  duration_ms: 1.955864
   type: 'test'
   ...
 # Subtest: rejects altered paths, methods, malformed signatures, and expired timestamps
-ok 16 - rejects altered paths, methods, malformed signatures, and expired timestamps
+ok 26 - rejects altered paths, methods, malformed signatures, and expired timestamps
   ---
-  duration_ms: 0.520778
+  duration_ms: 0.410788
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
 # Subtest: returns a redacted not-configured provider result without contacting upstreams
-ok 17 - returns a redacted not-configured provider result without contacting upstreams
+ok 27 - returns a redacted not-configured provider result without contacting upstreams
   ---
-  duration_ms: 2.662944
+  duration_ms: 7.871764
   type: 'test'
   ...
 # Subtest: classifies healthy, slow, invalid, and unavailable results
-ok 18 - classifies healthy, slow, invalid, and unavailable results
+ok 28 - classifies healthy, slow, invalid, and unavailable results
   ---
-  duration_ms: 0.245702
+  duration_ms: 0.19792
   type: 'test'
   ...
 # Subtest: treats an active fallback Telebirr relay as a healthy degraded path
-ok 19 - treats an active fallback Telebirr relay as a healthy degraded path
+ok 29 - treats an active fallback Telebirr relay as a healthy degraded path
   ---
-  duration_ms: 0.202238
+  duration_ms: 0.141876
   type: 'test'
   ...
 # Subtest: reports capability configuration without consuming credits
-ok 20 - reports capability configuration without consuming credits
+ok 30 - reports capability configuration without consuming credits
   ---
-  duration_ms: 0.382553
+  duration_ms: 0.272058
   type: 'test'
   ...
 # Subtest: creates safe public Telebirr relay labels without exposing fallback URLs
-ok 21 - creates safe public Telebirr relay labels without exposing fallback URLs
+ok 31 - creates safe public Telebirr relay labels without exposing fallback URLs
   ---
-  duration_ms: 0.595678
+  duration_ms: 0.398374
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Successfully extracted Telebirr data from relay.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Successfully extracted Telebirr data from relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1",
 #    ›   "transactionStatus": "Completed"
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Successfully extracted Telebirr data from relay.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Successfully extracted Telebirr data from relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1",
 #    ›   "transactionStatus": "Completed"
 #    › }
 # Subtest: hedges a slow preferred relay and reuses the winning fallback
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
-ok 22 - hedges a slow preferred relay and reuses the winning fallback
+ok 32 - hedges a slow preferred relay and reuses the winning fallback
   ---
-  duration_ms: 170.893687
+  duration_ms: 157.727576
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [33MWARN[39M: Telebirr relay is unreachable or timed out.
+# [2026-09-27 02:39:38] [33MWARN[39M: Telebirr relay is unreachable or timed out.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay",
 #    ›   "code": "ERR_BAD_RESPONSE",
 #    ›   "status": 503
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Telebirr relay returned a domain response.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Telebirr relay returned a domain response.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [31MERROR[39M: All Telebirr verification methods failed.
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [31MERROR[39M: All Telebirr verification methods failed.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
-# [2026-09-27 01:04:51] [33MWARN[39M: Telebirr relay is unreachable or timed out.
+# [2026-09-27 02:39:38] [33MWARN[39M: Telebirr relay is unreachable or timed out.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay",
 #    ›   "code": "ERR_BAD_RESPONSE",
 #    ›   "status": 503
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Telebirr relay returned a domain response.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Telebirr relay returned a domain response.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [31MERROR[39M: All Telebirr verification methods failed.
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [31MERROR[39M: All Telebirr verification methods failed.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Telebirr relay returned a domain response.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Telebirr relay returned a domain response.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [31MERROR[39M: All Telebirr verification methods failed.
+# [2026-09-27 02:39:38] [31MERROR[39M: All Telebirr verification methods failed.
 # Subtest: opens the circuit only after the configured transport-failure threshold
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-ok 23 - opens the circuit only after the configured transport-failure threshold
+ok 33 - opens the circuit only after the configured transport-failure threshold
   ---
-  duration_ms: 37.205795
+  duration_ms: 43.152733
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [33MWARN[39M: Telebirr relay is unreachable or timed out.
+# [2026-09-27 02:39:38] [33MWARN[39M: Telebirr relay is unreachable or timed out.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay",
 #    ›   "code": "ERR_BAD_RESPONSE",
 #    ›   "status": 503
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Successfully extracted Telebirr data from relay.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Successfully extracted Telebirr data from relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1",
 #    ›   "transactionStatus": "Completed"
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Successfully extracted Telebirr data from relay.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Successfully extracted Telebirr data from relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay",
 #    ›   "transactionStatus": "Completed"
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
 # Subtest: status probes do not change live Telebirr relay routing state
-ok 24 - status probes do not change live Telebirr relay routing state
+ok 34 - status probes do not change live Telebirr relay routing state
   ---
-  duration_ms: 18.212658
+  duration_ms: 27.708102
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [33MWARN[39M: Telebirr relay is unreachable or timed out.
+# [2026-09-27 02:39:38] [33MWARN[39M: Telebirr relay is unreachable or timed out.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay",
 #    ›   "code": "ERR_BAD_RESPONSE",
 #    ›   "status": 503
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Successfully extracted Telebirr data from relay.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Successfully extracted Telebirr data from relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay",
 #    ›   "transactionStatus": "Completed"
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
 # Subtest: allows a half-open recovery attempt when every relay circuit is open
-ok 25 - allows a half-open recovery attempt when every relay circuit is open
+ok 35 - allows a half-open recovery attempt when every relay circuit is open
   ---
-  duration_ms: 10.806714
+  duration_ms: 15.999218
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [33MWARN[39M: Telebirr relay is unreachable or timed out.
+# [2026-09-27 02:39:38] [33MWARN[39M: Telebirr relay is unreachable or timed out.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay",
@@ -332,343 +412,373 @@ ok 25 - allows a half-open recovery attempt when every relay circuit is open
 #    ›   "status": 502
 #    › }
 # Subtest: surfaces an all-relay transport failure instead of reporting receipt not found
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
-ok 26 - surfaces an all-relay transport failure instead of reporting receipt not found
+ok 36 - surfaces an all-relay transport failure instead of reporting receipt not found
   ---
-  duration_ms: 4.849696
+  duration_ms: 8.184284
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Telebirr relay returned a domain response.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Telebirr relay returned a domain response.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Telebirr relay returned a domain response.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Telebirr relay returned a domain response.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Community relay 1"
 #    › }
-# [2026-09-27 01:04:51] [31MERROR[39M: All Telebirr verification methods failed.
-# [2026-09-27 01:04:51] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
-# [2026-09-27 01:04:51] [32MINFO[39M: Attempting Telebirr verification through relay.
+# [2026-09-27 02:39:38] [31MERROR[39M: All Telebirr verification methods failed.
+# [2026-09-27 02:39:38] [32MINFO[39M: Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).
+# [2026-09-27 02:39:38] [32MINFO[39M: Attempting Telebirr verification through relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay"
 #    › }
-# [2026-09-27 01:04:51] [34MDEBUG[39M: Received proxy response with status: 200
-# [2026-09-27 01:04:51] [32MINFO[39M: Successfully extracted Telebirr data from relay.
+# [2026-09-27 02:39:38] [34MDEBUG[39M: Received proxy response with status: 200
+# [2026-09-27 02:39:38] [32MINFO[39M: Successfully extracted Telebirr data from relay.
 # 📦 Metadata:
 #    › {
 #    ›   "relay": "Preferred relay",
 #    ›   "transactionStatus": "Completed"
 #    › }
 # Subtest: does not open a relay circuit for a missing receipt
-ok 27 - does not open a relay circuit for a missing receipt
+ok 37 - does not open a relay circuit for a missing receipt
   ---
-  duration_ms: 15.635039
+  duration_ms: 17.669544
   type: 'test'
   ...
 # Subtest: CBE malformed inputs fail before credit reservation
-ok 28 - CBE malformed inputs fail before credit reservation
+ok 38 - CBE malformed inputs fail before credit reservation
   ---
-  duration_ms: 2.21222
+  duration_ms: 2.683132
   type: 'test'
   ...
 # Subtest: legacy, embedded suffix and new CBE references preserve acceptance
-ok 29 - legacy, embedded suffix and new CBE references preserve acceptance
+ok 39 - legacy, embedded suffix and new CBE references preserve acceptance
   ---
-  duration_ms: 0.623129
+  duration_ms: 0.715286
   type: 'test'
   ...
 # Subtest: early validation blocks downstream billing for GET, HEAD and POST only on root
-ok 30 - early validation blocks downstream billing for GET, HEAD and POST only on root
+ok 40 - early validation blocks downstream billing for GET, HEAD and POST only on root
   ---
-  duration_ms: 0.48845
+  duration_ms: 0.586796
   type: 'test'
   ...
 # Subtest: aliases, explicit provider and auto routing converge on the same plan
-ok 31 - aliases, explicit provider and auto routing converge on the same plan
+ok 41 - aliases, explicit provider and auto routing converge on the same plan
   ---
-  duration_ms: 2.87745
+  duration_ms: 4.285175
   type: 'test'
   ...
 # Subtest: explicit new CBE token does not require a legacy suffix and preserves case
-ok 32 - explicit new CBE token does not require a legacy suffix and preserves case
+ok 42 - explicit new CBE token does not require a legacy suffix and preserves case
   ---
-  duration_ms: 0.350436
+  duration_ms: 9.136225
   type: 'test'
   ...
 # Subtest: invalid inputs and conflicting aliases fail without provider work
-ok 33 - invalid inputs and conflicting aliases fail without provider work
+ok 43 - invalid inputs and conflicting aliases fail without provider work
   ---
-  duration_ms: 0.387081
+  duration_ms: 0.64277
   type: 'test'
   ...
 # Subtest: explicit Telebirr and Dashen use exactly one dispatch and preserve provider failures
-ok 34 - explicit Telebirr and Dashen use exactly one dispatch and preserve provider failures
+ok 44 - explicit Telebirr and Dashen use exactly one dispatch and preserve provider failures
   ---
-  duration_ms: 0.560587
+  duration_ms: 0.841984
   type: 'test'
   ...
 # Subtest: buildTelebirrProxyUrl supports a configured reference placeholder
-ok 35 - buildTelebirrProxyUrl supports a configured reference placeholder
+ok 45 - buildTelebirrProxyUrl supports a configured reference placeholder
   ---
-  duration_ms: 0.99791
+  duration_ms: 1.572327
   type: 'test'
   ...
 # Subtest: buildTelebirrProxyUrl also supports a bare proxy endpoint
-ok 36 - buildTelebirrProxyUrl also supports a bare proxy endpoint
+ok 46 - buildTelebirrProxyUrl also supports a bare proxy endpoint
   ---
-  duration_ms: 0.905254
+  duration_ms: 0.246561
   type: 'test'
   ...
 # Subtest: buildTelebirrProxyUrl rejects malformed relay configuration
-ok 37 - buildTelebirrProxyUrl rejects malformed relay configuration
+ok 47 - buildTelebirrProxyUrl rejects malformed relay configuration
   ---
-  duration_ms: 0.639202
+  duration_ms: 0.768455
   type: 'test'
   ...
+# prisma:error 
+# Invalid `prisma.$executeRaw()` invocation:
+# Raw query failed. Code: `1146`. Message: `Table 'verifier.Workspace' doesn't exist`
+# [2026-09-27 02:39:39] [31MERROR[39M: Prisma error: 
+# Invalid `prisma.$executeRaw()` invocation:
+# Raw query failed. Code: `1146`. Message: `Table 'verifier.Workspace' doesn't exist`
+# 📦 Metadata:
+#    › {
+#    ›   "target": "$executeRaw"
+#    › }
+# [2026-09-27 02:39:39] [31MERROR[39M: Single-statement credit write failed; falling back to Prisma updateMany for this process.
+# 📦 Metadata:
+#    › {
+#    ›   "error": "\\nInvalid `prisma.$executeRaw()` invocation:\\n\\n\\nRaw query failed. Code: `1146`. Message: `Table 'verifier.Workspace' doesn't exist`"
+#    › }
+# prisma:error 
+# Invalid `prisma.$queryRaw()` invocation:
+# Raw query failed. Code: `1146`. Message: `Table 'verifier.ApiKey' doesn't exist`
+# [2026-09-27 02:39:39] [31MERROR[39M: Prisma error: 
+# Invalid `prisma.$queryRaw()` invocation:
+# Raw query failed. Code: `1146`. Message: `Table 'verifier.ApiKey' doesn't exist`
+# 📦 Metadata:
+#    › {
+#    ›   "target": "$queryRaw"
+#    › }
+# [2026-09-27 02:39:39] [31MERROR[39M: Single-query API key lookup failed; falling back to Prisma include for this process.
+# 📦 Metadata:
+#    › {
+#    ›   "error": "\\nInvalid `prisma.$queryRaw()` invocation:\\n\\n\\nRaw query failed. Code: `1146`. Message: `Table 'verifier.ApiKey' doesn't exist`"
+#    › }
 # Subtest: dashboard and API execute one tenant-safe, billable verification pipeline
     # Subtest: dashboard miss then legacy/universal hits share one provider call but charge each request
     ok 1 - dashboard miss then legacy/universal hits share one provider call but charge each request
       ---
-      duration_ms: 82.006296
+      duration_ms: 119.901347
       type: 'test'
       ...
     # Subtest: cross-workspace requests cannot reuse another workspace’s result
     ok 2 - cross-workspace requests cannot reuse another workspace’s result
       ---
-      duration_ms: 37.28096
+      duration_ms: 36.589495
       type: 'test'
       ...
     # Subtest: repeated Telebirr succeeds across dashboard and legacy adapter
     ok 3 - repeated Telebirr succeeds across dashboard and legacy adapter
       ---
-      duration_ms: 40.470656
+      duration_ms: 40.699121
       type: 'test'
       ...
-# [2026-09-27 01:04:52] [33MWARN[39M: Invalid API key attempt.
-# [2026-09-27 01:04:52] [33MWARN[39M: Invalid API key attempt.
+# [2026-09-27 02:39:39] [33MWARN[39M: Invalid API key attempt.
+# [2026-09-27 02:39:39] [33MWARN[39M: Invalid API key attempt.
     # Subtest: denied membership, revoked API key and missing auth do not hit cache or charge
     ok 4 - denied membership, revoked API key and missing auth do not hit cache or charge
       ---
-      duration_ms: 24.147523
+      duration_ms: 22.829533
       type: 'test'
       ...
     # Subtest: malformed inputs reject before any quota writes, for both entry points
     ok 5 - malformed inputs reject before any quota writes, for both entry points
       ---
-      duration_ms: 6.279734
+      duration_ms: 6.585681
       type: 'test'
       ...
     # Subtest: quota and rate limits still block cached dashboard hits
     ok 6 - quota and rate limits still block cached dashboard hits
       ---
-      duration_ms: 40.904926
+      duration_ms: 39.154808
       type: 'test'
       ...
     # Subtest: concurrent dashboard/API requests coalesce yet deduct independently
     ok 7 - concurrent dashboard/API requests coalesce yet deduct independently
       ---
-      duration_ms: 36.487337
+      duration_ms: 37.518159
       type: 'test'
       ...
     # Subtest: GET receiptNumber aliases are validated and charged
     ok 8 - GET receiptNumber aliases are validated and charged
       ---
-      duration_ms: 34.600255
+      duration_ms: 34.389656
       type: 'test'
       ...
     # Subtest: concurrent cached requests cannot spend the last credit twice
     ok 9 - concurrent cached requests cannot spend the last credit twice
       ---
-      duration_ms: 37.990101
+      duration_ms: 40.24902
       type: 'test'
       ...
     # Subtest: batch validates all items before bulk charging and shares provider planning
     ok 10 - batch validates all items before bulk charging and shares provider planning
       ---
-      duration_ms: 43.535482
+      duration_ms: 44.056873
       type: 'test'
       ...
     # Subtest: provider failures are not cached, and dashboard reports failures consistently
     ok 11 - provider failures are not cached, and dashboard reports failures consistently
       ---
-      duration_ms: 66.269202
+      duration_ms: 66.907431
       type: 'test'
       ...
     1..11
-ok 38 - dashboard and API execute one tenant-safe, billable verification pipeline
+ok 48 - dashboard and API execute one tenant-safe, billable verification pipeline
   ---
-  duration_ms: 464.543678
+  duration_ms: 502.600159
   type: 'test'
   ...
 # Subtest: public pipeline never charges or emits tenant events even with an attached context
-ok 39 - public pipeline never charges or emits tenant events even with an attached context
+ok 49 - public pipeline never charges or emits tenant events even with an attached context
   ---
-  duration_ms: 9.077747
+  duration_ms: 9.698287
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [32MINFO[39M: ✅ Awash receipt parsed: eskndre zinabe takle — 11000 ETB
-# [2026-09-27 01:04:51] [32MINFO[39M: ✅ Awash receipt parsed: Abebe Kebede — 500 ETB
+# [2026-09-27 02:39:39] [32MINFO[39M: ✅ Awash receipt parsed: eskndre zinabe takle — 11000 ETB
+# [2026-09-27 02:39:39] [32MINFO[39M: ✅ Awash receipt parsed: Abebe Kebede — 500 ETB
 # Subtest: parseAwashReceipt parses the new Telebirr-style (tt/span-wrapped) receipt
-ok 40 - parseAwashReceipt parses the new Telebirr-style (tt/span-wrapped) receipt
+ok 50 - parseAwashReceipt parses the new Telebirr-style (tt/span-wrapped) receipt
   ---
-  duration_ms: 5.737364
+  duration_ms: 5.03279
   type: 'test'
   ...
 # Subtest: parseAwashReceipt still parses the legacy flat-cell receipt
-ok 41 - parseAwashReceipt still parses the legacy flat-cell receipt
+ok 51 - parseAwashReceipt still parses the legacy flat-cell receipt
   ---
-  duration_ms: 0.912165
+  duration_ms: 0.787431
   type: 'test'
   ...
 # Subtest: parseAwashReceipt rejects a page that is not a receipt
-ok 42 - parseAwashReceipt rejects a page that is not a receipt
+ok 52 - parseAwashReceipt rejects a page that is not a receipt
   ---
-  duration_ms: 0.208777
+  duration_ms: 0.19803
   type: 'test'
   ...
 # Subtest: Awash references with a dash are no longer mistaken for new-CBE tokens
-ok 43 - Awash references with a dash are no longer mistaken for new-CBE tokens
+ok 53 - Awash references with a dash are no longer mistaken for new-CBE tokens
   ---
-  duration_ms: 0.465576
+  duration_ms: 0.529289
   type: 'test'
   ...
 # Subtest: genuine new-CBE tokens (alphanumeric, 15-40 chars) still detect
-ok 44 - genuine new-CBE tokens (alphanumeric, 15-40 chars) still detect
+ok 54 - genuine new-CBE tokens (alphanumeric, 15-40 chars) still detect
   ---
-  duration_ms: 0.223669
+  duration_ms: 0.186478
   type: 'test'
   ...
 # Subtest: FT-prefixed legacy references never detect as new-CBE tokens
-ok 45 - FT-prefixed legacy references never detect as new-CBE tokens
+ok 55 - FT-prefixed legacy references never detect as new-CBE tokens
   ---
-  duration_ms: 0.17652
+  duration_ms: 0.136745
   type: 'test'
   ...
-# [2026-09-27 01:04:51] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
-# [2026-09-27 01:04:51] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
-# [2026-09-27 01:04:51] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
-# [2026-09-27 01:04:51] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
-# [2026-09-27 01:04:51] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
-# [2026-09-27 01:04:51] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
-# [2026-09-27 01:04:51] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
-# [2026-09-27 01:04:51] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
-# [2026-09-27 01:04:51] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
-# [2026-09-27 01:04:51] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
-# [2026-09-27 01:04:51] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
-# [2026-09-27 01:04:51] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
-# [2026-09-27 01:04:51] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
-# [2026-09-27 01:04:51] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
-# [2026-09-27 01:04:51] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): network
-# [2026-09-27 01:04:51] [32MINFO[39M: ⏳ Waiting 250ms before retry...
-# [2026-09-27 01:04:52] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 2/2): https://receipts.dashenbanksc.com/receipt/test
-# [2026-09-27 01:04:52] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 2/2): network
-# [2026-09-27 01:04:52] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
-# [2026-09-27 01:04:52] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
-# [2026-09-27 01:04:52] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): network
-# [2026-09-27 01:04:52] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
+# [2026-09-27 02:39:39] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
+# [2026-09-27 02:39:39] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
+# [2026-09-27 02:39:39] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
+# [2026-09-27 02:39:39] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
+# [2026-09-27 02:39:39] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
+# [2026-09-27 02:39:39] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
+# [2026-09-27 02:39:39] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
+# [2026-09-27 02:39:39] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
+# [2026-09-27 02:39:39] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
+# [2026-09-27 02:39:39] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
+# [2026-09-27 02:39:39] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
+# [2026-09-27 02:39:39] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): upstream
+# [2026-09-27 02:39:39] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
+# [2026-09-27 02:39:39] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
+# [2026-09-27 02:39:39] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): network
+# [2026-09-27 02:39:39] [32MINFO[39M: ⏳ Waiting 250ms before retry...
+# [2026-09-27 02:39:39] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 2/2): https://receipts.dashenbanksc.com/receipt/test
+# [2026-09-27 02:39:39] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 2/2): network
+# [2026-09-27 02:39:39] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
+# [2026-09-27 02:39:39] [32MINFO[39M: 🔎 Fetching Dashen receipt (Attempt 1/2): https://receipts.dashenbanksc.com/receipt/test
+# [2026-09-27 02:39:39] [33MWARN[39M: ⚠️ Dashen receipt fetch failed (Attempt 1/2): network
+# [2026-09-27 02:39:39] [31MERROR[39M: ❌ All retry attempts failed for Dashen receipt.
 # Subtest: Dashen never retries permanent 4xx and bounds transient retries
-ok 46 - Dashen never retries permanent 4xx and bounds transient retries
+ok 56 - Dashen never retries permanent 4xx and bounds transient retries
   ---
-  duration_ms: 260.380877
+  duration_ms: 264.250258
   type: 'test'
   ...
 # Subtest: concurrent identical work coalesces and subsequent reads hit
-ok 47 - concurrent identical work coalesces and subsequent reads hit
+ok 57 - concurrent identical work coalesces and subsequent reads hit
   ---
-  duration_ms: 24.543527
+  duration_ms: 24.530129
   type: 'test'
   ...
 # Subtest: workspace, provider, suffix, phone and case-sensitive token isolate cache entries
-ok 48 - workspace, provider, suffix, phone and case-sensitive token isolate cache entries
+ok 58 - workspace, provider, suffix, phone and case-sensitive token isolate cache entries
   ---
-  duration_ms: 1.287788
+  duration_ms: 1.377753
   type: 'test'
   ...
 # Subtest: expired success re-fetches; failures and exceptions are not retained
-ok 49 - expired success re-fetches; failures and exceptions are not retained
+ok 59 - expired success re-fetches; failures and exceptions are not retained
   ---
-  duration_ms: 1.218486
+  duration_ms: 1.29567
   type: 'test'
   ...
 # Subtest: returned results cannot mutate another caller’s cached data
-ok 50 - returned results cannot mutate another caller’s cached data
+ok 60 - returned results cannot mutate another caller’s cached data
   ---
-  duration_ms: 0.369635
+  duration_ms: 0.432317
   type: 'test'
   ...
 # Subtest: cache and outstanding leader maps are bounded
-ok 51 - cache and outstanding leader maps are bounded
+ok 61 - cache and outstanding leader maps are bounded
   ---
-  duration_ms: 0.720642
+  duration_ms: 0.738259
   type: 'test'
   ...
 # Subtest: public callers and explicitly disabled caches never share results
-ok 52 - public callers and explicitly disabled caches never share results
+ok 62 - public callers and explicitly disabled caches never share results
   ---
-  duration_ms: 0.369184
+  duration_ms: 2.0555
   type: 'test'
   ...
 # Subtest: non-final transaction statuses are not replayed as final successes
-ok 53 - non-final transaction statuses are not replayed as final successes
+ok 63 - non-final transaction statuses are not replayed as final successes
   ---
-  duration_ms: 0.743125
+  duration_ms: 0.768055
   type: 'test'
   ...
 # Subtest: write-behind batches pushes into a single flush
-ok 54 - write-behind batches pushes into a single flush
+ok 64 - write-behind batches pushes into a single flush
   ---
-  duration_ms: 1.57419
+  duration_ms: 1.738838
   type: 'test'
   ...
-# [2026-09-27 01:04:52] [31MERROR[39M: [write-behind:test-retry] flush failed (1 entries requeued): database unavailable
-# [2026-09-27 01:04:52] [31MERROR[39M: [write-behind:test-overflow] flush failed (3 entries requeued): still down
-# [2026-09-27 01:04:52] [33MWARN[39M: [write-behind:test-overflow] dropped 3 buffered entries after repeated flush failures
-# [2026-09-27 01:04:52] [31MERROR[39M: [write-behind:test-overflow] flush failed (6 entries requeued): still down
+# [2026-09-27 02:39:39] [31MERROR[39M: [write-behind:test-retry] flush failed (1 entries requeued): database unavailable
+# [2026-09-27 02:39:39] [31MERROR[39M: [write-behind:test-overflow] flush failed (3 entries requeued): still down
+# [2026-09-27 02:39:39] [33MWARN[39M: [write-behind:test-overflow] dropped 3 buffered entries after repeated flush failures
+# [2026-09-27 02:39:39] [31MERROR[39M: [write-behind:test-overflow] flush failed (6 entries requeued): still down
 # Subtest: write-behind flushes as soon as maxBatchSize is reached
-ok 55 - write-behind flushes as soon as maxBatchSize is reached
+ok 65 - write-behind flushes as soon as maxBatchSize is reached
   ---
-  duration_ms: 6.359561
+  duration_ms: 5.847242
   type: 'test'
   ...
 # Subtest: write-behind requeues a failed batch and retries on the next flush
-ok 56 - write-behind requeues a failed batch and retries on the next flush
+ok 66 - write-behind requeues a failed batch and retries on the next flush
   ---
-  duration_ms: 2.5588
+  duration_ms: 2.582944
   type: 'test'
   ...
 # Subtest: write-behind drops the oldest entries when the buffer overflows
-ok 57 - write-behind drops the oldest entries when the buffer overflows
+ok 67 - write-behind drops the oldest entries when the buffer overflows
   ---
-  duration_ms: 1.599407
+  duration_ms: 1.685088
   type: 'test'
   ...
 # Subtest: write-behind timer flushes once the interval elapses
-ok 58 - write-behind timer flushes once the interval elapses
+ok 68 - write-behind timer flushes once the interval elapses
   ---
-  duration_ms: 101.333246
+  duration_ms: 100.704364
   type: 'test'
   ...
-1..58
-# tests 69
+1..68
+# tests 79
 # suites 0
-# pass 69
+# pass 79
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 1977.268542
+# duration_ms 2247.616007

@@ -4,34 +4,34 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 324,
-    "mean": 64.8
+    "total": 317,
+    "mean": 63.4
   },
   "responses": [
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 65.4
+      "totalMs": 64.5
     },
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 65
+      "totalMs": 63.3
     },
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 64.1
+      "totalMs": 62.8
     },
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 63.9
+      "totalMs": 62.9
     },
     {
       "status": 403,
       "class": "forbidden_403",
-      "totalMs": 63.9
+      "totalMs": 62.7
     }
   ],
   "sqlStatements": 0,
