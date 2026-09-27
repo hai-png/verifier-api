@@ -20,7 +20,7 @@ import logger from '../utils/logger';
 import { requireSession } from './auth';
 import { generateApiKey } from '../middleware/apiKeyAuth';
 import { createVerificationPipeline, dashboardVerificationAccess } from '../middleware/verificationPipeline';
-import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
+import { assertBrowserNavigableUrl, assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 import { WORKSPACE_EVENTS } from '../utils/workspaceEvents';
 import {
     ensureProviderCoverage,
@@ -313,6 +313,22 @@ router.post('/:workspaceId/payment-links', async (req: Request, res: Response): 
         res.status(400).json({ success: false, error: 'name, fixedAmount, and acceptedProviders are required.' });
         return;
     }
+    // This route stored redirectUrl verbatim, while the API-key route validated
+    // it. The value is rendered as an href on the buyer's checkout page, so
+    // reject anything that is not http(s) rather than silently storing a
+    // javascript: URL.
+    let safeRedirectUrl: string | null = null;
+    if (redirectUrl !== undefined && redirectUrl !== null && redirectUrl !== '') {
+        try {
+            safeRedirectUrl = assertBrowserNavigableUrl(redirectUrl).toString();
+        } catch (err) {
+            res.status(400).json({
+                success: false,
+                error: err instanceof UnsafeOutboundUrlError ? err.message : 'redirectUrl must be a valid http(s) URL.',
+            });
+            return;
+        }
+    }
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
@@ -347,7 +363,7 @@ router.post('/:workspaceId/payment-links', async (req: Request, res: Response): 
                 mode: 'CUSTOM',
                 fixedAmount,
                 acceptedProviders,
-                redirectUrl: redirectUrl || null,
+                redirectUrl: safeRedirectUrl,
                 status: 'ACTIVE',
                 creatorType: 'DASHBOARD',
             },

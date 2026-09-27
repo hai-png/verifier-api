@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
+import { escapeHtml } from '../utils/purchaseEmail';
 
 const QUEUE_NAME = 'workspace-notifications';
 const RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
@@ -175,17 +176,23 @@ function buildEventMessage(event: NotificationEventName, payload: NotificationPa
   }
 }
 
-function buildEmailHtml(event: NotificationEventName, payload: NotificationPayload): string {
+export function buildEmailHtml(event: NotificationEventName, payload: NotificationPayload): string {
   const title = buildEventTitle(event);
   const message = buildEventMessage(event, payload);
 
+  // Every interpolated value here is tenant- or provider-controlled: product
+  // names and webhook URLs come from the merchant, references and error text
+  // from the bank/relay, and buyerName/buyerEmail from an anonymous buyer via
+  // the public confirm endpoint. Unescaped, a product named
+  // `<a href="https://evil/phish">…</a>` rewrote the merchant's own
+  // notification email, and a buyer could inject markup into their seller's mail.
   return `
     <div style="font-family:Arial,sans-serif;background:#060606;color:#f4f4f5;padding:24px">
       <div style="max-width:640px;margin:0 auto;border:1px solid rgba(255,255,255,0.08);border-radius:18px;background:rgba(255,255,255,0.03);padding:24px">
         <p style="margin:0 0 12px;font-size:12px;letter-spacing:0.18em;text-transform:uppercase;color:rgba(255,255,255,0.45)">Veritas notification</p>
-        <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2;color:#ffffff">${title}</h1>
-        <p style="margin:0 0 20px;font-size:15px;line-height:1.7;color:rgba(255,255,255,0.72)">${message}</p>
-        <pre style="white-space:pre-wrap;word-break:break-word;border-radius:14px;background:#0b0b0b;padding:16px;border:1px solid rgba(255,255,255,0.08);color:rgba(255,255,255,0.72);font-size:12px;line-height:1.6;">${JSON.stringify(payload, null, 2)}</pre>
+        <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2;color:#ffffff">${escapeHtml(title)}</h1>
+        <p style="margin:0 0 20px;font-size:15px;line-height:1.7;color:rgba(255,255,255,0.72)">${escapeHtml(message)}</p>
+        <pre style="white-space:pre-wrap;word-break:break-word;border-radius:14px;background:#0b0b0b;padding:16px;border:1px solid rgba(255,255,255,0.08);color:rgba(255,255,255,0.72);font-size:12px;line-height:1.6;">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
       </div>
     </div>
   `;

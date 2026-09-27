@@ -151,6 +151,8 @@ export function normaliseOptionalText(input: unknown): string | null | 'invalid'
   return trimmed === '' ? null : trimmed;
 }
 
+import { assertBrowserNavigableUrl } from '../utils/safeUrl';
+
 export function normaliseOptionalUrl(input: unknown): string | null | 'invalid' {
   if (input === undefined) return null;
   if (input === null) return null;
@@ -158,8 +160,10 @@ export function normaliseOptionalUrl(input: unknown): string | null | 'invalid' 
   const trimmed = input.trim();
   if (!trimmed) return null;
 
+  // These are rendered as hrefs on the checkout page, so reject anything that is
+  // not http(s). `new URL()` alone accepts javascript:, data: and vbscript:.
   try {
-    return new URL(trimmed).toString();
+    return assertBrowserNavigableUrl(trimmed).toString();
   } catch {
     return 'invalid';
   }

@@ -20,6 +20,7 @@ import logger from '../utils/logger';
 import { emitWorkspaceEvent } from '../utils/workspaceEvents';
 import { extractLegacyCbeUrlData, isNewCbeReference } from '../utils/cbeReference';
 import { getRequestIp } from '../utils/requestIp';
+import { assertBrowserNavigableUrl } from '../utils/safeUrl';
 import { MemoryWindowCounter } from '../utils/expiringStore';
 
 const router = Router();
@@ -71,8 +72,10 @@ function normaliseProviders(input: unknown): string[] | null {
 
 function ensureValidRedirectUrl(url: string | undefined): string | null {
   if (!url) return null;
+  // Rendered as an href on the buyer's checkout page and returned by the public
+  // confirm response, so only http(s) may be stored.
   try {
-    return new URL(url).toString();
+    return assertBrowserNavigableUrl(url).toString();
   } catch {
     return null;
   }

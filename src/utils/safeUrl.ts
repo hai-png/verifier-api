@@ -3,6 +3,34 @@ import net from 'net';
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
 
+// Protocols that are safe to place in an href the browser will follow. This is
+// strictly narrower than ALLOWED_PROTOCOLS: a server-side fetch may legitimately
+// speak http, but a rendered link must never be `javascript:`, `data:` or
+// `vbscript:`. `new URL()` alone accepts all of them, which is how a merchant
+// could hand a buyer a checkout link that runs script in the dashboard origin
+// and reads the session token out of localStorage.
+const BROWSER_NAVIGABLE_PROTOCOLS = new Set(['http:', 'https:']);
+
+/**
+ * Validate a URL that will be rendered as a link and clicked by a user.
+ * Synchronous, scheme-only: no DNS here, because the browser resolves it.
+ */
+export function assertBrowserNavigableUrl(raw: unknown): URL {
+    if (typeof raw !== 'string' || !raw.trim()) {
+        throw new UnsafeOutboundUrlError('a non-empty URL string is required');
+    }
+    let url: URL;
+    try {
+        url = new URL(raw.trim());
+    } catch {
+        throw new UnsafeOutboundUrlError('not a valid absolute URL');
+    }
+    if (!BROWSER_NAVIGABLE_PROTOCOLS.has(url.protocol)) {
+        throw new UnsafeOutboundUrlError(`protocol ${url.protocol} must be http or https`);
+    }
+    return url;
+}
+
 // Hostnames that reach infrastructure metadata or a single-label internal name.
 const BLOCKED_HOSTNAMES = new Set([
     'metadata',
