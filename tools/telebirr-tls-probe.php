@@ -212,6 +212,53 @@ if ($ok < $repeats) {
     echo "  Intermittent. Retry inside a budget; a single attempt is a coin flip.\n";
 }
 
+// Second discriminator, and the one that decides where to look next. cURL on
+// this host is old (7.61.1), so it is worth knowing whether the fault belongs to
+// cURL or to the host. PHP's own TLS via stream_socket_client goes through
+// OpenSSL directly and shares nothing with libcurl's connection handling, so if
+// the two disagree the problem is libcurl on this box rather than the network.
+echo "\n=== repeat sample via PHP streams, not cURL ===\n";
+$streamOk = 0;
+for ($i = 1; $i <= $repeats; $i++) {
+    $startedAt = microtime(true);
+    $context = stream_context_create([
+        'ssl' => [
+            'peer_name' => HOST,
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+            'SNI_enabled' => true,
+            'capture_peer_cert' => true,
+        ],
+    ]);
+    $errno = 0;
+    $errstr = '';
+    $fp = @stream_socket_client(
+        'ssl://' . HOST . ':443',
+        $errno,
+        $errstr,
+        6,
+        STREAM_CLIENT_CONNECT,
+        $context
+    );
+    $ms = round((microtime(true) - $startedAt) * 1000);
+    if ($fp !== false) {
+        $streamOk++;
+        fclose($fp);
+        printf("  #%d OK   %5dms\n", $i, $ms);
+    } else {
+        printf("  #%d FAIL %5dms  errno=%d %s\n", $i, $ms, $errno, $errstr);
+    }
+}
+printf("\n  streams: %d/%d succeeded\n", $streamOk, $repeats);
+if ($streamOk === $repeats && $ok < $repeats) {
+    echo "  PHP streams succeed where cURL fails: the fault is in libcurl on this\n";
+    echo "  host, not the network. verify.php could use streams instead.\n";
+} elseif ($streamOk < $repeats && $ok < $repeats) {
+    echo "  Both fail: the fault is this host's path to the provider, not cURL.\n";
+    echo "  Retrying is the only in-app mitigation, and a second relay on a\n";
+    echo "  different network is the real fix.\n";
+}
+
 echo "\n=== how to read this ===\n";
 echo "* Rows disagreeing between two runs of this file, or succeeding in some\n";
 echo "  rows and not others, is the finding. It means the fault is intermittent,\n";
