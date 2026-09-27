@@ -159,6 +159,19 @@ function fetchReceipt($url) {
         "Accept-Language: am-ET,am;q=0.9,en-US;q=0.8,en;q=0.7"
     ]);
 
+    // ── TLS pinning ───────────────────────────────────────────────────────────
+    // transactioninfo.ethiotelecom.et is TLS 1.2 only: it answers a TLS 1.3
+    // ClientHello with "tlsv1 alert protocol version" (alert 70), and offers
+    // ECDHE-RSA-AES256-GCM-SHA384 with a GlobalSign RSA OV SSL CA 2018 chain.
+    // Pin TLS 1.2 so we never pay the 1.3-then-1.2 round trip, and drop the
+    // OpenSSL security level to 1. On OpenSSL 3.x the default level rejects
+    // exactly the older chain this provider still presents, which shows up as
+    // a stalled handshake: curl errno 28 with 0 bytes received, or errno 35.
+    // That is the failure this relay was hitting; shared hosts pick up OpenSSL
+    // and PHP updates on their own schedule, so it appears without a deploy.
+    curl_setopt($ch, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+    curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=1');
+
     // Attempt standard fetch (Secure SSL)
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
     $curlStartedAt = microtime(true);
@@ -189,9 +202,21 @@ function fetchReceipt($url) {
     curl_close($ch);
 
     if ($is_ssl_error) {
+        // errno 60 is this host's certificate store, not the provider's
+        // certificate. The provider presents a GlobalSign RSA OV SSL CA 2018
+        // chain; a Plesk box without that root in its CA bundle fails here and
+        // the fix is on the host, so do not send the operator chasing Ethio
+        // Telecom for it.
+        if ($error_no === 60) {
+            return [
+                'success' => false,
+                'error' => "This relay host does not trust Ethiotelecom's certificate chain (curl errno 60).",
+                'details' => "{$error_msg} | {$probe} | the relay host is missing the GlobalSign RSA OV SSL CA 2018 root in its CA bundle; install it on the host rather than disabling verification"
+            ];
+        }
         return [
             'success' => false,
-            'error' => "SSL Certificate issue from Ethiotelecom.",
+            'error' => "SSL handshake with Ethiotelecom failed (curl errno {$error_no}).",
             'details' => "{$error_msg} | {$probe}"
         ];
     }
