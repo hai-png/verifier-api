@@ -4,14 +4,14 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 3828,
-    "mean": 765.6
+    "total": 3769,
+    "mean": 753.8
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 718.9
+      "totalMs": 902.6
     },
     {
       "status": 200,
@@ -21,29 +21,30 @@
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 836.4
+      "totalMs": 713.7
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 836
+      "totalMs": 715.3
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 714.8
+      "totalMs": 715.7
     }
   ],
-  "sqlStatements": 18,
-  "sqlPerRequest": 3.6,
+  "sqlStatements": 19,
+  "sqlPerRequest": 3.8,
   "comCountersPerRequest": {
     "Com_insert": 0.6,
-    "Com_select": 2.8,
+    "Com_select": 2.6,
     "Com_stmt_execute": 4.2,
+    "Com_stmt_prepare": 0.2,
     "Com_update": 1.2
   },
   "controlNoise": {
-    "statements": 3,
+    "statements": 2,
     "comCounters": {
       "Com_select": 3,
       "Com_stmt_execute": 5,
@@ -59,13 +60,13 @@
     },
     {
       "sql": "COMMIT",
-      "count": 7,
-      "perRequest": 1.4
+      "count": 9,
+      "perRequest": 1.8
     },
     {
       "sql": "SELECT ?",
-      "count": 2,
-      "perRequest": 0.4
+      "count": 1,
+      "perRequest": 0.2
     }
   ]
 }

@@ -11,12 +11,12 @@
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 123.8
+      "totalMs": 124.4
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 64.4
+      "totalMs": 63.3
     },
     {
       "status": 200,
@@ -26,12 +26,12 @@
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.4
+      "totalMs": 62.8
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.3
+      "totalMs": 62.7
     }
   ],
   "sqlStatements": 1,

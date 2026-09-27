@@ -11,7 +11,7 @@
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 185.9
+      "totalMs": 186.4
     },
     {
       "status": 400,
@@ -22,15 +22,17 @@
   "sqlStatements": 1,
   "sqlPerRequest": 0.5,
   "comCountersPerRequest": {
-    "Com_select": 2,
-    "Com_stmt_execute": 1.5
+    "Com_select": 1.5,
+    "Com_stmt_execute": 0.5,
+    "Com_stmt_prepare": 0.5
   },
   "controlNoise": {
-    "statements": 3,
+    "statements": 4,
     "comCounters": {
       "Com_insert": 1,
-      "Com_select": 2,
-      "Com_stmt_execute": 4
+      "Com_select": 3,
+      "Com_stmt_execute": 6,
+      "Com_update": 1
     }
   },
   "statementShapes": [
@@ -43,17 +45,17 @@
   "statementTimeline": [
     {
       "sql": "SELECT ?",
-      "ms": 0.151
+      "ms": 0.156
     },
     {
       "sql": "BEGIN",
-      "ms": 0.099
+      "ms": 0.13
     },
     {
       "sql": "COMMIT",
-      "ms": 0.94
+      "ms": 0.948
     }
   ],
-  "statementTimelineTotalMs": 1.19,
+  "statementTimelineTotalMs": 1.234,
   "statementTimelineSource": "events_statements_history_long"
 }

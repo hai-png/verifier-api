@@ -16,7 +16,7 @@
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.4
+      "totalMs": 62.5
     }
   ],
   "sqlStatements": 0,
@@ -26,7 +26,7 @@
     "Com_stmt_execute": 1
   },
   "controlNoise": {
-    "statements": 1,
+    "statements": 0,
     "comCounters": {
       "Com_select": 1,
       "Com_stmt_execute": 2
