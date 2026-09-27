@@ -53,9 +53,31 @@ register_shutdown_function(function (): void {
     ], 502);
 });
 
-// Prefer an environment variable when the hosting panel supports one. Otherwise
-// replace the placeholder below before uploading this file.
-$TELEBIRR_PROXY_KEY = getenv('TELEBIRR_PROXY_KEY') ?: 'YOUR_SECRET_PROXY_KEY_HERE';
+// Proxy key resolution.
+//
+// The key is hardcoded here on purpose, with the environment variable as an
+// override. On shared hosting the PHP-FPM pool does not always share one
+// environment, so `getenv()` returned empty on some workers: a valid key was
+// intermittently rejected with 401 while other workers proceeded, which looks
+// exactly like a flaky relay. A literal in the file is deterministic across
+// every worker and every node.
+//
+// Replace PASTE_YOUR_KEY_HERE with the real value. If it is still the
+// placeholder the script refuses to run rather than silently 401ing.
+const RELAY_KEY_PLACEHOLDER = 'PASTE_YOUR_KEY_HERE';
+$TELEBIRR_PROXY_KEY = RELAY_KEY_PLACEHOLDER;
+$__keyFromEnv = getenv('TELEBIRR_PROXY_KEY');
+if (is_string($__keyFromEnv) && $__keyFromEnv !== '') {
+    $TELEBIRR_PROXY_KEY = $__keyFromEnv;
+}
+if ($TELEBIRR_PROXY_KEY === RELAY_KEY_PLACEHOLDER) {
+    respond([
+        "success" => false,
+        "error" => "Relay is not configured: replace RELAY_KEY_PLACEHOLDER in verify.php with the proxy key.",
+        "relayVersion" => RELAY_VERSION
+    ], 500);
+    exit;
+}
 
 // Check for proxy key. Return a real HTTP status as well as the JSON error so a
 // broken proxy is distinguishable from a valid-but-missing receipt.
@@ -80,24 +102,27 @@ if ($reference === '') {
 $url = "https://transactioninfo.ethiotelecom.et/receipt/" . urlencode($reference);
 
 /**
- * Bound DNS + TCP independently of cURL.
+ * Measure DNS + TCP reachability without touching TLS.
  *
- * CURLOPT_TIMEOUT does not reliably cover name resolution, and a stalled resolver
- * on shared hosting is the one failure that produced an unbounded hang. Opening
- * our own socket first gives a hard ceiling and a precise error, and warms the
- * resolver so the cURL that follows begins resolving immediately.
+ * Deliberately plain TCP: fsockopen('ssl://...') does not send SNI, and many
+ * hosts reject or mishandle a SNI-less handshake, so a TLS probe here reports a
+ * false "unreachable" for a server that cURL reaches fine. errno=0 with an empty
+ * message after a few seconds is that signature.
+ *
+ * Also advisory only. A failure is recorded as a diagnostic and cURL is still
+ * attempted, because cURL's own error is more trustworthy than this probe.
  */
-function assertUpstreamReachable(string $host, int $port, int $timeoutSeconds): array {
+function measureUpstreamReachability(string $host, int $port, int $timeoutSeconds): array {
     $errno = 0;
     $errstr = '';
     $startedAt = microtime(true);
-    $socket = @fsockopen("ssl://{$host}:{$port}", $timeoutSeconds, $errno, $errstr, STREAM_CLIENT_CONNECT);
+    $socket = @fsockopen("tcp://{$host}:{$port}", $timeoutSeconds, $errno, $errstr, STREAM_CLIENT_CONNECT);
     $elapsedMs = round((microtime(true) - $startedAt) * 1000);
     if ($socket === false) {
         return [
             'ok' => false,
             'elapsedMs' => $elapsedMs,
-            'error' => "could not open a socket to {$host}:{$port} after {$elapsedMs}ms (errno={$errno} {$errstr})"
+            'error' => "tcp connect to {$host}:{$port} failed after {$elapsedMs}ms (errno={$errno} {$errstr})"
         ];
     }
     fclose($socket);
@@ -107,14 +132,7 @@ function assertUpstreamReachable(string $host, int $port, int $timeoutSeconds): 
 function fetchReceipt($url) {
     global $__stage;
     $__stage = 'dns-precheck';
-    $precheck = assertUpstreamReachable('transactioninfo.ethiotelecom.et', 443, 5);
-    if (!$precheck['ok']) {
-        return [
-            'success' => false,
-            'error' => "Ethiotelecom is unreachable. The proxy might be blocked or Ethiotelecom is experiencing hosting issues.",
-            'details' => $precheck['error']
-        ];
-    }
+    $precheck = measureUpstreamReachability('transactioninfo.ethiotelecom.et', 443, 4);
 
     $__stage = 'provider-fetch';
     $ch = curl_init();
@@ -122,7 +140,7 @@ function fetchReceipt($url) {
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
-    // 5s DNS/TCP precheck + 10s fetch = 15s worst case, comfortably inside the
+    // 5s DNS/TCP pre-check + 10s fetch = 15s worst case, comfortably inside the
     // API's 18s relay timeout, so this script is the one that always answers
     // with a diagnosis rather than the API reporting a bare timeout.
     curl_setopt($ch, CURLOPT_TIMEOUT, 10);
@@ -139,9 +157,21 @@ function fetchReceipt($url) {
 
     // Attempt standard fetch (Secure SSL)
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+    $curlStartedAt = microtime(true);
     $response = curl_exec($ch);
     $error_no = curl_errno($ch);
     $error_msg = curl_error($ch);
+    $curlMs = round((microtime(true) - $curlStartedAt) * 1000);
+    // Carry the TCP probe result alongside the cURL error: a probe failure with
+    // a successful-looking cURL timeout points at DNS/TLS, whereas both failing
+    // points at the host being blocked from the provider.
+    $probe = sprintf(
+        'tcpProbe=%s tcpProbeMs=%d curlMs=%d curlErrno=%d',
+        $precheck['ok'] ? 'ok' : 'failed',
+        $precheck['elapsedMs'],
+        $curlMs,
+        $error_no
+    );
 
     if ($error_no === 0) {
         curl_close($ch);
@@ -158,7 +188,7 @@ function fetchReceipt($url) {
         return [
             'success' => false,
             'error' => "SSL Certificate issue from Ethiotelecom.",
-            'details' => $error_msg
+            'details' => "{$error_msg} | {$probe}"
         ];
     }
 
@@ -166,7 +196,7 @@ function fetchReceipt($url) {
         return [
             'success' => false,
             'error' => "Ethiotelecom is unreachable. The proxy might be blocked or Ethiotelecom is experiencing hosting issues.",
-            'details' => $error_msg
+            'details' => "{$error_msg} | {$probe}"
         ];
     }
 
@@ -174,7 +204,7 @@ function fetchReceipt($url) {
     return [
         'success' => false,
         'error' => "Failed to fetch receipt from Ethiotelecom.",
-        'details' => $error_msg
+        'details' => "{$error_msg} | {$probe}"
     ];
 }
 
