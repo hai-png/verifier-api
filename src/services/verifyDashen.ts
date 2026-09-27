@@ -41,7 +41,7 @@ function titleCase(str: string): string {
 export async function verifyDashen(
     transactionReference: string
 ): Promise<DashenVerifyResult> {
-    const url = `https://receipts.dashenbanksc.com/receipt/${transactionReference}`;
+    const url = `https://receipts.dashenbanksc.com/receipt/${encodeURIComponent(transactionReference)}`;
     // Bound total retry time rather than five independent 30-second waits.
     const configured = Number(process.env.DASHEN_TOTAL_TIMEOUT_MS ?? 15_000);
     const budgetMs = Number.isSafeInteger(configured) && configured > 0 && configured <= 120_000 ? configured : 15_000;

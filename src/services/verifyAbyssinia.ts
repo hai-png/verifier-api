@@ -28,11 +28,11 @@ export interface AbyssiniaReceipt {
  */
 export async function verifyAbyssinia(reference: string, suffix: string): Promise<VerifyResult> {
     try {
-        logger.info(`🏦 Starting Abyssinia verification for reference: ${reference} with suffix: ${suffix}`);
+        logger.info(`ðŸ¦ Starting Abyssinia verification for reference: ${reference} with suffix: ${suffix}`);
         
         // Construct the API URL
-        const apiUrl = `https://cs.bankofabyssinia.com/api/onlineSlip/getDetails/?id=${reference}${suffix}`;
-        logger.info(`📡 Fetching from URL: ${apiUrl}`);
+        const apiUrl = `https://cs.bankofabyssinia.com/api/onlineSlip/getDetails/?id=${encodeURIComponent(reference)}${encodeURIComponent(suffix)}`;
+        logger.info(`ðŸ“¡ Fetching from URL: ${apiUrl}`);
         
         // Fetch JSON data from the API
         const response = await axios.get(apiUrl, {
@@ -46,36 +46,36 @@ export async function verifyAbyssinia(reference: string, suffix: string): Promis
             }
         });
         
-        logger.info(`✅ Successfully fetched response with status: ${response.status}`);
+        logger.info(`âœ… Successfully fetched response with status: ${response.status}`);
         
         // Debug log response headers
-        logger.debug(`📋 Response headers:`, JSON.stringify(response.headers, null, 2));
+        logger.debug(`ðŸ“‹ Response headers:`, JSON.stringify(response.headers, null, 2));
         
         // Debug log complete response structure
-        logger.debug(`📄 Complete response data:`, JSON.stringify(response.data, null, 2));
+        logger.debug(`ðŸ“„ Complete response data:`, JSON.stringify(response.data, null, 2));
         
         // Debug log response size and content type
-        logger.debug(`📊 Response size: ${JSON.stringify(response.data).length} characters`);
-        logger.debug(`📝 Content-Type: ${response.headers['content-type'] || 'unknown'}`);
+        logger.debug(`ðŸ“Š Response size: ${JSON.stringify(response.data).length} characters`);
+        logger.debug(`ðŸ“ Content-Type: ${response.headers['content-type'] || 'unknown'}`);
         
         // Parse the JSON response
         const jsonData = response.data;
         
         // Check if the response has the expected structure
         if (!jsonData || !jsonData.header || !jsonData.body || !Array.isArray(jsonData.body)) {
-            logger.error('❌ Invalid response structure from Abyssinia API');
+            logger.error('âŒ Invalid response structure from Abyssinia API');
             return { success: false, error: 'Invalid response structure from Abyssinia API' };
         }
         
         // Check if the request was successful
         if (jsonData.header.status !== 'success') {
-            logger.error(`❌ API returned error status: ${jsonData.header.status}`);
+            logger.error(`âŒ API returned error status: ${jsonData.header.status}`);
             return { success: false, error: `API returned error status: ${jsonData.header.status}` };
         }
         
         // Check if there's data in the body
         if (jsonData.body.length === 0) {
-            logger.error('❌ No transaction data found in response body');
+            logger.error('âŒ No transaction data found in response body');
             return { success: false, error: 'No transaction data found in response body' };
         }
 
@@ -89,11 +89,11 @@ export async function verifyAbyssinia(reference: string, suffix: string): Promis
         
         // Extract the first (and typically only) transaction record
         const transactionData = jsonData.body[0];
-        logger.debug(`🔍 Available fields in transaction data:`, Object.keys(transactionData));
-        logger.debug(`📊 Number of fields in transaction: ${Object.keys(transactionData).length}`);
+        logger.debug(`ðŸ” Available fields in transaction data:`, Object.keys(transactionData));
+        logger.debug(`ðŸ“Š Number of fields in transaction: ${Object.keys(transactionData).length}`);
         
         // Map the response fields to standardized VerifyResult structure with detailed field-by-field logging
-        logger.debug(`🔄 Starting field mapping process...`);
+        logger.debug(`ðŸ”„ Starting field mapping process...`);
         
         // Extract and parse the amount
         const transferredAmountStr = transactionData['Transferred Amount'] || transactionData['Total Amount including VAT'] || '';
@@ -115,7 +115,7 @@ export async function verifyAbyssinia(reference: string, suffix: string): Promis
         };
         
         // Debug log each field mapping
-        logger.debug(`🏷️  Field mappings:`);
+        logger.debug(`ðŸ·ï¸  Field mappings:`);
         logger.debug(`   payer: "${transactionData["Payer's Name"] || transactionData['Source Account Name']}" -> "${result.payer}"`);
         logger.debug(`   payerAccount: "${transactionData['Source Account'] || transactionData["Payer's Account"]}" -> "${result.payerAccount}"`);
         logger.debug(`   receiver: "${transactionData["Receiver's Name"] || transactionData['Beneficiary Name']}" -> "${result.receiver}"`);
@@ -125,15 +125,15 @@ export async function verifyAbyssinia(reference: string, suffix: string): Promis
         logger.debug(`   reference: "${transactionData['Transaction Reference'] || transactionData['Payment Reference']}" -> "${result.reference}"`);
         logger.debug(`   reason: "${transactionData['Narrative'] || transactionData['Transaction Type']}" -> "${result.reason}"`);
         
-        logger.debug(`✅ Field mapping completed. Mapped ${Object.keys(result).length} fields.`);
+        logger.debug(`âœ… Field mapping completed. Mapped ${Object.keys(result).length} fields.`);
         
-        logger.debug(`📋 Final mapped result object:`, JSON.stringify(result, null, 2));
-        logger.info(`✅ Successfully parsed Abyssinia receipt for reference: ${result.reference}`);
-        logger.debug(`💰 Key transaction details - Amount: ${result.amount}, Payer: ${result.payer}, Date: ${result.date}`);
+        logger.debug(`ðŸ“‹ Final mapped result object:`, JSON.stringify(result, null, 2));
+        logger.info(`âœ… Successfully parsed Abyssinia receipt for reference: ${result.reference}`);
+        logger.debug(`ðŸ’° Key transaction details - Amount: ${result.amount}, Payer: ${result.payer}, Date: ${result.date}`);
         
         // Validate that we have essential fields
         if (!result.reference || !result.amount) {
-            logger.error('❌ Missing essential fields in transaction data');
+            logger.error('âŒ Missing essential fields in transaction data');
             return { success: false, error: 'Missing essential fields in transaction data' };
         }
         
@@ -141,13 +141,13 @@ export async function verifyAbyssinia(reference: string, suffix: string): Promis
         
     } catch (error) {
         if (error instanceof AxiosError) {
-            logger.error(`❌ HTTP Error fetching Abyssinia receipt: ${error.message}`);
+            logger.error(`âŒ HTTP Error fetching Abyssinia receipt: ${error.message}`);
             if (error.response) {
-                logger.error(`📊 Response status: ${error.response.status}`);
-                logger.error(`📄 Response data:`, error.response.data);
+                logger.error(`ðŸ“Š Response status: ${error.response.status}`);
+                logger.error(`ðŸ“„ Response data:`, error.response.data);
             }
         } else {
-            logger.error(`❌ Unexpected error in verifyAbyssinia:`, error);
+            logger.error(`âŒ Unexpected error in verifyAbyssinia:`, error);
         }
         return { success: false, error: 'Failed to verify Abyssinia transaction' };
     }

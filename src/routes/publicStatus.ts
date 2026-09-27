@@ -18,6 +18,7 @@ import { verifyCacheStats } from '../middleware/verifyResultCache';
 import { billingConfigCacheState } from '../config/billingConfig';
 import { workspaceDeliveryCacheState } from '../utils/workspaceEvents';
 import { quotaRefundState } from '../utils/quotaCharge';
+import { safeSecretEquals } from '../utils/secretCompare';
 import { dbMetricsSnapshot } from '../utils/dbMetrics';
 
 /**
@@ -90,14 +91,36 @@ const PROVIDERS = [
     'zemen',
 ];
 
-router.get('/summary', (_req: Request, res: Response): void => {
+/**
+ * Resolve whether the caller is entitled to the diagnostics block.
+ *
+ * Everything in `diagnostics` was previously public: host memory, PID, node
+ * version, cache sizes, buffer depths, which secrets are configured, and real
+ * SQL statement text. That is a free reconnaissance and memory-pressure oracle
+ * for anyone who can reach the URL, so it is now gated on a secret.
+ */
+function diagnosticsAuthorised(req: Request): boolean {
+    const secret = process.env.STATUS_MONITOR_SECRET;
+    if (!secret) return false;
+    const presented =
+        (req.headers['x-status-secret'] as string | undefined) ??
+        (req.query.secret as string | undefined) ??
+        (req.headers['x-admin-key'] as string | undefined);
+    return safeSecretEquals(presented, secret) || safeSecretEquals(presented, process.env.ADMIN_SECRET);
+}
+
+router.get('/summary', (req: Request, res: Response): void => {
     const capabilities = getStatusCapabilities();
+    const authorised = diagnosticsAuthorised(req);
 
     res.json({
         status: 'operational',
         timestamp: new Date().toISOString(),
         uptimeSeconds: Math.round(process.uptime()),
-        diagnostics: buildDiagnostics(),
+        // Liveness and the provider/capability list stay public; the host and
+        // database internals do not. `diagnostics: null` tells a caller the
+        // block exists but is withheld, without leaking whether a secret is set.
+        diagnostics: authorised ? buildDiagnostics() : null,
         providers: PROVIDERS,
         capabilities: {
             batchVerification: capabilities.batchVerification.configured,

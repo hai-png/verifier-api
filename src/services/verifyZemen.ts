@@ -31,14 +31,14 @@ export interface ZemenVerifyResult {
 export async function verifyZemen(
     transactionReference: string
 ): Promise<ZemenVerifyResult> {
-    const url = `https://share.zemenbank.com/rt/${transactionReference}/pdf`;
+    const url = `https://share.zemenbank.com/rt/${encodeURIComponent(transactionReference)}/pdf`;
     const httpsAgent = new https.Agent({ rejectUnauthorized: false });
     const maxRetries = 3;
     const retryDelay = 2000;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            logger.info(`🔎 Fetching Zemen receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
+            logger.info(`ðŸ”Ž Fetching Zemen receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
             const response: AxiosResponse<ArrayBuffer> = await axios.get(url, {
                 httpsAgent,
                 responseType: 'arraybuffer',
@@ -49,13 +49,13 @@ export async function verifyZemen(
                 timeout: 30000,
             });
 
-            logger.info('✅ Zemen receipt fetch success, parsing PDF');
+            logger.info('âœ… Zemen receipt fetch success, parsing PDF');
             return await parseZemenReceipt(response.data, transactionReference);
         } catch (error: any) {
             const isLastAttempt = attempt === maxRetries;
             const status = error.response?.status;
 
-            logger.warn(`⚠️ Zemen receipt fetch failed (Attempt ${attempt}/${maxRetries}): ${error.message}`);
+            logger.warn(`âš ï¸ Zemen receipt fetch failed (Attempt ${attempt}/${maxRetries}): ${error.message}`);
 
             if (isLastAttempt) {
                 if (status === 404) {
@@ -64,7 +64,7 @@ export async function verifyZemen(
                 return { success: false, error: `Failed to fetch receipt after ${maxRetries} attempts: ${error.message}` };
             }
 
-            logger.info(`⏳ Waiting ${retryDelay}ms before retry...`);
+            logger.info(`â³ Waiting ${retryDelay}ms before retry...`);
             await new Promise(resolve => setTimeout(resolve, retryDelay));
         }
     }
@@ -77,7 +77,7 @@ async function parseZemenReceipt(buffer: ArrayBuffer, reference: string): Promis
         const parsed = await pdf(Buffer.from(buffer));
         const text = parsed.text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
 
-        logger.info(`📄 Zemen PDF parsed, text length: ${text.length} chars`);
+        logger.info(`ðŸ“„ Zemen PDF parsed, text length: ${text.length} chars`);
 
         const extract = (pattern: RegExp): string | undefined => {
             const match = text.match(pattern);
@@ -119,7 +119,7 @@ async function parseZemenReceipt(buffer: ArrayBuffer, reference: string): Promis
             invoiceNo,
         };
 
-        logger.info(`✅ Zemen receipt parsed: ${result.senderName} → ${result.recipientName}, ${result.amount} ETB`);
+        logger.info(`âœ… Zemen receipt parsed: ${result.senderName} â†’ ${result.recipientName}, ${result.amount} ETB`);
 
         if (!result.amount && !result.senderName) {
             return { success: false, error: 'Could not extract required fields from receipt.' };
@@ -127,7 +127,7 @@ async function parseZemenReceipt(buffer: ArrayBuffer, reference: string): Promis
 
         return result;
     } catch (error: any) {
-        logger.error('❌ Zemen PDF parsing failed:', error.message);
+        logger.error('âŒ Zemen PDF parsing failed:', error.message);
         return { success: false, error: 'Error parsing PDF data' };
     }
 }

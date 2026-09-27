@@ -25,9 +25,9 @@ function titleCase(str: string): string {
 export async function verifyMpesa(
     transactionId: string
 ): Promise<MpesaVerifyResult> {
-    const primaryUrl = `https://m-pesabusiness.safaricom.et/api/receipt/getReceipt?trxNo=${transactionId}`;
+    const primaryUrl = `https://m-pesabusiness.safaricom.et/api/receipt/getReceipt?trxNo=${encodeURIComponent(transactionId)}`;
     const proxyKey = process.env.MPESA_PROXY_KEY || '';
-    // Configurable fallback URL — defaults to the original leul.et proxy.
+    // Configurable fallback URL â€” defaults to the original leul.et proxy.
     // Set MPESA_FALLBACK_URL env var to point at your own self-hosted mpesa.php
     // (e.g. https://your-ethio-hosting.com/mpesa.php)
     const fallbackBase = process.env.MPESA_FALLBACK_URL || 'https://leul.et/mpesa.php';
@@ -36,7 +36,7 @@ export async function verifyMpesa(
 
     async function fetchFromUrl(url: string, source: string): Promise<any> {
         // Relay URLs contain the proxy key and must never enter logs.
-        logger.info(`🔎 Fetching receipt data from ${source}`);
+        logger.info(`ðŸ”Ž Fetching receipt data from ${source}`);
         const response = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -55,10 +55,10 @@ export async function verifyMpesa(
             try {
                 data = await fetchFromUrl(primaryUrl, "primary API");
             } catch (err: any) {
-                logger.warn(`⚠️ Primary M-Pesa fetch failed: ${err.message}. Trying fallback proxy...`);
+                logger.warn(`âš ï¸ Primary M-Pesa fetch failed: ${err.message}. Trying fallback proxy...`);
             }
         } else {
-            logger.info(`⏭️ Skipping primary verifier due to SKIP_PRIMARY_VERIFICATION=true`);
+            logger.info(`â­ï¸ Skipping primary verifier due to SKIP_PRIMARY_VERIFICATION=true`);
         }
 
         // Try proxy if primary failed, skipped or returned a bad responseCode
@@ -66,7 +66,7 @@ export async function verifyMpesa(
             try {
                 data = await fetchFromUrl(fallbackUrl, "fallback proxy");
             } catch (err: any) {
-                logger.error(`❌ M-Pesa fallback proxy request failed: ${err.message}`);
+                logger.error(`âŒ M-Pesa fallback proxy request failed: ${err.message}`);
             }
         }
 
@@ -77,24 +77,24 @@ export async function verifyMpesa(
             };
         }
 
-        logger.info(`📡 API Response Code: ${data.responseCode}, Description: ${data.responseDescription}`);
+        logger.info(`ðŸ“¡ API Response Code: ${data.responseCode}, Description: ${data.responseDescription}`);
 
         if (data.responseCode === "0" && data.base64Data) {
-            logger.info('✅ API returned success and base64 data. Converting to buffer...');
+            logger.info('âœ… API returned success and base64 data. Converting to buffer...');
 
             try {
                 const pdfBuffer = Buffer.from(data.base64Data, 'base64');
-                logger.info(`📦 PDF Buffer created (${pdfBuffer.length} bytes). Parsing PDF...`);
+                logger.info(`ðŸ“¦ PDF Buffer created (${pdfBuffer.length} bytes). Parsing PDF...`);
                 return await parseMpesaReceipt(pdfBuffer);
             } catch (err: any) {
-                logger.error(`❌ Failed to convert/parse base64 PDF: ${err.message}`);
+                logger.error(`âŒ Failed to convert/parse base64 PDF: ${err.message}`);
                 return {
                     success: false,
                     error: `Failed to process PDF data: ${err.message}`
                 };
             }
         } else {
-            logger.warn(`⚠️ M-Pesa returned unsuccessful code or missing data: ${JSON.stringify(data)}`);
+            logger.warn(`âš ï¸ M-Pesa returned unsuccessful code or missing data: ${JSON.stringify(data)}`);
             return {
                 success: false,
                 error: `API Error: ${data.responseDescription || 'Unknown error'}`
@@ -102,7 +102,7 @@ export async function verifyMpesa(
         }
 
     } catch (error: any) {
-        logger.error(`❌ M-Pesa verification failed: ${error.message}`);
+        logger.error(`âŒ M-Pesa verification failed: ${error.message}`);
         return {
             success: false,
             error: `Request failed: ${error.message}`
@@ -116,16 +116,16 @@ async function parseMpesaReceipt(buffer: Buffer | ArrayBuffer): Promise<MpesaVer
         // Remove multiple spaces but keep some structure
         const rawText = parsed.text.replace(/\s+/g, ' ').trim();
 
-        logger.info('📄 Parsing M-Pesa receipt text');
-        logger.debug(`📝 Raw PDF text length: ${rawText.length} characters`);
+        logger.info('ðŸ“„ Parsing M-Pesa receipt text');
+        logger.debug(`ðŸ“ Raw PDF text length: ${rawText.length} characters`);
 
         // Log preview for debugging
         const textPreview = rawText.length > 1000
             ? `${rawText.substring(0, 500)}...${rawText.substring(rawText.length - 500)}`
             : rawText;
-        logger.debug(`🔍 PDF text preview: ${textPreview}`);
+        logger.debug(`ðŸ” PDF text preview: ${textPreview}`);
 
-        const payerNameMatch = rawText.match(/PAYER NAME\s+(.*?)\s+(?:PAYER PHONE|00\d+|Addis Ababa|\+251|የከፋይ ስም)/i);
+        const payerNameMatch = rawText.match(/PAYER NAME\s+(.*?)\s+(?:PAYER PHONE|00\d+|Addis Ababa|\+251|á‹¨áŠ¨á‹á‹­ áˆµáˆ)/i);
         let payerName = payerNameMatch ? payerNameMatch[1].trim() : undefined;
 
         const payerPhoneMatch = rawText.match(/PAYER PHONE NUMBER\s+(\d+)/i);
@@ -155,7 +155,7 @@ async function parseMpesaReceipt(buffer: Buffer | ArrayBuffer): Promise<MpesaVer
         const dateMatch = rawText.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/);
         const paymentDate = dateMatch ? new Date(dateMatch[1]) : undefined;
 
-        const receiverNameMatch = rawText.match(/RECEIVER NAME.*?(?:የተቀባዩ ቢዝነስ ስም)?\s+([A-Za-z\s]+?)\s+\//i);
+        const receiverNameMatch = rawText.match(/RECEIVER NAME.*?(?:á‹¨á‰°á‰€á‰£á‹© á‰¢á‹áŠáˆµ áˆµáˆ)?\s+([A-Za-z\s]+?)\s+\//i);
         let receiverName = receiverNameMatch ? receiverNameMatch[1].trim() : undefined;
 
         const receiverNumMatch = rawText.match(/RECEIVER NUMBER\s+(\d+)/i);
@@ -189,7 +189,7 @@ async function parseMpesaReceipt(buffer: Buffer | ArrayBuffer): Promise<MpesaVer
         };
 
     } catch (err: any) {
-        logger.error(`❌ Error parsing PDF buffer: ${err.message}`);
+        logger.error(`âŒ Error parsing PDF buffer: ${err.message}`);
         return {
             success: false,
             error: `Failed to parse PDF content: ${err.message}`

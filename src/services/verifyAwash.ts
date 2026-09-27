@@ -30,14 +30,14 @@ export interface AwashVerifyResult {
 export async function verifyAwash(
     transactionReference: string
 ): Promise<AwashVerifyResult> {
-    const url = `https://awashpay.awashbank.com:8225/-${transactionReference}`;
+    const url = `https://awashpay.awashbank.com:8225/-${encodeURIComponent(transactionReference)}`;
     const httpsAgent = new https.Agent({ rejectUnauthorized: false });
     const maxRetries = 3;
     const retryDelay = 2000;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            logger.info(`🔎 Fetching Awash receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
+            logger.info(`ðŸ”Ž Fetching Awash receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
             const response: AxiosResponse<string> = await axios.get(url, {
                 httpsAgent,
                 responseType: 'text',
@@ -48,13 +48,13 @@ export async function verifyAwash(
                 timeout: 30000,
             });
 
-            logger.info('✅ Awash receipt fetch success, parsing HTML');
+            logger.info('âœ… Awash receipt fetch success, parsing HTML');
             return parseAwashReceipt(response.data, transactionReference);
         } catch (error: any) {
             const isLastAttempt = attempt === maxRetries;
             const status = error.response?.status;
 
-            logger.warn(`⚠️ Awash receipt fetch failed (Attempt ${attempt}/${maxRetries}): ${error.message}`);
+            logger.warn(`âš ï¸ Awash receipt fetch failed (Attempt ${attempt}/${maxRetries}): ${error.message}`);
 
             if (isLastAttempt) {
                 if (status === 404) {
@@ -63,7 +63,7 @@ export async function verifyAwash(
                 return { success: false, error: `Failed to fetch receipt after ${maxRetries} attempts: ${error.message}` };
             }
 
-            logger.info(`⏳ Waiting ${retryDelay}ms before retry...`);
+            logger.info(`â³ Waiting ${retryDelay}ms before retry...`);
             await new Promise(resolve => setTimeout(resolve, retryDelay));
         }
     }
@@ -126,11 +126,11 @@ export function parseAwashReceipt(html: string, reference: string): AwashVerifyR
             return { success: false, error: 'Could not extract required fields from receipt.' };
         }
 
-        logger.info(`✅ Awash receipt parsed: ${result.senderName} — ${result.amount ?? '?'} ETB`);
+        logger.info(`âœ… Awash receipt parsed: ${result.senderName} â€” ${result.amount ?? '?'} ETB`);
 
         return result;
     } catch (error: any) {
-        logger.error('❌ Awash receipt parsing failed:', error.message);
+        logger.error('âŒ Awash receipt parsing failed:', error.message);
         return { success: false, error: 'Error parsing receipt data' };
     }
 }
