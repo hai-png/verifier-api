@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
+import { findActiveApiKeyWithWorkspace } from '../utils/apiKeyLookup';
 import { createWriteBehind } from '../utils/writeBehind';
 import { AppError, ErrorType, sendErrorResponse } from '../utils/errorHandler';
 import {
@@ -100,18 +101,8 @@ export const generateApiKey = async (owner: string) => {
 export const validateApiKey = async (incomingKey: string) => {
   try {
     const incomingHash = crypto.createHash('sha256').update(incomingKey).digest('hex');
-    return await prisma.apiKey.findFirst({
-      where: {
-        isActive: true,
-        OR: [
-          { keyHash: incomingHash },
-          { key: incomingKey }, // Legacy plain-text keys
-        ],
-      },
-      include: {
-        workspace: true,
-      },
-    });
+    // One round trip (key JOIN workspace); legacy plain-text keys still match.
+    return await findActiveApiKeyWithWorkspace(prisma, incomingHash, incomingKey);
   } catch (error) {
     logger.error('Error validating API key:', error);
     throw error;
