@@ -366,13 +366,22 @@ function parseTelebirrJson(jsonData: any): TelebirrReceipt | null {
  * @param baseUrl The base URL to fetch the receipt from
  * @returns The scraped receipt data or null if failed
  */
-async function fetchFromPrimarySource(reference: string, baseUrl: string): Promise<TelebirrReceipt | null> {
+async function fetchFromPrimarySource(
+    reference: string,
+    baseUrl: string,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {}
+): Promise<TelebirrReceipt | null> {
     const url = `${baseUrl}${reference}`;
 
     try {
         logger.info('Attempting to fetch Telebirr receipt from primary source.');
         const response = await axios.get(url, {
-            timeout: 30_000,
+            // Bounded, and abortable, because this hop runs before the relay pool.
+            // At the previous 30s a hung primary could outlast the entire
+            // TELEBIRR_TOTAL_TIMEOUT_MS budget on its own, so the pool it falls
+            // back to had already been starved and could not be reached.
+            timeout: options.timeoutMs ?? PRIMARY_TIMEOUT_MS,
+            signal: options.signal,
             maxRedirects: 5,
             headers: {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -390,6 +399,13 @@ async function fetchFromPrimarySource(reference: string, baseUrl: string): Promi
 
         return extractedData;
     } catch (error) {
+        // A cancelled primary is an expected outcome of the pool deadline, not a
+        // provider fault, so it must not be logged as an error.
+        if (axios.isCancel(error)) {
+            logger.info('Primary Telebirr fetch was cancelled; moving to the relay pool.');
+            return null;
+        }
+
         // Enhanced error logging with request details
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         const errorStack = error instanceof Error ? error.stack : undefined;
@@ -484,8 +500,8 @@ export function buildTelebirrProxyUrl(
  * The important distinction is *whose* timeout expired:
  *  - ECONNABORTED/ETIMEDOUT on a request that was accepted means the relay
  *    itself never answered. The relay is usually alive (its unauthenticated
- *    path answers instantly), so the hang is almost always the relay's own
- *    upstream scrape of the provider, or a very slow Render->relay hop.
+ *    path answers instantly), so the hang is on the relay's side, somewhere
+ *    between its upstream provider fetch and its own receipt parsing.
  *  - ENOTFOUND/ECONNREFUSED/ENETUNREACH mean the relay was never reached at
  *    all: DNS, nothing listening, or no route.
  */
@@ -519,9 +535,18 @@ function describeRelayTransportFailure(
         case 'ECONNABORTED':
         case 'ETIMEDOUT':
         default:
+            // Deliberately does not name a single stage. This API cannot tell the
+            // relay's upstream fetch apart from its own receipt parsing, and both
+            // present identically here: no response at all. An earlier version of
+            // this sentence asserted the upstream provider fetch, which the
+            // evidence did not support -- the provider answered in under 100ms
+            // while the relay's post-fetch DOM extraction ran unbounded and pushed
+            // the response past this deadline. A late response and no response look
+            // the same to the client, so the honest answer names the relay's side
+            // as a whole and points at the relay's own timing report.
             return {
-                summary: `no response within ${timeoutMs}ms; the relay accepted the request but never answered, so the slow hop is the relay's own upstream provider fetch`,
-                message: `The Telebirr relay did not respond within ${timeoutMs}ms. The relay accepted the request, so the delay is most likely its own upstream provider lookup rather than this API.`
+                summary: `no response within ${timeoutMs}ms; the relay accepted the request but never answered, so the stall is inside the relay (its upstream provider fetch or its receipt parsing), not on this API`,
+                message: `The Telebirr relay did not respond within ${timeoutMs}ms. It accepted the request, so the stall is inside the relay rather than on this API. The relay reports its own stage timings in relayTiming; check them to tell an upstream provider fetch apart from receipt parsing.`
             };
     }
 }
@@ -656,6 +681,25 @@ function positiveInteger(value: string | undefined, fallback: number): number {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
+
+/**
+ * The relay's own wall-clock ceiling, mirrored from RELAY_BUDGET_MS in
+ * verify.php. A per-attempt timeout at or below this value is what produces the
+ * bare "relay did not respond" failure, because the API stops waiting at
+ * roughly the moment the relay gives up on its own budget and is about to
+ * explain which stage stalled. Keep the two in step when either side changes.
+ */
+const RELAY_BUDGET_MS = 11_000;
+
+/**
+ * Budget for the direct provider hop that runs before the relay pool.
+ *
+ * Kept well under the pool's total budget so that when the primary is enabled and
+ * stalls, the relay pool it falls back to still has most of that budget left.
+ * This is the only second route available without provisioning another relay
+ * host, so it is worth keeping usable.
+ */
+const PRIMARY_TIMEOUT_MS = 8_000;
 
 function safePublicLabel(value: string | undefined): string | null {
     const normalized = value?.trim().replace(/\s+/g, ' ');
@@ -842,9 +886,9 @@ async function verifyWithTelebirrProxyPool(
     descriptors: TelebirrProxyDescriptor[],
     env: NodeJS.ProcessEnv
 ): Promise<TelebirrReceipt | null> {
-    const proxyTimeoutMs = positiveInteger(
+    const configuredProxyTimeoutMs = positiveInteger(
         env.TELEBIRR_PROXY_TIMEOUT_MS,
-        18_000
+        12_000
     );
     const hedgeDelayMs = positiveInteger(
         env.TELEBIRR_HEDGE_DELAY_MS,
@@ -858,6 +902,34 @@ async function verifyWithTelebirrProxyPool(
         env.TELEBIRR_TOTAL_TIMEOUT_MS,
         20_000
     );
+    // A single attempt must never be able to consume the whole pool budget.
+    //
+    // At 18s per attempt against a 20s pool the two budgets were inverted: the
+    // per-attempt timeout always won the race, so TELEBIRR_TOTAL_TIMEOUT_MS could
+    // never fire, and with one relay configured there was no second candidate to
+    // fall back to. The attempt then held the connection for 18s and reported a
+    // bare ECONNABORTED, even when the relay was about to answer.
+    //
+    // The default of 12s is what actually fixes that, and it is deliberately a
+    // little above RELAY_BUDGET_MS (11s) in verify.php so the relay's own staged
+    // diagnosis arrives instead of this side hanging up on an empty body. The
+    // clamp below only enforces the invariant that keeps the pool deadline
+    // reachable; it deliberately does not try to second-guess an operator who
+    // deliberately configured short timeouts.
+    const proxyTimeoutMs = Math.min(
+        configuredProxyTimeoutMs,
+        Math.max(1, totalTimeoutMs - 1)
+    );
+    if (proxyTimeoutMs !== configuredProxyTimeoutMs) {
+        logger.warn(
+            `Telebirr TELEBIRR_PROXY_TIMEOUT_MS=${configuredProxyTimeoutMs} is not below TELEBIRR_TOTAL_TIMEOUT_MS=${totalTimeoutMs}, so the pool deadline could never fire; using ${proxyTimeoutMs}ms per attempt instead.`
+        );
+    }
+    if (configuredProxyTimeoutMs <= RELAY_BUDGET_MS) {
+        logger.warn(
+            `Telebirr TELEBIRR_PROXY_TIMEOUT_MS=${configuredProxyTimeoutMs} is at or below the relay's own ${RELAY_BUDGET_MS}ms budget, so this API will usually give up before the relay finishes and report a bare timeout instead of the relay's staged diagnosis.`
+        );
+    }
     const failureThreshold = positiveInteger(
         env.TELEBIRR_PROXY_FAILURE_THRESHOLD,
         2
@@ -872,6 +944,16 @@ async function verifyWithTelebirrProxyPool(
     // orderedAvailableProxies always returns a half-open recovery candidate. A
     // missing relay is rejected earlier, in verifyTelebirr, before we get here.
     const candidates = orderedAvailableProxies(descriptors, Date.now());
+
+    // With a single candidate the hedging, the parallel cap and the pool deadline
+    // are all inert: there is nothing to race against, so a slow relay simply
+    // consumes the whole per-attempt budget. Worth saying out loud, because the
+    // configured pool looks like it has redundancy and does not.
+    if (candidates.length < 2) {
+        logger.warn(
+            `Telebirr has ${candidates.length} relay candidate available, so hedging, parallel racing and the ${totalTimeoutMs}ms pool deadline cannot help. Add a second relay URL to FALLBACK_PROXIES for redundancy.`
+        );
+    }
 
     let nextCandidateIndex = 0;
     let nextToken = 0;
@@ -1114,7 +1196,29 @@ export async function verifyTelebirr(reference: string): Promise<TelebirrReceipt
 
     if (!skipPrimary) {
         logger.info('Attempting primary Telebirr verification.');
-        const primaryResult = await fetchFromPrimarySource(reference, primaryUrl);
+        // The whole request shares one deadline across the primary hop and the
+        // relay pool, so a primary that hangs is cancelled rather than allowed to
+        // spend the pool's budget before the pool is ever entered.
+        const deadlineAt =
+            Date.now() +
+            positiveInteger(process.env.TELEBIRR_TOTAL_TIMEOUT_MS, 20_000);
+        const primaryController = new AbortController();
+        const primaryTimer = setTimeout(
+            () => primaryController.abort(),
+            Math.max(1, deadlineAt - Date.now())
+        );
+        let primaryResult: TelebirrReceipt | null;
+        try {
+            primaryResult = await fetchFromPrimarySource(reference, primaryUrl, {
+                timeoutMs: Math.max(
+                    1,
+                    Math.min(PRIMARY_TIMEOUT_MS, deadlineAt - Date.now())
+                ),
+                signal: primaryController.signal
+            });
+        } finally {
+            clearTimeout(primaryTimer);
+        }
 
         if (primaryResult && isValidReceipt(primaryResult)) {
             return primaryResult;

@@ -2,8 +2,8 @@
 header("Content-Type: application/json");
 
 // ── Always answer ────────────────────────────────────────────────────────────
-// The API's own relay timeout is 18s, so this script must always respond well
-// before that. Two failure modes used to produce a completely empty response:
+// The API's per-attempt relay timeout is 12s, so this script must always respond
+// well before that. Two failure modes used to produce a completely empty response:
 //   * cURL can block indefinitely in DNS resolution, which CURLOPT_TIMEOUT does
 //     not reliably bound on all PHP/libcurl builds.
 //   * When the host kills the script at max_execution_time the fatal error is
@@ -11,11 +11,33 @@ header("Content-Type: application/json");
 //     instead of the intended 502.
 // Every exit path therefore goes through respond(), and a shutdown handler emits
 // a valid document naming the stalled stage if the script dies unexpectedly.
+//
+// An empty body is only a *worse* version of a late body, so the whole script is
+// budgeted to finish inside RELAY_BUDGET_MS: 2s reachability pre-check + 8s fetch
+// leaves ~2s for parse and extract inside the API's 12s. The previous build spent
+// up to 14s in those first two stages and then ran DOMDocument::loadHTML plus 14
+// XPath queries eagerly and unbounded, so a slow page pushed the response past the
+// API's deadline and the caller saw no bytes at all — indistinguishable from a
+// dead relay, which is the failure this budget exists to prevent.
+//
 // Bump when the response contract or timeout behaviour changes. The 401 path
 // below is the cheapest place to read it, because it never touches the upstream
 // provider — useful for confirming which build is actually deployed.
 // Declared before the shutdown handler that reports it.
-const RELAY_VERSION = '2026-09-27.bounded';
+const RELAY_VERSION = '2026-09-27.bounded-extract';
+
+// Wall-clock ceiling for the whole script, in ms, and the slice of it reserved for
+// the DOM/XPath fallback. The fallback is the only stage that cannot be bounded by
+// a socket option, so it is the one that gets skipped when the budget is spent.
+const RELAY_BUDGET_MS = 11000;
+const RELAY_DOM_RESERVE_MS = 2500;
+
+// Hard cap on the provider page size. A receipt page is a few tens of KB; a
+// megabyte is far past anything legitimate and is the input that makes loadHTML
+// and the XPath fallback expensive. Enforced twice: CURLOPT_MAXFILESIZE covers
+// the advertised Content-Length, and the explicit check after the fetch covers
+// chunked responses, where the option cannot see a size at all.
+const MAX_HTML_BYTES = 1048576;
 
 $__stage = 'boot';
 $__startedAt = microtime(true);
@@ -136,22 +158,27 @@ function measureUpstreamReachability(string $host, int $port, int $timeoutSecond
 function fetchReceipt($url) {
     global $__stage;
     $__stage = 'dns-precheck';
-    $precheck = measureUpstreamReachability('transactioninfo.ethiotelecom.et', 443, 4);
+    $precheck = measureUpstreamReachability('transactioninfo.ethiotelecom.et', 443, 2);
 
     $__stage = 'provider-fetch';
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
-    // 5s DNS/TCP pre-check + 10s fetch = 15s worst case, comfortably inside the
-    // API's 18s relay timeout, so this script is the one that always answers
-    // with a diagnosis rather than the API reporting a bare timeout.
-    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    // Keep the connect timeout below the total so a blackholed route is reported
+    // as a connect failure rather than consuming the whole fetch budget.
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
+    // 2s pre-check + 8s fetch = 10s worst case, leaving ~2s of RELAY_BUDGET_MS for
+    // parse and extract so this script is the one that always answers with a
+    // diagnosis rather than the API reporting a bare timeout.
+    curl_setopt($ch, CURLOPT_TIMEOUT, 8);
     // Abort a connection that stalls mid-body instead of burning the full
     // timeout waiting for more data that never arrives.
     curl_setopt($ch, CURLOPT_LOW_SPEED_LIMIT, 512);
     curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, 5);
+    // Bound the response body as well as its rate. LOW_SPEED_* only caps a stall,
+    // not size, and an oversized page is what makes the extract stage run long.
+    curl_setopt($ch, CURLOPT_MAXFILESIZE, MAX_HTML_BYTES);
     curl_setopt($ch, CURLOPT_ENCODING, '');
     curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
@@ -191,6 +218,17 @@ function fetchReceipt($url) {
     );
 
     if ($error_no === 0) {
+        $htmlBytes = is_string($response) ? strlen($response) : 0;
+        if ($htmlBytes > MAX_HTML_BYTES) {
+            // Do not truncate: a cut-off page parses into plausible-looking but
+            // wrong field values, which is worse than an explicit failure.
+            curl_close($ch);
+            return [
+                'success' => false,
+                'error' => "Provider page is too large to parse ({$htmlBytes} bytes, limit " . MAX_HTML_BYTES . ").",
+                'details' => "{$probe} | the receipt page exceeded the parse budget; do not truncate it, because a partial page yields wrong field values"
+            ];
+        }
         curl_close($ch);
         return ['success' => true, 'html' => $response];
     }
@@ -328,12 +366,105 @@ function extractDateRegex($html) {
     return "";
 }
 
-// Fallback DOM parsing functions (keeping your original approach as backup)
-libxml_use_internal_errors(true);
-$dom = new DOMDocument();
-$dom->loadHTML('<?xml encoding="utf-8" ?>' . $html);
-$xpath = new DOMXPath($dom);
-libxml_clear_errors();
+/**
+ * Lazily-built DOM/XPath over the provider page.
+ *
+ * The previous build called DOMDocument::loadHTML() and constructed a DOMXPath
+ * eagerly, immediately after the fetch, and then ran up to 14 XPath queries as
+ * the fallback for every field. That made the parse and extract stages cost the
+ * same whether or not any field actually needed the DOM, and neither stage had
+ * any bound at all — so a large or slow page pushed the response past the API's
+ * deadline and the caller saw an empty body instead of a diagnosis.
+ *
+ * This defers the whole DOM cost until a fallback is genuinely used, and skips it
+ * outright when the remaining budget cannot cover it. Built for PHP 7.1+ so it runs
+ * on the older interpreters shared hosts still ship. Implements the same query()
+ * surface the call sites already use, so none of them had to change.
+ */
+class LazyXPath
+{
+    /** @var DOMXPath|null */
+    private $xpath = null;
+
+    /** @var bool */
+    private $skipped = false;
+
+    /** @var int */
+    private $builtMs = 0;
+
+    /** @var string */
+    private $skipReason = '';
+
+    /** @var string */
+    private $html;
+
+    public function __construct($html)
+    {
+        $this->html = $html;
+    }
+
+    /**
+     * @return DOMNodeList|false
+     */
+    public function query($expression)
+    {
+        if ($this->xpath === null) {
+            if (!$this->build()) {
+                return false;
+            }
+        }
+
+        return $this->xpath->query($expression);
+    }
+
+    public function wasSkipped()
+    {
+        return $this->skipped;
+    }
+
+    public function skipReason()
+    {
+        return $this->skipReason;
+    }
+
+    public function builtMs()
+    {
+        return $this->builtMs;
+    }
+
+    private function build()
+    {
+        global $__startedAt;
+
+        $elapsedMs = (microtime(true) - $__startedAt) * 1000;
+        if ($elapsedMs > RELAY_BUDGET_MS - RELAY_DOM_RESERVE_MS) {
+            $this->skipped = true;
+            $this->skipReason = sprintf(
+                'skipped: %dms of the %dms budget already spent',
+                (int) $elapsedMs,
+                RELAY_BUDGET_MS
+            );
+            return false;
+        }
+
+        $startedAt = microtime(true);
+        // The encoding hint is load-bearing, not decoration: without it libxml can
+        // misdetect the page and mangle the Amharic labels, and every XPath query
+        // below matches on those labels.
+        libxml_use_internal_errors(true);
+        $dom = new DOMDocument();
+        $dom->loadHTML('<?xml encoding="utf-8" ?>' . $this->html);
+        $this->xpath = new DOMXPath($dom);
+        libxml_clear_errors();
+        $this->builtMs = round((microtime(true) - $startedAt) * 1000);
+
+        return true;
+    }
+}
+
+// Populated by getNextCellText() below, which stays a free function so the
+// existing call sites keep their signature. Nothing here builds the DOM.
+$xpath = new LazyXPath($html);
 
 function xpathLiteral($value) {
     if (strpos($value, "'") === false) {
@@ -403,7 +534,8 @@ if ($bankAccountNumberRaw) {
 
 
 // Extraction can be the slow stage on a large page; name it so a stall is
-// attributable rather than looking like a network problem.
+// attributable rather than looking like a network problem. The DOM is built on
+// demand by LazyXPath, so a page where every regex matched never pays for it.
 $__stage = 'extract';
 
 $response = [
@@ -414,7 +546,7 @@ $response = [
         "creditedPartyName" => $creditedPartyName,
         "creditedPartyAccountNo" => $creditedPartyAccountNo,
         "bankName" => $bankName,
-        "customerNote" => extractWithRegex($html, ["የደንበኛ መልዕክት/Customer Note", "Customer Note"]) ?: getNextCellText($xpath, ["የደንበኛ መልዕክት/Customer Note", "Customer Note"]),
+        "customerNote" => extractWithRegex($html, ["የደንበኛ መልዕክት/Customer Note", "Customer Note"]) ?: getNextCellText($xpath, ["የደንበኛ መልዕክት/Customer Note"]),
         "transactionStatus" => extractWithRegex($html, ["የክፍያው ሁኔታ/transaction status", "Transaction status", "transaction status"]) ?: getNextCellText($xpath, ["የክፍያው ሁኔታ/transaction status", "Transaction status", "transaction status"]),
         "receiptNo" => extractReceiptNoRegex($html) ?: getNextCellText($xpath, ["የክፍያ ቁጥር/Receipt No.", "Receipt No."]),
         "paymentDate" => extractDateRegex($html) ?: getNextCellText($xpath, ["የክፍያ ቀን/Payment date", "Payment date"]),
@@ -423,6 +555,18 @@ $response = [
         "serviceFeeVAT" => extractWithRegex($html, ["የአገልግሎት ክፍያ ተ.እ.ታ/Service fee VAT", "Service fee VAT"]) ?: getNextCellText($xpath, ["የአገልግሎት ክፍያ ተ.እ.ታ/Service fee VAT", "Service fee VAT"]),
         "totalPaidAmount" => extractWithRegex($html, ["ጠቅላላ የተከፈለ/Total Paid Amount", "Total Paid Amount"]) ?: getNextCellText($xpath, ["ጠቅላላ የተከፈለ/Total Paid Amount", "Total Paid Amount"])
     ]
+];
+
+// Report how the extraction went, so a slow or degraded run is visible in the
+// API's logs instead of being indistinguishable from a healthy one. The API
+// ignores unknown fields, so this is additive.
+$response['relayTiming'] = [
+    'version' => RELAY_VERSION,
+    'totalMs' => round((microtime(true) - $__startedAt) * 1000),
+    'htmlBytes' => strlen($html),
+    // null means the DOM was never needed, which is the healthy common case.
+    'domMs' => $xpath->wasSkipped() ? null : $xpath->builtMs(),
+    'domNote' => $xpath->wasSkipped() ? $xpath->skipReason() : ($xpath->builtMs() > 0 ? 'fallback used' : 'not needed'),
 ];
 
 $__stage = 'respond';

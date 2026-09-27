@@ -85,6 +85,18 @@ on a **subdomain routed directly to Plesk**. In Cloudflare → **DNS**, add:
 5. In Plesk, make sure SSL is enabled for `proxy.noveld.com.et` (Let's Encrypt)
 6. **Save** — your Telebirr proxy URL is: `https://proxy.noveld.com.et/verify.php`
 
+> **Re-upload `verify.php` after every relay change.** It is deployed by hand, so
+> `git pull` does not update it, and a stale copy fails in a way that looks like
+> a network problem rather than a version skew. Check which build is live by
+> requesting the relay with a deliberately bad key — that path never touches
+> Ethio Telecom, so it answers in milliseconds and echoes the build:
+> ```bash
+> curl -s "https://proxy.noveld.com.et/verify.php?reference=x&key=wrong"
+> # {"success":false,"error":"Unauthorized: ...","relayVersion":"..."}
+> ```
+> A successful receipt response also carries `relayTiming`, which reports the
+> total, the page size, and whether the DOM fallback was needed or skipped.
+
 ### 2c: Upload mpesa.php (M-Pesa proxy)
 
 1. Upload `mpesa.php` to the same document root
@@ -131,6 +143,13 @@ What a working proxy looks like:
    - `DASHBOARD_SECRET` → `openssl rand -hex 32` (generate + paste)
    - `MISTRAL_API_KEY` → get from https://console.mistral.ai (free tier available)
    - `FALLBACK_PROXIES` → `https://proxy.noveld.com.et/verify.php?reference=`
+     - Strongly prefer a comma-separated list of **two or more** relay URLs. With
+       a single relay the hedge timer, the parallel cap, the pool deadline and the
+       circuit breaker have nothing to act on, so one slow relay fails the request
+       outright with no fallback. The API logs a warning at boot and per request
+       when only one candidate is available. A second relay needs a second host —
+       a second PHP document root on the same Plesk box is better than nothing, but
+       a host that can fail independently is the point.
    - `TELEBIRR_PROXY_KEY` → the key you set in verify.php (Step 2b)
    - `MPESA_FALLBACK_URL` → `https://proxy.noveld.com.et/mpesa.php`
    - `MPESA_PROXY_KEY` → the key you set in mpesa.php (Step 2c)

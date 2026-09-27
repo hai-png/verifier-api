@@ -171,6 +171,14 @@ async function initializeRuntime(): Promise<void> {
         if (process.env.SKIP_PRIMARY_VERIFICATION === 'true' && telebirrRelayCount === 0) {
             logger.warn('⚠️ Telebirr primary is disabled but FALLBACK_PROXIES is empty.');
         }
+        if (telebirrRelayCount === 1) {
+            // One relay leaves TELEBIRR_HEDGE_DELAY_MS, TELEBIRR_MAX_PARALLEL_PROXIES,
+            // TELEBIRR_TOTAL_TIMEOUT_MS and the circuit breaker with nothing to act
+            // on, so a single slow relay surfaces as a bare timeout with no
+            // fallback. Say so at boot rather than leaving it to be discovered
+            // during an incident.
+            logger.warn('⚠️ Telebirr has only one relay configured; hedging and failover are inert. Add a second relay URL to FALLBACK_PROXIES.');
+        }
 
         await prisma.$connect();
         await prisma.$queryRaw`SELECT 1`;

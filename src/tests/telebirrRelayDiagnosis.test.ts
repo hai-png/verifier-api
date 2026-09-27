@@ -6,6 +6,14 @@
 // circuit-open cooldown the pool returned null, which the route reports as
 // "receipt not found" — a false statement to the customer, since no
 // verification was ever attempted.
+//
+// A later failure of the same shape ("did not respond within 18000ms", naming
+// the upstream fetch as the slow hop) turned out to be the budget stack rather
+// than the network: the provider answered in 93ms and the relay answered a 401 in
+// 26ms, but the relay's own post-fetch extraction ran unbounded and overran the
+// API's deadline, so the API saw no bytes and blamed a hop the evidence cleared.
+// The tests below pin both halves of that: the diagnosis must not guess a stage,
+// and a per-attempt budget must not be able to swallow the pool budget.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import axios from 'axios';
@@ -66,7 +74,7 @@ async function withStubbedAxios<T>(impl: (url: string) => Promise<any>, run: () 
   }
 }
 
-test('a relay timeout names the relay and attributes the delay to its upstream fetch', async (t) => {
+test('a relay timeout names the relay without guessing which relay stage stalled', async (t) => {
   useEnv(t);
   await withStubbedAxios(
     async () => { throw transportError('ECONNABORTED'); },
@@ -84,8 +92,65 @@ test('a relay timeout names the relay and attributes the delay to its upstream f
           assert.match(String(error.details), /host=relay\.example\.com/);
           assert.match(String(error.details), /code=ECONNABORTED/);
           assert.match(String(error.details), /timeoutMs=120/);
-          assert.match(String(error.details), /upstream provider fetch/,
-            'the diagnosis should point at the relay-side upstream call');
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test('the timeout diagnosis does not assert a single relay stage it cannot observe', async (t) => {
+  // A later incident showed the previous wording was wrong. It claimed the stall
+  // was "the relay's own upstream provider fetch", but the provider answered in
+  // under 100ms: the relay was slow in its own post-fetch DOM extraction, ran
+  // past the API's deadline, and the client saw no bytes at all. A late response
+  // and no response are indistinguishable here, so naming one stage is a guess.
+  useEnv(t);
+  await withStubbedAxios(
+    async () => { throw transportError('ECONNABORTED'); },
+    async () => {
+      await assert.rejects(
+        () => verifyTelebirr(REFERENCE),
+        (error: unknown) => {
+          assert.ok(error instanceof TelebirrVerificationError);
+          const details = String(error.details);
+          assert.ok(!/the slow hop is the relay's own upstream provider fetch/.test(details),
+            `details still assert the upstream fetch as the slow hop: ${details}`);
+          assert.match(details, /inside the relay/);
+          // Both candidate stages must remain on the table.
+          assert.match(details, /upstream provider fetch/);
+          assert.match(details, /receipt parsing/);
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test('a per-attempt timeout at or above the pool total is clamped so the deadline can fire', async (t) => {
+  // The production failure: 18s per attempt against a 20s pool. The attempt always
+  // won the race, so the pool deadline was unreachable, and the reported timeoutMs
+  // was the whole budget rather than a slice of it.
+  useEnv(t, { TELEBIRR_PROXY_TIMEOUT_MS: '5000', TELEBIRR_TOTAL_TIMEOUT_MS: '300' });
+
+  await withStubbedAxios(
+    async () => { throw transportError('ECONNABORTED'); },
+    async () => {
+      await assert.rejects(
+        () => verifyTelebirr(REFERENCE),
+        (error: unknown) => {
+          assert.ok(error instanceof TelebirrVerificationError);
+          const details = String(error.details);
+          // The reported budget must be a slice of the pool, not the whole of it.
+          // The pool additionally trims to the time actually remaining, so allow a
+          // small delta rather than pinning an exact millisecond.
+          const reported = /timeoutMs=(\d+)/.exec(details);
+          assert.ok(reported, `no timeoutMs in details: ${details}`);
+          const attemptMs = Number(reported![1]);
+          assert.ok(attemptMs < 300,
+            `per-attempt budget should be clamped below the 300ms pool total: ${details}`);
+          assert.ok(attemptMs > 0,
+            `per-attempt budget must not collapse to zero: ${details}`);
           return true;
         },
       );

@@ -530,7 +530,12 @@ TELEBIRR_PROXY_LABELS=leul.et,Community relay 1
 # Runtime relay routing: hedge after 1s, open a route after two real
 # transport failures, allow at most two in flight, and stay below the
 # previous 30-second request delay.
-TELEBIRR_PROXY_TIMEOUT_MS=18000
+# Per-attempt budget, deliberately a slice of the pool total rather than equal
+# to it. It must stay above the relay's own 11s budget (RELAY_BUDGET_MS in
+# verify.php) so the relay's staged diagnosis arrives instead of a bare
+# timeout, and below TELEBIRR_TOTAL_TIMEOUT_MS so the pool deadline can fire
+# and a second relay has room to run. A value >= the total is clamped down.
+TELEBIRR_PROXY_TIMEOUT_MS=12000
 TELEBIRR_HEDGE_DELAY_MS=1000
 TELEBIRR_PROXY_COOLDOWN_MS=60000
 TELEBIRR_PROXY_FAILURE_THRESHOLD=2
@@ -540,6 +545,15 @@ TELEBIRR_TOTAL_TIMEOUT_MS=20000
 # never open or close customer-traffic circuits.
 STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS=18000
 ```
+
+**Configure at least two relays.** With a single relay, `TELEBIRR_HEDGE_DELAY_MS`,
+`TELEBIRR_MAX_PARALLEL_PROXIES`, `TELEBIRR_TOTAL_TIMEOUT_MS` and the circuit
+breaker have nothing to act on: a slow relay simply consumes the whole
+per-attempt budget and the request fails with no fallback. The API logs a
+warning at boot and per request when only one candidate is available. A second
+relay host is the only real fix; failing that, leaving
+`SKIP_PRIMARY_VERIFICATION=false` gives a second in-process route, bounded to 8s
+so it cannot starve the pool.
 
 You can get an API key for Mistral AI from [https://mistral.ai/](https://mistral.ai/)
 

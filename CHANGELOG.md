@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### 🐛 Fixed & improved
+
+- **Telebirr relay budget**: A Telebirr verification failed after 18s reporting that the relay "did not respond", and blaming the relay's upstream provider fetch. Neither hop was at fault: the provider answered in 93ms and the relay answered an unauthenticated request in 26ms. The relay's own budget (a 4s reachability pre-check plus a 10s fetch) left only 4s of headroom, and its post-fetch stages were unbounded — `DOMDocument::loadHTML` plus 14 XPath queries ran eagerly whether or not any field needed the DOM. A large page pushed the response past the API's deadline, so the API hung up on an empty body and reported a bare `ECONNABORTED`.
+  - `verify.php`: the pre-check is 2s and the fetch 8s, leaving ~2s of an explicit 11s `RELAY_BUDGET_MS` for parsing. The DOM is now built lazily, only when a regex extraction misses, and is skipped outright if the budget is already spent — so a page where every regex matched never pays for it. Provider pages are capped at 1MB (enforced for both advertised and chunked responses) and an oversized page fails explicitly rather than being truncated, because a partial page parses into plausible but wrong field values. Responses now carry `relayTiming` so a slow or degraded run is visible in the API's logs.
+  - `verifyTelebirr.ts`: `TELEBIRR_PROXY_TIMEOUT_MS` now defaults to `12000` instead of `18000`, deliberately a slice of the 20s pool total rather than equal to it. The two budgets were inverted, so the pool deadline could never fire and a single attempt consumed the whole request. A per-attempt value at or above the pool total is now clamped down.
+  - `verifyTelebirr.ts`: the timeout diagnosis no longer asserts that the relay's upstream provider fetch is the slow hop. A late response and no response are indistinguishable to the client, and the evidence cleared that hop; the message now names the relay as a whole and points at its own `relayTiming` report.
+
+### 🔧 Changed
+
+- **Telebirr primary hop**: the direct provider fetch is bounded to 8s and is abortable, and shares one deadline with the relay pool. It previously had a 30s timeout with no abort signal, so an enabled-but-hanging primary could outlast the entire pool budget on its own and starve the fallback it was meant to hand off to.
+- **Telebirr relay redundancy**: the API now warns at boot and per request when only one relay candidate is available, because `TELEBIRR_HEDGE_DELAY_MS`, `TELEBIRR_MAX_PARALLEL_PROXIES`, `TELEBIRR_TOTAL_TIMEOUT_MS` and the circuit breaker are all inert with a single relay. A warning is also logged when `TELEBIRR_PROXY_TIMEOUT_MS` sits at or below the relay's own 11s budget, which is what produces a bare timeout instead of the relay's staged diagnosis.
+
+---
+
 ## [3.0.3] - 2026-05-26
 
 ### 🚀 Added
