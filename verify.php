@@ -1,6 +1,51 @@
 <?php
 header("Content-Type: application/json");
 
+// ── Always answer ────────────────────────────────────────────────────────────
+// The API's own relay timeout is 18s, so this script must always respond well
+// before that. Two failure modes used to produce a completely empty response:
+//   * cURL can block indefinitely in DNS resolution, which CURLOPT_TIMEOUT does
+//     not reliably bound on all PHP/libcurl builds.
+//   * When the host kills the script at max_execution_time the fatal error is
+//     suppressed, so nothing is written and the caller sees no response at all
+//     instead of the intended 502.
+// Every exit path therefore goes through respond(), and a shutdown handler emits
+// a valid document naming the stalled stage if the script dies unexpectedly.
+$__stage = 'boot';
+$__startedAt = microtime(true);
+$__responded = false;
+
+function respond(array $payload, int $status = 200): void {
+    global $__responded;
+    if ($__responded) { return; }
+    $__responded = true;
+    // Some shared hosts buffer output; without this a slow or interrupted
+    // response can reach the caller as an empty body.
+    while (ob_get_level() > 0) { @ob_end_flush(); }
+    http_response_code($status);
+    header('Content-Type: application/json');
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE);
+    @flush();
+}
+
+register_shutdown_function(function (): void {
+    global $__responded, $__startedAt, $__stage;
+    if ($__responded) { return; }
+    $last = error_get_last();
+    respond([
+        "success" => false,
+        "error" => "Relay script terminated before completing (stage: {$__stage}).",
+        "details" => sprintf(
+            'elapsedMs=%d stage=%s maxExecutionTime=%s memoryLimit=%s lastError=%s',
+            round((microtime(true) - $__startedAt) * 1000),
+            $__stage,
+            (string) ini_get('max_execution_time'),
+            (string) ini_get('memory_limit'),
+            (string) ($last['message'] ?? 'none')
+        ),
+    ], 502);
+});
+
 // Prefer an environment variable when the hosting panel supports one. Otherwise
 // replace the placeholder below before uploading this file.
 $TELEBIRR_PROXY_KEY = getenv('TELEBIRR_PROXY_KEY') ?: 'YOUR_SECRET_PROXY_KEY_HERE';
@@ -8,33 +53,75 @@ $TELEBIRR_PROXY_KEY = getenv('TELEBIRR_PROXY_KEY') ?: 'YOUR_SECRET_PROXY_KEY_HER
 // Check for proxy key. Return a real HTTP status as well as the JSON error so a
 // broken proxy is distinguishable from a valid-but-missing receipt.
 if (!isset($_GET['key']) || !hash_equals($TELEBIRR_PROXY_KEY, (string) $_GET['key'])) {
-    http_response_code(401);
-    echo json_encode([
+    respond([
         "success" => false,
         "error" => "Unauthorized: Invalid or missing proxy key"
-    ]);
+    ], 401);
     exit;
 }
 
 $reference = trim((string) ($_GET['reference'] ?? ''));
 if ($reference === '') {
-    http_response_code(400);
-    echo json_encode([
+    respond([
         "success" => false,
         "error" => "Missing reference parameter."
-    ]);
+    ], 400);
     exit;
 }
 
 $url = "https://transactioninfo.ethiotelecom.et/receipt/" . urlencode($reference);
 
+/**
+ * Bound DNS + TCP independently of cURL.
+ *
+ * CURLOPT_TIMEOUT does not reliably cover name resolution, and a stalled resolver
+ * on shared hosting is the one failure that produced an unbounded hang. Opening
+ * our own socket first gives a hard ceiling and a precise error, and warms the
+ * resolver so the cURL that follows begins resolving immediately.
+ */
+function assertUpstreamReachable(string $host, int $port, int $timeoutSeconds): array {
+    $errno = 0;
+    $errstr = '';
+    $startedAt = microtime(true);
+    $socket = @fsockopen("ssl://{$host}:{$port}", $timeoutSeconds, $errno, $errstr, STREAM_CLIENT_CONNECT);
+    $elapsedMs = round((microtime(true) - $startedAt) * 1000);
+    if ($socket === false) {
+        return [
+            'ok' => false,
+            'elapsedMs' => $elapsedMs,
+            'error' => "could not open a socket to {$host}:{$port} after {$elapsedMs}ms (errno={$errno} {$errstr})"
+        ];
+    }
+    fclose($socket);
+    return ['ok' => true, 'elapsedMs' => $elapsedMs, 'error' => ''];
+}
+
 function fetchReceipt($url) {
+    global $__stage;
+    $__stage = 'dns-precheck';
+    $precheck = assertUpstreamReachable('transactioninfo.ethiotelecom.et', 443, 5);
+    if (!$precheck['ok']) {
+        return [
+            'success' => false,
+            'error' => "Ethiotelecom is unreachable. The proxy might be blocked or Ethiotelecom is experiencing hosting issues.",
+            'details' => $precheck['error']
+        ];
+    }
+
+    $__stage = 'provider-fetch';
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    // 5s DNS/TCP precheck + 10s fetch = 15s worst case, comfortably inside the
+    // API's 18s relay timeout, so this script is the one that always answers
+    // with a diagnosis rather than the API reporting a bare timeout.
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    // Abort a connection that stalls mid-body instead of burning the full
+    // timeout waiting for more data that never arrives.
+    curl_setopt($ch, CURLOPT_LOW_SPEED_LIMIT, 512);
+    curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, 5);
     curl_setopt($ch, CURLOPT_ENCODING, '');
     curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
@@ -86,18 +173,18 @@ function fetchReceipt($url) {
 $fetchResult = fetchReceipt($url);
 
 if (!$fetchResult['success']) {
-    http_response_code(502);
-    echo json_encode([
+    respond([
         "success" => false,
         "error" => $fetchResult['error'],
         "details" => $fetchResult['details']
-    ]);
+    ], 502);
     exit;
 }
 
+$__stage = 'parse';
 $html = $fetchResult['html'];
 if (empty($html) || strlen($html) < 100) {
-    echo json_encode([
+    respond([
         "success" => false,
         "error" => "Failed to fetch receipt or empty response."
     ]);
@@ -248,6 +335,10 @@ if ($bankAccountNumberRaw) {
 }
 
 
+// Extraction can be the slow stage on a large page; name it so a stall is
+// attributable rather than looking like a network problem.
+$__stage = 'extract';
+
 $response = [
     "success" => true,
     "data" => [
@@ -267,5 +358,6 @@ $response = [
     ]
 ];
 
-echo json_encode($response, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+$__stage = 'respond';
+respond($response, 200);
 ?>
