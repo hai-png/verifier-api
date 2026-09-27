@@ -6,9 +6,9 @@
  * GET    /auth/me       — get current user + workspaces (requires session token)
  * POST   /auth/logout   — invalidate session
  *
- * Session tokens are JWTs signed with DASHBOARD_SECRET, stored in the Session
- * table. The dashboard (Next.js) stores the token in an httpOnly cookie and
- * sends it via Authorization: Bearer <token>.
+ * Session tokens are HMAC-signed with DASHBOARD_SECRET and stored in the
+ * Session table. A valid signature is not enough on its own: every request also
+ * re-checks the row, so logout and the 30-day expiry really revoke access.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -513,7 +513,7 @@ router.post('/reset-password', async (req: Request, res: Response): Promise<void
  * Sets req.user = { id, email, name } on success.
  * Use this to protect dashboard-facing endpoints (workspace management, etc.)
  */
-export function requireSession(req: Request, res: Response, next: NextFunction): void {
+export async function requireSession(req: Request, res: Response, next: NextFunction): Promise<void> {
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ')
         ? authHeader.slice(7)
@@ -527,6 +527,24 @@ export function requireSession(req: Request, res: Response, next: NextFunction):
     const sessionData = verifySessionToken(token);
     if (!sessionData) {
         res.status(401).json({ success: false, error: 'Invalid session.' });
+        return;
+    }
+
+    // The HMAC only proves this server minted the token with the current
+    // secret. On its own it never expires and survives logout, so the row must
+    // still exist, still be unexpired, and still belong to the same user.
+    try {
+        const session = await prisma.session.findUnique({
+            where: { sessionToken: token },
+            select: { userId: true, expires: true },
+        });
+        if (!session || session.expires < new Date() || session.userId !== sessionData.userId) {
+            res.status(401).json({ success: false, error: 'Session expired.' });
+            return;
+        }
+    } catch (err) {
+        logger.error('Session validation error:', err);
+        res.status(500).json({ success: false, error: 'Internal server error.' });
         return;
     }
 

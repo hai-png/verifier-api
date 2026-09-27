@@ -60,6 +60,9 @@ test('dashboard and API execute one tenant-safe, billable verification pipeline'
   replace(prisma.webhook, 'findMany', async () => []);
   replace(prisma.notificationChannel, 'findMany', async () => []);
   replace(prisma.apiKey, 'update', () => Promise.resolve({}));
+  // requireSession re-checks the Session row on every request, so a token only
+  // authenticates while its row exists and is unexpired.
+  replace(prisma.session, 'findUnique', async () => ({ userId: 'user-test', expires: new Date('2099-01-01') }));
   replace(prisma, '$transaction', async () => []);
   replace(prisma.planPricingConfig, 'findUnique', async () => ({ ...DEFAULT_BILLING_CONFIG, freeRateLimit: limit, freeBatchMaxReferences: 5 }));
   const upstream = async () => {
