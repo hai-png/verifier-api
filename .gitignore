@@ -22,3 +22,8 @@ uploads/
 # there by design, and `git add loadtest-results` (no -f) only works while the
 # directory is not ignored. Note the committed reports include a server log with
 # request bodies and a 6-character API key prefix — see the prelaunch notes.
+
+# Written by verify.php at runtime on the relay host: the provider's last
+# known-good address, used to keep DNS off the request path. Machine state, not
+# source, and it must never be committed.
+.telebirr-upstream-ip

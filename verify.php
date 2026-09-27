@@ -127,8 +127,96 @@ if ($reference === '') {
 
 $url = "https://transactioninfo.ethiotelecom.et/receipt/" . urlencode($reference);
 
+const UPSTREAM_HOST = 'transactioninfo.ethiotelecom.et';
+const UPSTREAM_PORT = 443;
+// Per-attempt fetch budget. Three of these plus the pre-check fit inside
+// RELAY_BUDGET_MS with room to spare, which is what makes retrying safe: the
+// handshake to this provider fails roughly half the time, so a single attempt is
+// a coin flip rather than a plan.
+const FETCH_ATTEMPT_TIMEOUT_MS = 2500;
+const FETCH_MAX_ATTEMPTS = 3;
+// Last known address, used when there is no cache file yet. It is a floor, not
+// a pin: if a request to it fails, the address is re-resolved and the new one
+// cached, so a provider IP change is picked up rather than locked out.
+// gethostbyname() cannot be interrupted from PHP and on this host it has been
+// observed blocking past 50s, which is the entire failure this script is fixing,
+// so the common path must not depend on it at all.
+const UPSTREAM_SEED_IP = '196.188.116.120';
+
 /**
- * Measure DNS + TCP reachability without touching TLS.
+ * Resolve the provider once and remember the answer.
+ *
+ * Why this exists
+ * ---------------
+ * The relay host's resolver is unreliable for this provider. Two probe runs
+ * produced opposite results for identical cURL options, and the failures were:
+ *
+ *     errno=28 "Resolving timed out after 4000 milliseconds"
+ *     errno=28 "Operation timed out ... with 0 out of 0 bytes received"
+ *
+ * The second is not a dropped packet: the connection never opened, because the
+ * name never resolved. That also explains why nothing downstream could bound
+ * it. This host runs cURL 7.61.1, and CURLOPT_TIMEOUT does not reliably cover
+ * name resolution on this build -- a request that set CURLOPT_TIMEOUT=6 ran for
+ * 56 seconds. So the "0 out of 0 bytes" stalls cost the whole budget, the
+ * response overran the API's deadline, and the API reported a bare timeout
+ * against a relay that was perfectly reachable.
+ *
+ * Once an address is known it goes into CURLOPT_RESOLVE, which makes libcurl
+ * skip the resolver entirely, and CURLOPT_TIMEOUT then actually bounds the
+ * request. The address is re-resolved whenever the cached one stops working, so
+ * a provider IP change is picked up rather than pinned.
+ *
+ * The cache is best-effort: if it is not writable the relay still works, it just
+ * pays for a lookup on every request.
+ */
+function resolveUpstreamAddress($forceResolve = false): array {
+    $cacheFile = __DIR__ . '/.telebirr-upstream-ip';
+
+    // 1. A cached address from an earlier successful request.
+    $cached = @file_get_contents($cacheFile);
+    if (is_string($cached)) {
+        $cached = trim($cached);
+        // A plain IPv4 literal only. Anything else counts as no cache, so a
+        // corrupted or hand-edited file cannot end up inside a cURL option.
+        if (preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', $cached)) {
+            return ['ip' => $cached, 'source' => 'cache'];
+        }
+    }
+
+    // 2. The seed, so a cold install and the common path never call the resolver.
+    if (!$forceResolve && UPSTREAM_SEED_IP !== '') {
+        return ['ip' => UPSTREAM_SEED_IP, 'source' => 'seed'];
+    }
+
+    // 3. Last resort, and the one path that can still block for a long time.
+    $startedAt = microtime(true);
+    $ip = gethostbyname(UPSTREAM_HOST);
+    $elapsedMs = round((microtime(true) - $startedAt) * 1000);
+
+    // gethostbyname returns its input unchanged when it fails, so an address
+    // that still looks like a hostname means nothing was found.
+    if ($ip === UPSTREAM_HOST || !preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', (string) $ip)) {
+        return ['ip' => null, 'source' => 'unresolved', 'elapsedMs' => $elapsedMs];
+    }
+
+    rememberUpstreamAddress($ip);
+
+    return ['ip' => $ip, 'source' => 'resolved', 'elapsedMs' => $elapsedMs];
+}
+
+function rememberUpstreamAddress($ip): void {
+    // Last writer wins. This is a single-address cache, not shared state needing
+    // locking, and a concurrent write of the same value is harmless.
+    @file_put_contents(__DIR__ . '/.telebirr-upstream-ip', $ip, LOCK_EX);
+}
+
+function forgetUpstreamAddress(): void {
+    @unlink(__DIR__ . '/.telebirr-upstream-ip');
+}
+
+/**
+ * Measure TCP reachability without touching TLS.
  *
  * Deliberately plain TCP: fsockopen('ssl://...') does not send SNI, and many
  * hosts reject or mishandle a SNI-less handshake, so a TLS probe here reports a
@@ -137,45 +225,47 @@ $url = "https://transactioninfo.ethiotelecom.et/receipt/" . urlencode($reference
  *
  * Also advisory only. A failure is recorded as a diagnostic and cURL is still
  * attempted, because cURL's own error is more trustworthy than this probe.
+ *
+ * Given a resolved address, connects to the literal. fsockopen resolves the name
+ * itself, so passing the host here would reintroduce exactly the hang this
+ * script exists to avoid.
  */
-function measureUpstreamReachability(string $host, int $port, int $timeoutSeconds): array {
+function measureUpstreamReachability(string $host, int $port, int $timeoutSeconds, $ip = null) {
     $errno = 0;
     $errstr = '';
+    $target = ($ip !== null && $ip !== '') ? $ip : $host;
     $startedAt = microtime(true);
-    $socket = @fsockopen("tcp://{$host}:{$port}", $timeoutSeconds, $errno, $errstr, STREAM_CLIENT_CONNECT);
+    $socket = @fsockopen("tcp://{$target}:{$port}", $timeoutSeconds, $errno, $errstr, STREAM_CLIENT_CONNECT);
     $elapsedMs = round((microtime(true) - $startedAt) * 1000);
     if ($socket === false) {
         return [
             'ok' => false,
             'elapsedMs' => $elapsedMs,
-            'error' => "tcp connect to {$host}:{$port} failed after {$elapsedMs}ms (errno={$errno} {$errstr})"
+            'error' => "tcp connect to {$target}:{$port} failed after {$elapsedMs}ms (errno={$errno} {$errstr})"
         ];
     }
     fclose($socket);
     return ['ok' => true, 'elapsedMs' => $elapsedMs, 'error' => ''];
 }
 
-function fetchReceipt($url) {
-    global $__stage;
-    $__stage = 'dns-precheck';
-    $precheck = measureUpstreamReachability('transactioninfo.ethiotelecom.et', 443, 2);
-
-    $__stage = 'provider-fetch';
+/**
+ * One cURL attempt against the provider.
+ *
+ * @return array{ok:bool, body:string, errno:int, error:string, ms:int, fromCache:bool}
+ */
+function attemptFetch($url, $ip, $timeoutMs) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    // Keep the connect timeout below the total so a blackholed route is reported
-    // as a connect failure rather than consuming the whole fetch budget.
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
-    // 2s pre-check + 8s fetch = 10s worst case, leaving ~2s of RELAY_BUDGET_MS for
-    // parse and extract so this script is the one that always answers with a
-    // diagnosis rather than the API reporting a bare timeout.
-    curl_setopt($ch, CURLOPT_TIMEOUT, 8);
+    // Below the per-attempt timeout so a blackholed route is reported as a
+    // connect failure rather than consuming the whole attempt.
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
+    curl_setopt($ch, CURLOPT_TIMEOUT, (int) ceil($timeoutMs / 1000));
     // Abort a connection that stalls mid-body instead of burning the full
     // timeout waiting for more data that never arrives.
     curl_setopt($ch, CURLOPT_LOW_SPEED_LIMIT, 512);
-    curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, 5);
+    curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, 2);
     // Bound the response body as well as its rate. LOW_SPEED_* only caps a stall,
     // not size, and an oversized page is what makes the extract stage run long.
     curl_setopt($ch, CURLOPT_MAXFILESIZE, MAX_HTML_BYTES);
@@ -187,57 +277,132 @@ function fetchReceipt($url) {
     ]);
 
     // ── TLS pinning ───────────────────────────────────────────────────────────
-    // transactioninfo.ethiotelecom.et is TLS 1.2 only: it answers a TLS 1.3
-    // ClientHello with "tlsv1 alert protocol version" (alert 70), and offers
-    // ECDHE-RSA-AES256-GCM-SHA384 with a GlobalSign RSA OV SSL CA 2018 chain.
-    // Pin TLS 1.2 so we never pay the 1.3-then-1.2 round trip, and drop the
-    // OpenSSL security level to 1. On OpenSSL 3.x the default level rejects
-    // exactly the older chain this provider still presents, which shows up as
-    // a stalled handshake: curl errno 28 with 0 bytes received, or errno 35.
-    // That is the failure this relay was hitting; shared hosts pick up OpenSSL
-    // and PHP updates on their own schedule, so it appears without a deploy.
+    // transactioninfo.ethiotelecom.et is TLS 1.2 only. This one is deterministic
+    // and worth keeping: a probe on the relay host got
+    //   errno=35 "tlsv1 alert protocol version"
+    // for a TLS 1.3 ClientHello, in 16ms, every time. Pinning 1.2 avoids paying
+    // a rejected handshake before every real request.
     curl_setopt($ch, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+    // Not needed on this host, which runs OpenSSL 1.1.1k where level 1 is already
+    // the default. Kept so a host that later gains OpenSSL 3.x, where the default
+    // is stricter, does not start rejecting this provider's older chain.
     curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=1');
-
-    // Attempt standard fetch (Secure SSL)
+    // Never disabled. See the probe: disabling verification does not make this
+    // provider reachable, so it would buy nothing and cost the guarantee.
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-    $curlStartedAt = microtime(true);
-    $response = curl_exec($ch);
-    $error_no = curl_errno($ch);
-    $error_msg = curl_error($ch);
-    $curlMs = round((microtime(true) - $curlStartedAt) * 1000);
-    // Carry the TCP probe result alongside the cURL error: a probe failure with
-    // a successful-looking cURL timeout points at DNS/TLS, whereas both failing
-    // points at the host being blocked from the provider.
+
+    // Hand libcurl the address so it never calls the resolver, which on this host
+    // can block far past CURLOPT_TIMEOUT.
+    if ($ip !== null && $ip !== '') {
+        curl_setopt($ch, CURLOPT_RESOLVE, [UPSTREAM_HOST . ':' . UPSTREAM_PORT . ':' . $ip]);
+    }
+
+    $startedAt = microtime(true);
+    $body = curl_exec($ch);
+    $errno = curl_errno($ch);
+    $error = curl_error($ch);
+    $ms = round((microtime(true) - $startedAt) * 1000);
+    curl_close($ch);
+
+    return [
+        'ok' => $errno === 0,
+        'body' => is_string($body) ? $body : '',
+        'errno' => $errno,
+        'error' => $error,
+        'ms' => $ms,
+        'fromCache' => $ip !== null && $ip !== '',
+    ];
+}
+
+function fetchReceipt($url) {
+    global $__stage;
+
+    $__stage = 'dns-resolve';
+    $resolution = resolveUpstreamAddress();
+    $ip = $resolution['ip'];
+
+    $__stage = 'dns-precheck';
+    $precheck = measureUpstreamReachability(UPSTREAM_HOST, UPSTREAM_PORT, 2, $ip);
+
+    $__stage = 'provider-fetch';
+    $attempts = [];
+    $body = '';
+    $lastErrno = 0;
+    $lastError = '';
+    $retried = false;
+
+    for ($i = 1; $i <= FETCH_MAX_ATTEMPTS; $i++) {
+        $attempt = attemptFetch($url, $ip, FETCH_ATTEMPT_TIMEOUT_MS);
+        $attempts[] = sprintf('#%d %dms errno=%d', $i, $attempt['ms'], $attempt['errno']);
+
+        if ($attempt['ok']) {
+            $body = $attempt['body'];
+            $lastErrno = $attempt['errno'];
+            $lastError = $attempt['error'];
+            break;
+        }
+
+        $lastErrno = $attempt['errno'];
+        $lastError = $attempt['error'];
+
+        // A failed attempt against a pinned address means the address may be
+        // stale, and a stale seed would otherwise fail forever. So re-resolve
+        // once and cache the result, which is what makes this self-healing if
+        // the provider ever changes address.
+        //
+        // Trade-off, stated plainly: gethostbyname() is the unbounded call this
+        // design exists to keep off the request path, so this branch can be slow.
+        // It is only reached when the address is genuinely wrong, which is rare,
+        // and a slow request still answers via the shutdown handler. Refusing to
+        // re-resolve would trade a rare slow response for a permanent outage the
+        // first time the provider moves.
+        if ($attempt['fromCache'] && !$retried) {
+            $retried = true;
+            forgetUpstreamAddress();
+            $fresh = resolveUpstreamAddress(true);
+            if ($fresh['ip'] !== null && $fresh['ip'] !== $ip) {
+                $ip = $fresh['ip'];
+            }
+        }
+    }
+
     $probe = sprintf(
-        'tcpProbe=%s tcpProbeMs=%d curlMs=%d curlErrno=%d',
+        'ipSource=%s tcpProbe=%s tcpProbeMs=%d attempts=%d [%s] curlErrno=%d',
+        $resolution['source'],
         $precheck['ok'] ? 'ok' : 'failed',
         $precheck['elapsedMs'],
-        $curlMs,
-        $error_no
+        count($attempts),
+        implode(' ', $attempts),
+        $lastErrno
     );
+
+    $error_no = $lastErrno;
+    $error_msg = $lastError;
+    $response = $body;
+    $curlMs = 0;
+    foreach ($attempts as $entry) {
+        if (preg_match('/^#\d+ (\d+)ms/', $entry, $m)) {
+            $curlMs += (int) $m[1];
+        }
+    }
 
     if ($error_no === 0) {
         $htmlBytes = is_string($response) ? strlen($response) : 0;
         if ($htmlBytes > MAX_HTML_BYTES) {
             // Do not truncate: a cut-off page parses into plausible-looking but
             // wrong field values, which is worse than an explicit failure.
-            curl_close($ch);
             return [
                 'success' => false,
                 'error' => "Provider page is too large to parse ({$htmlBytes} bytes, limit " . MAX_HTML_BYTES . ").",
                 'details' => "{$probe} | the receipt page exceeded the parse budget; do not truncate it, because a partial page yields wrong field values"
             ];
         }
-        curl_close($ch);
         return ['success' => true, 'html' => $response];
     }
 
     // Group specific cURL errors
     $is_ssl_error = in_array($error_no, [35, 51, 58, 59, 60, 64, 66, 77, 82, 83]); // SSL related errors
     $is_connection_error = in_array($error_no, [6, 7, 28]); // 6: COULDNT_RESOLVE_HOST, 7: COULDNT_CONNECT, 28: OPERATION_TIMEDOUT
-
-    curl_close($ch);
 
     if ($is_ssl_error) {
         // errno 60 is this host's certificate store, not the provider's

@@ -97,6 +97,29 @@ on a **subdomain routed directly to Plesk**. In Cloudflare → **DNS**, add:
 > A successful receipt response also carries `relayTiming`, which reports the
 > total, the page size, and whether the DOM fallback was needed or skipped.
 
+#### If the relay reports "Resolving timed out" or errno 28
+
+`verify.php` keeps DNS off the request path by handing cURL the provider's
+address directly, so this should not be reachable in normal operation. When it
+does appear, the relay host's resolver is at fault, not the provider and not
+`verify.php`. Two things help:
+
+1. **Make the host resolver fail fast.** In `/etc/resolv.conf`, add
+   `options timeout:1 attempts:1` so a dead nameserver is abandoned in a second
+   instead of blocking. Note that `CURLOPT_TIMEOUT` does not reliably cover name
+   resolution on every cURL build, so an unbounded resolver can overrun any
+   timeout set in PHP — which is why the relay resolves ahead of the request.
+2. **Confirm the address the relay is using** by uploading
+   `tools/telebirr-tls-probe.php` beside `verify.php` and calling it with the
+   relay key. Its repeat sample reports the handshake success rate, which
+   distinguishes an intermittent handshake (retry inside a budget, which
+   `verify.php` now does) from a deterministic configuration fault. **Delete the
+   probe afterwards** — it discloses the host's TLS capabilities.
+
+   The relay also caches the provider's last known-good address in
+   `.telebirr-upstream-ip` next to `verify.php`, and git-ignores it. Delete that
+   file by hand to force a fresh lookup.
+
 ### 2c: Upload mpesa.php (M-Pesa proxy)
 
 1. Upload `mpesa.php` to the same document root

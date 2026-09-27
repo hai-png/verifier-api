@@ -175,14 +175,55 @@ foreach ($attempts as $label => $configure) {
     );
 }
 
+// The single most useful number this probe produces. A provider that fails half
+// the time is a retry problem, not a configuration problem, and one pass of the
+// matrix above cannot tell those apart: the same options have been observed
+// succeeding and failing minutes apart. Repeat one plain request and report the
+// success rate.
+echo "\n=== repeat sample: 6 identical requests ===\n";
+$repeats = 6;
+$ok = 0;
+$totalMs = 0;
+$errnos = [];
+for ($i = 1; $i <= $repeats; $i++) {
+    $result = attempt('repeat', function ($ch) {});
+    $totalMs += $result['ms'];
+    if ($result['ok']) {
+        $ok++;
+    } else {
+        $errnos[] = $result['errno'];
+    }
+    printf(
+        "  #%d %-7s %5dms %s\n",
+        $i,
+        $result['ok'] ? 'OK' : 'FAIL',
+        $result['ms'],
+        $result['ok'] ? '' : $result['err']
+    );
+}
+printf(
+    "\n  %d/%d succeeded, mean %dms, failure errnos: %s\n",
+    $ok,
+    $repeats,
+    (int) round($totalMs / $repeats),
+    $errnos === [] ? 'none' : implode(',', $errnos)
+);
+if ($ok < $repeats) {
+    echo "  Intermittent. Retry inside a budget; a single attempt is a coin flip.\n";
+}
+
 echo "\n=== how to read this ===\n";
-echo "* Everything FAILs, including 'verify off': the ClientHello is being\n";
-echo "  dropped on the path. Nothing in verify.php can fix that. Suspect the\n";
-echo "  host's route to 196.188.116.120, an MTU/PMTUD blackhole, or the\n";
-echo "  provider blocking this host. Test from a second Ethiopian host.\n";
-echo "* Some pass and some fail: pick a passing row above and set exactly those\n";
-echo "  two curl_setopt calls in verify.php.\n";
-echo "* Only 'verify off' passes: the host is missing the issuer root. Install\n";
-echo "  the GlobalSign RSA OV SSL CA 2018 root in the CA bundle. Do not ship\n";
-echo "  verification disabled.\n";
+echo "* Rows disagreeing between two runs of this file, or succeeding in some\n";
+echo "  rows and not others, is the finding. It means the fault is intermittent,\n";
+echo "  so the fix is to retry inside a budget rather than to change TLS options.\n";
+echo "  The repeat sample above is the direct measurement of that.\n";
+echo "* 'Resolving timed out' in an error is DNS, not TLS. It is worth fixing at\n";
+echo "  the host: in /etc/resolv.conf set 'options timeout:1 attempts:1' so a dead\n";
+echo "  nameserver fails fast instead of blocking. Note that CURLOPT_TIMEOUT does\n";
+echo "  not reliably cover name resolution on every cURL build, so an unbounded\n";
+echo "  resolver can overrun any timeout set here.\n";
+echo "* TLS 1.3 failing with 'tlsv1 alert protocol version' is expected and\n";
+echo "  correct: this provider is TLS 1.2 only. Pin TLS 1.2 and ignore that row.\n";
+echo "* If verify-off fails too, disabling verification is not the answer, so do\n";
+echo "  not ship it that way.\n";
 echo "\nDelete this file once you have the answer.\n";
