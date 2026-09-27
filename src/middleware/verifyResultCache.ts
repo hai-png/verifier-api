@@ -10,14 +10,30 @@ function setting(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
 export type VerifyCacheOutcome = 'hit' | 'miss' | 'coalesced' | 'bypass';
-export function createVerificationCache(options: { ttlMs?: number; maxEntries?: number; maxInFlight?: number; now?: () => number } = {}) {
+
+/** Raised when a single provider call outlives VERIFY_EXECUTE_TIMEOUT_MS. */
+class ExecuteTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`verification exceeded ${timeoutMs}ms`);
+    this.name = 'ExecuteTimeoutError';
+  }
+}
+
+export function createVerificationCache(options: { ttlMs?: number; maxEntries?: number; maxInFlight?: number; executeTimeoutMs?: number; now?: () => number } = {}) {
   const ttlMs = options.ttlMs ?? setting(process.env.VERIFY_CACHE_TTL_MS, 60_000);
   const maxEntries = options.maxEntries ?? setting(process.env.VERIFY_CACHE_MAX_ENTRIES, 5_000);
   const maxInFlight = options.maxInFlight ?? setting(process.env.VERIFY_CACHE_MAX_INFLIGHT, 128);
+  // Hard ceiling on one provider call. Provider fetchers carry their own
+  // timeouts, but a hung undici socket or Puppeteer call would otherwise never
+  // settle, so the `finally` that releases the in-flight slot would never run.
+  // 128 stranded slots (maxInFlight) turn every later request into a 503 until
+  // the process restarts, because a full inflight map short-circuits before the
+  // provider is ever called.
+  const executeTimeoutMs = options.executeTimeoutMs ?? setting(process.env.VERIFY_EXECUTE_TIMEOUT_MS, 90_000);
   const now = options.now ?? Date.now;
   const cache = new Map<string, { expiresAt: number; result: SmartVerifyResult }>();
   const inflight = new Map<string, Promise<SmartVerifyResult>>();
-  let hits = 0, coalesced = 0, stored = 0;
+  let hits = 0, coalesced = 0, stored = 0, timeouts = 0;
   const clone = (r: SmartVerifyResult): SmartVerifyResult => structuredClone(r);
   function prune(): void {
     for (const [key, value] of cache) if (value.expiresAt <= now()) cache.delete(key);
@@ -25,9 +41,9 @@ export function createVerificationCache(options: { ttlMs?: number; maxEntries?: 
   return {
     stats: () => {
       prune();
-      return { enabled: ttlMs > 0 && maxEntries > 0, ttlMs, entries: cache.size, inFlight: inflight.size, hits, coalesced, stored };
+      return { enabled: ttlMs > 0 && maxEntries > 0, ttlMs, entries: cache.size, inFlight: inflight.size, hits, coalesced, stored, timeouts, executeTimeoutMs };
     },
-    clear: () => { cache.clear(); hits = 0; coalesced = 0; stored = 0; },
+    clear: () => { cache.clear(); hits = 0; coalesced = 0; stored = 0; timeouts = 0; },
     async run(workspaceId: string | undefined, plan: VerificationPlan, execute: () => Promise<SmartVerifyResult>): Promise<{ result: SmartVerifyResult; cache: VerifyCacheOutcome }> {
       if (!workspaceId || ttlMs <= 0 || maxEntries <= 0) return { result: await execute(), cache: 'bypass' };
       // JSON tuples avoid delimiter collisions. Never uppercase opaque tokens.
@@ -48,7 +64,15 @@ export function createVerificationCache(options: { ttlMs?: number; maxEntries?: 
       if (inflight.size >= maxInFlight) {
         return { result: { success: false, httpStatus: 503, error: 'Verification capacity reached. Retry shortly.' }, cache: 'bypass' };
       }
-      const task = Promise.resolve().then(execute);
+      // Always settle, so the `finally` below always releases the slot.
+      const task = new Promise<SmartVerifyResult>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new ExecuteTimeoutError(executeTimeoutMs)), executeTimeoutMs);
+        timer.unref?.();
+        Promise.resolve().then(execute).then(
+          (value) => { clearTimeout(timer); resolve(value); },
+          (error) => { clearTimeout(timer); reject(error); },
+        );
+      });
       inflight.set(key, task);
       try {
         const result = await task;
@@ -63,6 +87,19 @@ export function createVerificationCache(options: { ttlMs?: number; maxEntries?: 
           stored++;
         }
         return { result: clone(result), cache: 'miss' };
+      } catch (error) {
+        // A hung provider call is a retryable capacity problem, not an internal
+        // error: answer 503 so the caller gets a Retry-After rather than a 500,
+        // and so the legacy envelope cannot downgrade it to a 200. The slot is
+        // released by the `finally` below either way.
+        if (error instanceof ExecuteTimeoutError) {
+          timeouts += 1;
+          return {
+            result: { success: false, httpStatus: 503, error: 'Verification timed out. Retry shortly.' },
+            cache: 'bypass',
+          };
+        }
+        throw error;
       } finally {
         inflight.delete(key); // A thrown provider error cannot strand followers.
       }

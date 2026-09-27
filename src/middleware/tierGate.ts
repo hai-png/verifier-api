@@ -159,23 +159,32 @@ async function syncWorkspacePlanState(
 
   const monthlyImageCredits = getMonthlyImageCredits(account.tier, billingConfig);
   if (!account.imageCreditsResetAt) {
-    const refreshed = await prisma.workspace.update({
-      where: { id: account.creditHolderId },
+    // Guard the write on the row still being uninitialised. A plain
+    // `imageCredits: { increment }` is a read-modify-write against a snapshot
+    // taken before the credit reserve, so N concurrent requests on a workspace
+    // with a NULL resetAt all saw "not initialised" and all granted the monthly
+    // allowance — 200 concurrent calls granted ~20x the intended credits.
+    // Losing the race is fine: whoever wins initialises the period, and the
+    // losers fall through to the branch below.
+    const claimed = await prisma.workspace.updateMany({
+      where: { id: account.creditHolderId, imageCreditsResetAt: null },
       data: {
         imageCreditsMonthly: monthlyImageCredits,
         imageCredits: { increment: monthlyImageCredits },
         imageCreditsResetAt: addMonths(now, 1),
       },
-      select: {
-        imageCredits: true,
-        imageCreditsMonthly: true,
-        imageCreditsResetAt: true,
-      },
     });
-
-    account.imageCredits = refreshed.imageCredits;
-    account.imageCreditsMonthly = refreshed.imageCreditsMonthly;
-    account.imageCreditsResetAt = refreshed.imageCreditsResetAt;
+    if (claimed.count > 0) {
+      const refreshed = await prisma.workspace.findUnique({
+        where: { id: account.creditHolderId },
+        select: { imageCredits: true, imageCreditsMonthly: true, imageCreditsResetAt: true },
+      });
+      if (refreshed) {
+        account.imageCredits = refreshed.imageCredits;
+        account.imageCreditsMonthly = refreshed.imageCreditsMonthly;
+        account.imageCreditsResetAt = refreshed.imageCreditsResetAt;
+      }
+    }
   } else if (now >= account.imageCreditsResetAt) {
     const refreshed = await prisma.workspace.update({
       where: { id: account.creditHolderId },

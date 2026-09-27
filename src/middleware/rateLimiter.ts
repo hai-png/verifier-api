@@ -59,6 +59,22 @@ export const rateLimiter = async (req: Request, res: Response, next: NextFunctio
   const billingConfig = await getBillingConfig();
   const limit = getRateLimit(tier, grandfathered, billingConfig);
 
+  const now    = Date.now();
+
+  // The plan limit is a *workspace* entitlement, so it has to be enforced per
+  // workspace as well as per key. Keying only on the API key id let a tenant
+  // multiply their contracted requests-per-minute by minting extra keys.
+  const workspaceEntry = store.increment(`ws:${context.workspace.id}`, WINDOW_MS, now);
+  if (workspaceEntry.count > limit) {
+    const retryAfter = Math.ceil((workspaceEntry.windowStart + WINDOW_MS - now) / 1000);
+    res.status(429).json({
+      success: false,
+      error: 'Rate limit exceeded.',
+      retryAfter,
+    });
+    return;
+  }
+
   // Determine rate limit key based on auth source
   let rateLimitKey: string;
   if (context.source === 'dashboard') {
@@ -70,7 +86,6 @@ export const rateLimiter = async (req: Request, res: Response, next: NextFunctio
     rateLimitKey = apiKeyData?.id || 'unknown';
   }
 
-  const now    = Date.now();
   const entry  = store.increment(rateLimitKey, WINDOW_MS, now);
 
   if (entry.count > limit) {
