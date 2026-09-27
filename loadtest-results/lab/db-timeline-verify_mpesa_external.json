@@ -4,19 +4,19 @@
   "requests": 2,
   "settleMs": 2500,
   "requestMs": {
-    "total": 1058,
-    "mean": 529
+    "total": 1059,
+    "mean": 529.5
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 529.1
+      "totalMs": 529.9
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 527.8
+      "totalMs": 528.8
     }
   ],
   "sqlStatements": 5,
@@ -49,15 +49,7 @@
   "statementTimeline": [
     {
       "sql": "BEGIN",
-      "ms": 0.091
-    },
-    {
-      "sql": "COMMIT",
-      "ms": 0.77
-    },
-    {
-      "sql": "BEGIN",
-      "ms": 0.097
+      "ms": 0.101
     },
     {
       "sql": "COMMIT",
@@ -65,13 +57,21 @@
     },
     {
       "sql": "BEGIN",
-      "ms": 0.118
+      "ms": 0.098
     },
     {
       "sql": "COMMIT",
-      "ms": 0.885
+      "ms": 0.704
+    },
+    {
+      "sql": "BEGIN",
+      "ms": 0.111
+    },
+    {
+      "sql": "COMMIT",
+      "ms": 1.057
     }
   ],
-  "statementTimelineTotalMs": 2.6979999999999995,
+  "statementTimelineTotalMs": 2.808,
   "statementTimelineSource": "events_statements_history_long"
 }

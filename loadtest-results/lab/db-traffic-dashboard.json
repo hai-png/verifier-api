@@ -4,34 +4,34 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 316,
-    "mean": 63.2
+    "total": 319,
+    "mean": 63.8
   },
   "responses": [
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 64.2
+      "totalMs": 64.3
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 63.2
+      "totalMs": 63.6
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 62.7
+      "totalMs": 63.3
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 62.7
+      "totalMs": 63.3
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 62.8
+      "totalMs": 63.1
     }
   ],
   "sqlStatements": 1,

@@ -1,25 +1,16 @@
-[2026-09-27 02:39:49] [32MINFO[39M: Starting server in production mode
-[2026-09-27 02:39:49] [32MINFO[39M: Node version: v22.23.2
-[2026-09-27 02:39:49] [32MINFO[39M: Platform: linux
-[2026-09-27 02:39:49] [32MINFO[39M: Server listening on port 3001 (runtime initializing in background)
-[2026-09-27 02:39:49] [32MINFO[39M: 🔍 Found Chrome/Chromium at: /usr/bin/google-chrome
-[2026-09-27 02:39:49] [32MINFO[39M: ✅ Chrome/Chromium available for CBE fallback: /usr/bin/google-chrome
-[2026-09-27 02:39:49] [32MINFO[39M: Telebirr verification config: primary disabled, fallback relays 1
-[2026-09-27 02:39:50] [33MWARN[39M: [dpjfbn4gb9g] GET /ready -> 503 in 416ms
-📦 Metadata:
-   › {
-   ›   "statusCode": 503,
-   ›   "responseTime": 416,
-   ›   "contentLength": "429",
-   ›   "apiKey": "none",
-   ›   "source": "unknown",
-   ›   "workspaceId": "none"
-   › }
-[2026-09-27 02:39:50] [32MINFO[39M: Connected to database successfully
-[2026-09-27 02:39:50] [33MWARN[39M: REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.
-[2026-09-27 02:39:50] [32MINFO[39M: Keep-alive ping OK in 132ms
-[2026-09-27 02:39:50] [32MINFO[39M: Database pool warmed: 10 connection(s)
-[2026-09-27 02:39:51] [32MINFO[39M: Stats cache initialized from database
-[2026-09-27 02:39:51] [32MINFO[39M: Shutting down server...
-[2026-09-27 02:39:51] [32MINFO[39M: HTTP server closed
-[2026-09-27 02:39:51] [32MINFO[39M: Disconnected from database
+[2026-09-27 03:37:43] [32MINFO[39M: Starting server in production mode
+[2026-09-27 03:37:43] [32MINFO[39M: Node version: v22.23.2
+[2026-09-27 03:37:43] [32MINFO[39M: Platform: linux
+[2026-09-27 03:37:43] [32MINFO[39M: Server listening on port 3001 (runtime initializing in background)
+[2026-09-27 03:37:43] [32MINFO[39M: 🔍 Found Chrome/Chromium at: /usr/bin/google-chrome
+[2026-09-27 03:37:43] [32MINFO[39M: ✅ Chrome/Chromium available for CBE fallback: /usr/bin/google-chrome
+[2026-09-27 03:37:43] [32MINFO[39M: Telebirr verification config: primary disabled, fallback relays 1
+[2026-09-27 03:37:43] [32MINFO[39M: 🌐 Chrome/Chromium version: Google Chrome 153.0.8010.52
+[2026-09-27 03:37:44] [32MINFO[39M: Connected to database successfully
+[2026-09-27 03:37:44] [33MWARN[39M: REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.
+[2026-09-27 03:37:44] [32MINFO[39M: Keep-alive ping OK in 134ms
+[2026-09-27 03:37:44] [32MINFO[39M: Database pool warmed: 10 connection(s)
+[2026-09-27 03:37:44] [32MINFO[39M: Shutting down server...
+[2026-09-27 03:37:44] [32MINFO[39M: HTTP server closed
+[2026-09-27 03:37:44] [32MINFO[39M: Stats cache initialized from database
+[2026-09-27 03:37:44] [32MINFO[39M: Disconnected from database

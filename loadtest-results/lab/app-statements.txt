@@ -2,7 +2,7 @@
 requests observed ......... 11
 statements ................ 43
 statements per request .... 3.91
-mean statement ms ......... 69.36
+mean statement ms ......... 69.37
 top tables ................ [{"table":"apikey","statements":105},{"table":"workspace","statements":27},{"table":"usagelog","statements":25},{"table":"planpricingconfig","statements":4},{"table":"notificationchannel","statements":3}]
 top tables (delta) ........ [{"table":"apikey","statements":16},{"table":"workspace","statements":10},{"table":"usagelog","statements":4}]
 slowest statements ........ [{"sql":"UPDATE `Workspace` SET `verificationCredits` = `verificationCredits` - ? WHERE `id` = ? AND `verificationCredits` >= ?","ms":123},{"sql":"SELECT `verifier`.`NotificationChannel`.`id`, `verifier`.`NotificationChannel`.`events` FROM `verifier`.`NotificationCha…","ms":121},{"sql":"INSERT INTO `verifier`.`UsageLog` (`apiKeyId`,`endpoint`,`method`,`statusCode`,`responseTime`,`ip`,`createdAt`) VALUES (…","ms":121}]

@@ -2,10 +2,10 @@
 target        https://verify.noveld.com.et
 resolved      216.24.57.18 (4), 216.24.57.16 (4)  cname=verifier-api-selfhosted.onrender.com
 profile       latency
-connections   created=1 reused=195
+connections   created=1 reused=300
 
 stage                reqs     rps      p50      p95      p99       max   err
-sequential ×25        175     0.8     65.3    389.4    692.6    1881.1     0
+sequential ×40        280     0.8     99.2    554.3    726.8     874.7     0
 
-report  loadtest-results/live-latency-2026-09-27T03-40-36-592Z.md
-json    loadtest-results/live-latency-2026-09-27T03-40-36-592Z.json
+report  loadtest-results/live-latency-2026-09-27T02-23-15-334Z.md
+json    loadtest-results/live-latency-2026-09-27T02-23-15-334Z.json
