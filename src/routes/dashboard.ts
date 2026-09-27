@@ -20,6 +20,8 @@ import logger from '../utils/logger';
 import { requireSession } from './auth';
 import { generateApiKey } from '../middleware/apiKeyAuth';
 import { createVerificationPipeline, dashboardVerificationAccess } from '../middleware/verificationPipeline';
+import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
+import { WORKSPACE_EVENTS } from '../utils/workspaceEvents';
 import {
     ensureProviderCoverage,
     getWorkspacePayoutAccounts,
@@ -412,6 +414,28 @@ router.post('/:workspaceId/webhooks', async (req: Request, res: Response): Promi
         res.status(400).json({ success: false, error: 'url and events are required.' });
         return;
     }
+    // Same allowlist as POST /webhooks. This route previously validated neither
+    // the URL nor the event names, so any member could register a target the
+    // server would later fetch on their behalf.
+    if (!Array.isArray(events) || events.length === 0 ||
+        events.some((e) => !(WORKSPACE_EVENTS as readonly string[]).includes(e))) {
+        res.status(400).json({
+            success: false,
+            error: `Unknown events. Valid: ${WORKSPACE_EVENTS.join(', ')}`,
+        });
+        return;
+    }
+    let safeUrl: string;
+    try {
+        safeUrl = (await assertSafeOutboundUrl(url)).toString();
+    } catch (err) {
+        if (err instanceof UnsafeOutboundUrlError) {
+            res.status(400).json({ success: false, error: err.message });
+            return;
+        }
+        res.status(400).json({ success: false, error: 'url must be a valid URL.' });
+        return;
+    }
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
@@ -425,7 +449,7 @@ router.post('/:workspaceId/webhooks', async (req: Request, res: Response): Promi
         const webhook = await prisma.webhook.create({
             data: {
                 workspaceId,
-                url,
+                url: safeUrl,
                 events,
                 active: true,
                 signingSecret,

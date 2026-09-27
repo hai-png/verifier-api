@@ -6,9 +6,13 @@ import { Prisma } from '@prisma/client';
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { emitWorkspaceEvent } from '../utils/workspaceEvents';
+import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 
 const QUEUE_NAME = 'webhook-deliveries';
 const REQUEST_TIMEOUT_MS = 10_000;
+// A webhook response is only stored as a short diagnostic snippet, so there is
+// no reason to buffer an arbitrary amount of attacker-influenced data in RAM.
+const MAX_RESPONSE_BYTES = 256 * 1024;
 const RETRY_DELAYS_MS = [5_000, 15_000, 45_000] as const;
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
 const COMPLETED_JOB_RETENTION = 500;
@@ -230,9 +234,17 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
   }
 
   try {
+    // Re-validate on every delivery, not only at registration: a public hostname
+    // can start resolving to a private address (DNS rebinding), and a stored URL
+    // may predate this check. Redirects are not followed, because each hop would
+    // be a fresh unvalidated destination.
+    await assertSafeOutboundUrl(delivery.webhook.url);
     const response = await axios.post(delivery.webhook.url, payload, {
       headers,
       timeout: REQUEST_TIMEOUT_MS,
+      maxRedirects: 0,
+      maxContentLength: MAX_RESPONSE_BYTES,
+      maxBodyLength: MAX_RESPONSE_BYTES,
     });
 
     const deliveredAt = new Date();

@@ -20,6 +20,7 @@ import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { getBillingConfig } from '../config/billingConfig';
 import { getWebhookLimit, type WorkspaceTier } from '../config/plans';
+import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 
 const router = Router();
 
@@ -174,14 +175,17 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   };
 
   // ── url ────────────────────────────────────────────────────────────────────
-  if (!url || typeof url !== 'string') {
-    res.status(400).json({ success: false, error: 'url is required.' });
-    return;
-  }
-  try { new URL(url); }
-  catch {
-    res.status(400).json({ success: false, error: 'url must be a valid URL.' });
-    return;
+  // The server dereferences this URL, so an unvalidated value turns any tenant
+  // into an internal scanner (cloud metadata, loopback, private ranges).
+  let safeUrl: string;
+  try {
+    safeUrl = (await assertSafeOutboundUrl(url)).toString();
+  } catch (err) {
+    if (err instanceof UnsafeOutboundUrlError) {
+      res.status(400).json({ success: false, error: err.message });
+      return;
+    }
+    throw err;
   }
 
   // ── events ─────────────────────────────────────────────────────────────────
@@ -217,7 +221,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     const webhook = await prisma.webhook.create({
       data: {
         workspaceId,
-        url,
+        url: safeUrl,
         events: events as WebhookEvent[],
         signingSecret: rawSecret,
       },
@@ -284,13 +288,13 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
   }
 
   if (url !== undefined) {
-    if (typeof url !== 'string') {
-      res.status(400).json({ success: false, error: 'url must be a string.' });
-      return;
-    }
     try {
-      new URL(url);
-    } catch {
+      await assertSafeOutboundUrl(url);
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) {
+        res.status(400).json({ success: false, error: err.message });
+        return;
+      }
       res.status(400).json({ success: false, error: 'url must be a valid URL.' });
       return;
     }
