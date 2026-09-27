@@ -55,25 +55,29 @@ register_shutdown_function(function (): void {
 
 // Proxy key resolution.
 //
-// The key is hardcoded here on purpose, with the environment variable as an
-// override. On shared hosting the PHP-FPM pool does not always share one
+// The key lives in this file on purpose, with the environment variable only as
+// a fallback. On shared hosting the PHP-FPM pool does not always share one
 // environment, so `getenv()` returned empty on some workers: a valid key was
 // intermittently rejected with 401 while other workers proceeded, which looks
-// exactly like a flaky relay. A literal in the file is deterministic across
-// every worker and every node.
+// exactly like a flaky relay. A literal here is identical on every worker and
+// every node, and it takes precedence so it cannot drift from the environment.
 //
-// Replace PASTE_YOUR_KEY_HERE with the real value. If it is still the
-// placeholder the script refuses to run rather than silently 401ing.
-const RELAY_KEY_PLACEHOLDER = 'PASTE_YOUR_KEY_HERE';
-$TELEBIRR_PROXY_KEY = RELAY_KEY_PLACEHOLDER;
-$__keyFromEnv = getenv('TELEBIRR_PROXY_KEY');
-if (is_string($__keyFromEnv) && $__keyFromEnv !== '') {
-    $TELEBIRR_PROXY_KEY = $__keyFromEnv;
+// ── EDIT THIS ONE VALUE ──────────────────────────────────────────────────────
+$TELEBIRR_PROXY_KEY = 'PASTE_YOUR_KEY_HERE';
+// ─────────────────────────────────────────────────────────────────────────────
+// The sentinel below is intentionally a separate literal, not a reference to
+// the line above, so replacing the key above cannot accidentally make the
+// unconfigured-check below compare a value against itself.
+if ($TELEBIRR_PROXY_KEY === 'PASTE_YOUR_KEY_HERE') {
+    $__keyFromEnv = getenv('TELEBIRR_PROXY_KEY');
+    if (is_string($__keyFromEnv) && $__keyFromEnv !== '') {
+        $TELEBIRR_PROXY_KEY = $__keyFromEnv;
+    }
 }
-if ($TELEBIRR_PROXY_KEY === RELAY_KEY_PLACEHOLDER) {
+if ($TELEBIRR_PROXY_KEY === 'PASTE_YOUR_KEY_HERE') {
     respond([
         "success" => false,
-        "error" => "Relay is not configured: replace RELAY_KEY_PLACEHOLDER in verify.php with the proxy key.",
+        "error" => "Relay is not configured: set the key in verify.php, or in the TELEBIRR_PROXY_KEY environment variable.",
         "relayVersion" => RELAY_VERSION
     ], 500);
     exit;
