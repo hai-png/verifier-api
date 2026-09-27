@@ -11,6 +11,12 @@ header("Content-Type: application/json");
 //     instead of the intended 502.
 // Every exit path therefore goes through respond(), and a shutdown handler emits
 // a valid document naming the stalled stage if the script dies unexpectedly.
+// Bump when the response contract or timeout behaviour changes. The 401 path
+// below is the cheapest place to read it, because it never touches the upstream
+// provider — useful for confirming which build is actually deployed.
+// Declared before the shutdown handler that reports it.
+const RELAY_VERSION = '2026-09-27.bounded';
+
 $__stage = 'boot';
 $__startedAt = microtime(true);
 $__responded = false;
@@ -46,11 +52,6 @@ register_shutdown_function(function (): void {
         ),
     ], 502);
 });
-
-// Bump when the response contract or timeout behaviour changes. The 401 path
-// below is the cheapest place to read it, because it never touches the upstream
-// provider — useful for confirming which build is actually deployed.
-const RELAY_VERSION = '2026-09-27.bounded';
 
 // Prefer an environment variable when the hosting panel supports one. Otherwise
 // replace the placeholder below before uploading this file.
