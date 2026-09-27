@@ -5,7 +5,7 @@
   "scenarios": "health,root,status_summary,ready,auth_missing_401,auth_invalid_403,verify_validate_400",
   "concurrency": "10",
   "duration": "20",
-  "iterations": "25",
+  "iterations": "40",
   "auth_pace_rps": "0.12",
   "stages": "1:15,5:15,10:20,25:25,50:30",
   "coldstart_sleep": "0",
