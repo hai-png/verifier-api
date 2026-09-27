@@ -76,20 +76,20 @@ on a **subdomain routed directly to Plesk**. In Cloudflare → **DNS**, add:
    ```php
    $TELEBIRR_PROXY_KEY = 'YOUR_SECRET_PROXY_KEY_HERE';
    ```
-   Replace `YOUR_SECRET_PROXY_KEY_HERE` with your random key, e.g.:
-   ```php
-   $TELEBIRR_PROXY_KEY = '<REDACTED-ROTATE-THIS-KEY>';
-   ```
+   Replace `YOUR_SECRET_PROXY_KEY_HERE` with your own random key. **Never commit
+   the generated value** — a real key in this file, or in any commit, hands
+   unauthenticated relay access to Ethio Telecom to anyone who can read the
+   repository. The key travels in the query string, so it also lands in the
+   Plesk access log; treat it as a shared secret and rotate it if it is ever
+   exposed.
 5. In Plesk, make sure SSL is enabled for `proxy.noveld.com.et` (Let's Encrypt)
 6. **Save** — your Telebirr proxy URL is: `https://proxy.noveld.com.et/verify.php`
 
 ### 2c: Upload mpesa.php (M-Pesa proxy)
 
 1. Upload `mpesa.php` to the same document root
-2. Edit it — set the `$VALID_PROXY_KEY` line to a random key, e.g.:
-   ```php
-   $VALID_PROXY_KEY = '<REDACTED-ROTATE-THIS-KEY>';
-   ```
+2. Edit it — set the `$VALID_PROXY_KEY` line to your own `openssl rand -hex 24`
+   value. Do not commit the generated key; see the warning in step 2b above.
 3. **Save** — your M-Pesa proxy URL is: `https://proxy.noveld.com.et/mpesa.php`
 
 ### 2d: Test the proxies
