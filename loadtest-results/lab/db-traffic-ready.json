@@ -4,34 +4,34 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 375,
-    "mean": 75
+    "total": 374,
+    "mean": 74.8
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 124.7
+      "totalMs": 124
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 63.2
+      "totalMs": 62.8
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.2
+      "totalMs": 62.1
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 62.1
     },
     {
       "status": 200,
       "class": "ok",
       "totalMs": 62.4
-    },
-    {
-      "status": 200,
-      "class": "ok",
-      "totalMs": 61.9
     }
   ],
   "sqlStatements": 1,

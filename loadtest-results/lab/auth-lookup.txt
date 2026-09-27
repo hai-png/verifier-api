@@ -1,1 +1,1 @@
-single-query API key lookup: no fallback observed
+single-query key lookup + single-statement credit writes: no fallback observed (2026-09-27T02:43:38Z)

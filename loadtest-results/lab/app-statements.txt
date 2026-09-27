@@ -1,8 +1,8 @@
 ### app self-reported (10 M-Pesa verifications + 2 status reads)
 requests observed ......... 11
-statements ................ 69
-statements per request .... 6.27
-mean statement ms ......... 73.28
-top tables ................ [{"table":"apikey","statements":108},{"table":"usagelog","statements":27},{"table":"workspace","statements":27},{"table":"planpricingconfig","statements":4},{"table":"notificationchannel","statements":3}]
-top tables (delta) ........ [{"table":"apikey","statements":19},{"table":"usagelog","statements":4},{"table":"workspace","statements":10}]
-slowest statements ........ [{"sql":"COMMIT","ms":305},{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":122},{"sql":"SELECT `verifier`.`PlanPricingConfig`.`id`, `verifier`.`PlanPricingConfig`.`proPriceMonthlyETB`, `verifier`.`PlanPricing…","ms":121}]
+statements ................ 43
+statements per request .... 3.91
+mean statement ms ......... 69.36
+top tables ................ [{"table":"apikey","statements":105},{"table":"workspace","statements":27},{"table":"usagelog","statements":25},{"table":"planpricingconfig","statements":4},{"table":"notificationchannel","statements":3}]
+top tables (delta) ........ [{"table":"apikey","statements":16},{"table":"workspace","statements":10},{"table":"usagelog","statements":4}]
+slowest statements ........ [{"sql":"UPDATE `Workspace` SET `verificationCredits` = `verificationCredits` - ? WHERE `id` = ? AND `verificationCredits` >= ?","ms":123},{"sql":"SELECT `verifier`.`NotificationChannel`.`id`, `verifier`.`NotificationChannel`.`events` FROM `verifier`.`NotificationCha…","ms":121},{"sql":"INSERT INTO `verifier`.`UsageLog` (`apiKeyId`,`endpoint`,`method`,`statusCode`,`responseTime`,`ip`,`createdAt`) VALUES (…","ms":121}]
