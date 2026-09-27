@@ -4,19 +4,19 @@
   "requests": 2,
   "settleMs": 2500,
   "requestMs": {
-    "total": 1425,
-    "mean": 712.5
+    "total": 1423,
+    "mean": 711.5
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 712.8
+      "totalMs": 711.6
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 711.5
+      "totalMs": 711.3
     }
   ],
   "sqlStatements": 6,
@@ -24,7 +24,7 @@
   "comCountersPerRequest": {
     "Com_select": 3,
     "Com_stmt_execute": 4.5,
-    "Com_stmt_prepare": 1.5,
+    "Com_stmt_prepare": 0.5,
     "Com_update": 1.5
   },
   "controlNoise": {
@@ -32,8 +32,7 @@
     "comCounters": {
       "Com_insert": 1,
       "Com_select": 1,
-      "Com_stmt_execute": 3,
-      "Com_stmt_prepare": 1
+      "Com_stmt_execute": 3
     }
   },
   "statementShapes": [
