@@ -2,7 +2,7 @@
 requests observed ......... 11
 statements ................ 74
 statements per request .... 6.73
-mean statement ms ......... 67.09
-top tables ................ [{"table":"apikey","statements":108},{"table":"workspace","statements":75},{"table":"usagelog","statements":27},{"table":"planpricingconfig","statements":4},{"table":"webhook","statements":3}]
+mean statement ms ......... 66.5
+top tables ................ [{"table":"apikey","statements":108},{"table":"workspace","statements":75},{"table":"usagelog","statements":26},{"table":"planpricingconfig","statements":4},{"table":"webhook","statements":3}]
 top tables (delta) ........ [{"table":"apikey","statements":16},{"table":"workspace","statements":20},{"table":"usagelog","statements":4}]
-slowest statements ........ [{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":122},{"sql":"UPDATE `verifier`.`ApiKey` SET `lastUsed` = ?, `usageCount` = (`verifier`.`ApiKey`.`usageCount` + ?) WHERE (`verifier`.`…","ms":121},{"sql":"INSERT INTO `verifier`.`UsageLog` (`apiKeyId`,`endpoint`,`method`,`statusCode`,`responseTime`,`ip`,`createdAt`) VALUES (…","ms":121}]
+slowest statements ........ [{"sql":"UPDATE `verifier`.`Workspace` SET `verificationCredits` = (`verifier`.`Workspace`.`verificationCredits` - ?) WHERE (`ver…","ms":122},{"sql":"SELECT `verifier`.`ApiKey`.`id`, `verifier`.`ApiKey`.`key`, `verifier`.`ApiKey`.`keyHash`, `verifier`.`ApiKey`.`prefix`,…","ms":121},{"sql":"INSERT INTO `verifier`.`UsageLog` (`apiKeyId`,`endpoint`,`method`,`statusCode`,`responseTime`,`ip`,`createdAt`) VALUES (…","ms":121}]
