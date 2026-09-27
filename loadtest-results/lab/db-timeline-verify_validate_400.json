@@ -4,19 +4,19 @@
   "requests": 2,
   "settleMs": 2500,
   "requestMs": {
-    "total": 190,
-    "mean": 95
+    "total": 188,
+    "mean": 94
   },
   "responses": [
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 65.3
+      "totalMs": 64.5
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 124.2
+      "totalMs": 123.3
     }
   ],
   "sqlStatements": 1,
@@ -42,10 +42,18 @@
   ],
   "statementTimeline": [
     {
+      "sql": "SELECT ?",
+      "ms": 0.097
+    },
+    {
+      "sql": "BEGIN",
+      "ms": 0.099
+    },
+    {
       "sql": "COMMIT",
-      "ms": 0.786
+      "ms": 0.809
     }
   ],
-  "statementTimelineTotalMs": 0.786,
+  "statementTimelineTotalMs": 1.0050000000000001,
   "statementTimelineSource": "events_statements_history_long"
 }
