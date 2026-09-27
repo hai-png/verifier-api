@@ -478,6 +478,54 @@ export function buildTelebirrProxyUrl(
     return parsed.toString();
 }
 
+/**
+ * Turn a relay transport error into an operator-actionable sentence.
+ *
+ * The important distinction is *whose* timeout expired:
+ *  - ECONNABORTED/ETIMEDOUT on a request that was accepted means the relay
+ *    itself never answered. The relay is usually alive (its unauthenticated
+ *    path answers instantly), so the hang is almost always the relay's own
+ *    upstream scrape of the provider, or a very slow Render->relay hop.
+ *  - ENOTFOUND/ECONNREFUSED/ENETUNREACH mean the relay was never reached at
+ *    all: DNS, nothing listening, or no route.
+ */
+function describeRelayTransportFailure(
+    code: string,
+    error: AxiosError,
+    timeoutMs: number
+): { summary: string; message: string } {
+    switch (code) {
+        case 'ENOTFOUND':
+            return {
+                summary: 'the relay hostname could not be resolved (DNS)',
+                message: 'The Telebirr relay hostname could not be resolved. Check FALLBACK_PROXIES for a typo or a dead DNS record.'
+            };
+        case 'ECONNREFUSED':
+            return {
+                summary: 'nothing is listening on the relay host/port',
+                message: 'The Telebirr relay refused the connection. Check that the PHP proxy is running and reachable on that host and port.'
+            };
+        case 'ENETUNREACH':
+        case 'EHOSTUNREACH':
+            return {
+                summary: 'no network route to the relay host',
+                message: 'The Telebirr relay host is unreachable from the API. Check outbound firewall rules and the relay IP.'
+            };
+        case 'ECONNRESET':
+            return {
+                summary: 'the relay reset the connection mid-request',
+                message: 'The Telebirr relay reset the connection. This usually means the relay crashed or the upstream fetch was killed.'
+            };
+        case 'ECONNABORTED':
+        case 'ETIMEDOUT':
+        default:
+            return {
+                summary: `no response within ${timeoutMs}ms; the relay accepted the request but never answered, so the slow hop is the relay's own upstream provider fetch`,
+                message: `The Telebirr relay did not respond within ${timeoutMs}ms. The relay accepted the request, so the delay is most likely its own upstream provider lookup rather than this API.`
+            };
+    }
+}
+
 async function fetchFromProxySource(
     reference: string,
     proxyUrl: string,
@@ -561,14 +609,29 @@ async function fetchFromProxySource(
             axiosError.code === 'ECONNREFUSED';
 
         if (isTransportFailure) {
-            logger.warn('Telebirr relay is unreachable or timed out.', {
+            // Name the failing hop. Every transport mode used to collapse into
+            // one sentence, so an operator could not tell a DNS problem from a
+            // dead Plesk host from "the relay answered but its own upstream
+            // scrape never finished" — which are three different fixes.
+            const code = axiosError.code ?? 'UNKNOWN';
+            const relayHost = (() => {
+                try {
+                    return new URL(proxyUrl).hostname;
+                } catch {
+                    return 'the configured relay';
+                }
+            })();
+            const diagnosis = describeRelayTransportFailure(code, axiosError, Number(options.timeoutMs ?? 30_000));
+            logger.warn(`Telebirr relay transport failure: ${diagnosis.summary}`, {
                 relay: relayLabel,
-                code: axiosError.code,
-                status: axiosError.response?.status
+                host: relayHost,
+                code,
+                status: axiosError.response?.status,
+                timeoutMs: options.timeoutMs
             });
             throw new TelebirrVerificationError(
-                'The fallback relay is unreachable or timed out.',
-                axiosError.message,
+                diagnosis.message,
+                `relay=${relayLabel} host=${relayHost} code=${code} timeoutMs=${options.timeoutMs ?? 30_000} (${diagnosis.summary})`,
                 'transport'
             );
         }
@@ -805,6 +868,9 @@ async function verifyWithTelebirrProxyPool(
     );
     const proxyKey = env.TELEBIRR_PROXY_KEY ?? '';
     const deadlineAt = Date.now() + totalTimeoutMs;
+    // Note: an all-relays-cooling-down pool never yields zero candidates, because
+    // orderedAvailableProxies always returns a half-open recovery candidate. A
+    // missing relay is rejected earlier, in verifyTelebirr, before we get here.
     const candidates = orderedAvailableProxies(descriptors, Date.now());
 
     let nextCandidateIndex = 0;
@@ -865,10 +931,12 @@ async function verifyWithTelebirrProxyPool(
                     error instanceof TelebirrVerificationError
                         ? error
                         : new TelebirrVerificationError(
-                            'The fallback relay is unreachable or timed out.',
-                            error instanceof Error ? error.message : undefined,
-                            'transport'
-                        );
+                              `The Telebirr relay '${descriptor.label}' failed unexpectedly.`,
+                              error instanceof Error
+                                  ? `code=${(error as AxiosError).code ?? 'UNKNOWN'} ${error.message}`
+                                  : 'unknown error',
+                              'transport'
+                          );
                 return {
                     kind: 'attempt',
                     token,
