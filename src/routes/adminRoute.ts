@@ -11,6 +11,7 @@ import { safeSecretEquals } from '../utils/secretCompare';
 import {
     BillingConfigValidationError,
     getBillingConfig,
+    invalidateBillingConfigCache,
     updateBillingConfig,
 } from '../config/billingConfig';
 
@@ -235,6 +236,118 @@ router.post('/api-keys/:id/credits', checkAdminAuth as RequestHandler, async (re
         }
         logger.error('Error updating image credits:', err);
         res.status(500).json({ success: false, error: 'Failed to update credits.' });
+    }
+});
+
+// Grant a paid plan and/or credits to a workspace.
+//
+// This is the settlement entry point. The existing endpoints could set `tier`
+// (keyed off an API key id) and adjust *image* credits only, so there was no
+// way to grant verification credits or a monthly allowance anywhere in the
+// codebase — a customer could pay and receive nothing. Upgrades are an operator
+// action, so they belong here behind the admin secret rather than on any
+// self-service or dashboard route.
+//
+// Monthly quota semantics (see middleware/tierGate.ts): the tier *drives* the
+// quota via getVerificationMonthlyQuota(tier, grandfathered). `planTermMonths`
+// sets `paidUntil`, after which the sync downgrades the workspace on its next
+// request. Credits added here are an immediate top-up that lasts until the
+// current period resets.
+const VALID_PLAN_TIERS = ['FREE', 'PRO', 'BUSINESS'] as const;
+type PlanTier = typeof VALID_PLAN_TIERS[number];
+const MAX_CREDIT_GRANT = 10_000_000;
+
+router.post('/workspaces/plan', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
+    const {
+        workspaceId,
+        tier,
+        addVerificationCredits,
+        addImageCredits,
+        planTermMonths,
+        note,
+    } = req.body as {
+        workspaceId?: string;
+        tier?: string;
+        addVerificationCredits?: number;
+        addImageCredits?: number;
+        planTermMonths?: number;
+        note?: string;
+    };
+
+    if (!workspaceId || typeof workspaceId !== 'string') {
+        res.status(400).json({ success: false, error: 'workspaceId is required.' });
+        return;
+    }
+    if (tier !== undefined && !VALID_PLAN_TIERS.includes(tier as PlanTier)) {
+        res.status(400).json({ success: false, error: `Invalid tier. Must be one of: ${VALID_PLAN_TIERS.join(', ')}` });
+        return;
+    }
+    for (const [label, value] of [['addVerificationCredits', addVerificationCredits], ['addImageCredits', addImageCredits]] as const) {
+        if (value === undefined) continue;
+        if (!Number.isInteger(value) || value === 0) {
+            res.status(400).json({ success: false, error: `${label} must be a non-zero integer.` });
+            return;
+        }
+        if (Math.abs(value) > MAX_CREDIT_GRANT) {
+            res.status(400).json({ success: false, error: `${label} magnitude must not exceed ${MAX_CREDIT_GRANT}.` });
+            return;
+        }
+    }
+    if (planTermMonths !== undefined && (!Number.isInteger(planTermMonths) || planTermMonths < 0 || planTermMonths > 120)) {
+        res.status(400).json({ success: false, error: 'planTermMonths must be an integer between 0 and 120.' });
+        return;
+    }
+    // The audit trail is the point of an operator-granted entitlement.
+    if (typeof note !== 'string' || note.trim().length < 3) {
+        res.status(400).json({ success: false, error: 'A note describing the grant is required (min 3 characters).' });
+        return;
+    }
+
+    const now = new Date();
+    const data: Record<string, unknown> = {};
+    if (tier !== undefined) data.tier = tier;
+    if (addVerificationCredits !== undefined) data.verificationCredits = { increment: addVerificationCredits };
+    if (addImageCredits !== undefined) data.imageCredits = { increment: addImageCredits };
+    if (planTermMonths !== undefined) {
+        data.planTermMonths = planTermMonths;
+        if (planTermMonths > 0) {
+            const paidUntil = new Date(now);
+            paidUntil.setMonth(paidUntil.getMonth() + planTermMonths);
+            data.paidUntil = paidUntil;
+        } else {
+            data.paidUntil = null;
+        }
+    }
+    // A grant must not be erased by the period reset that would otherwise fire
+    // on this workspace's very next request, so start a fresh period.
+    data.verificationCreditsResetAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    data.imageCreditsResetAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    try {
+        const updated = await prisma.workspace.update({
+            where: { id: workspaceId },
+            data,
+            select: {
+                id: true, name: true, tier: true,
+                verificationCredits: true, verificationCreditsMonthly: true,
+                imageCredits: true, imageCreditsMonthly: true,
+                paidUntil: true, planTermMonths: true,
+            },
+        });
+        // Plan limits are read through a cached billing config; drop it so the
+        // new tier takes effect on the workspace's next request.
+        invalidateBillingConfigCache();
+        logger.info(`[admin] plan grant for workspace ${workspaceId}: ${JSON.stringify({
+            tier, addVerificationCredits, addImageCredits, planTermMonths, note: note.trim(),
+        })}`);
+        res.json({ success: true, data: updated });
+    } catch (err: any) {
+        if (err.code === 'P2025') {
+            res.status(404).json({ success: false, error: 'Workspace not found.' });
+            return;
+        }
+        logger.error('Error granting workspace plan:', err);
+        res.status(500).json({ success: false, error: 'Failed to grant plan.' });
     }
 });
 
