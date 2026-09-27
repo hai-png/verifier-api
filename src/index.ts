@@ -112,12 +112,39 @@ logger.info(`Starting server in ${process.env.NODE_ENV || 'development'} mode`);
 logger.info(`Node version: ${process.version}`);
 logger.info(`Platform: ${process.platform}`);
 
+/**
+ * Shared secrets gate /admin/*, the dashboard-secret API path and session
+ * tokens. They default to empty and every comparison fails closed, so a missing
+ * value disables those surfaces rather than falling back to a guessable
+ * constant. That failure is silent, though, and on a free-tier deploy it looks
+ * like "the admin key is just wrong". Surface it loudly, and refuse to come up
+ * in production.
+ */
+const REQUIRED_SHARED_SECRETS = ['ADMIN_SECRET', 'DASHBOARD_SECRET'] as const;
+const MIN_SHARED_SECRET_LENGTH = 16;
+
+function assertSharedSecretsConfigured(): void {
+    const missing = REQUIRED_SHARED_SECRETS.filter((key) => {
+        const value = process.env[key];
+        return !value || value.length < MIN_SHARED_SECRET_LENGTH;
+    });
+    if (missing.length === 0) return;
+
+    const detail = `${missing.join(', ')} must be set to a random value of at least ${MIN_SHARED_SECRET_LENGTH} characters (openssl rand -hex 32). Until then /admin/* and the dashboard-secret API reject every request.`;
+    if (process.env.NODE_ENV === 'production') {
+        throw new Error(`Refusing to start: ${detail}`);
+    }
+    logger.warn(`⚠️ ${detail}`);
+}
+
 async function initializeRuntime(): Promise<void> {
     startupState.initializing = true;
     startupState.ready = false;
     startupState.lastError = null;
 
     try {
+        assertSharedSecretsConfigured();
+
         // Verify Chrome is installed for the legacy CBE fallback. This checks
         // both system paths and the Puppeteer cache used by Render/Docker.
         const foundPath = getChromeExecutablePath();

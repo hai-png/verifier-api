@@ -19,6 +19,7 @@ import { quotaRefundHook } from '../utils/quotaCharge';
 
 // Exercise the production routers, authentication, rate/quota middleware and
 // provider dispatch, replacing only DB I/O and upstream providers. No banks.
+const TEST_DASHBOARD_SECRET = 'verification-pipeline-test-secret';
 test('dashboard and API execute one tenant-safe, billable verification pipeline', async (t) => {
   const workspaces = new Map<string, any>();
   const denied = new Set(['forbidden']);
@@ -88,9 +89,14 @@ test('dashboard and API execute one tenant-safe, billable verification pipeline'
     await new Promise<void>((r) => server.close(() => r()));
     await new Promise<void>((r) => setImmediate(r));
     originals.reverse().forEach((restore) => restore()); clearVerifyCache(); invalidateBillingConfigCache();
+    if (previousSecret === undefined) delete process.env.DASHBOARD_SECRET; else process.env.DASHBOARD_SECRET = previousSecret;
   });
   const payload = 'user-test.random';
-  const token = `nvd_sess_${payload}.${crypto.createHmac('sha256', process.env.DASHBOARD_SECRET || 'fallback-secret').update(payload).digest('hex')}`;
+  // DASHBOARD_SECRET is required: there is no fallback key any more, so the
+  // session token must be signed with a real configured secret.
+  const previousSecret = process.env.DASHBOARD_SECRET;
+  process.env.DASHBOARD_SECRET = TEST_DASHBOARD_SECRET;
+  const token = `nvd_sess_${payload}.${crypto.createHmac('sha256', TEST_DASHBOARD_SECRET).update(payload).digest('hex')}`;
   async function post(path: string, body: unknown, ws = 'a', dashboard = false) {
     const response = await fetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json',
       ...(dashboard ? { Authorization: `Bearer ${token}` } : { 'x-api-key': ws }) }, body: JSON.stringify(body) });

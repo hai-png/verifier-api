@@ -16,6 +16,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import { safeSecretEquals } from '../utils/secretCompare';
 import { isResetEmailConfigured, sendPasswordResetEmail } from '../utils/passwordResetEmail';
 
 const router = Router();
@@ -30,14 +31,29 @@ const TOKEN_PREFIX = 'nvd_sess_';
 function createSessionToken(userId: string): string {
     const random = crypto.randomBytes(24).toString('hex');
     const payload = `${userId}.${random}`;
-    const hmac = crypto.createHmac('sha256', process.env.DASHBOARD_SECRET || 'fallback-secret')
-        .update(payload)
-        .digest('hex');
+    const hmac = signSessionPayload(payload);
     return `${TOKEN_PREFIX}${payload}.${hmac}`;
 }
 
 /**
+ * Sign a session payload. Fails closed when DASHBOARD_SECRET is unset: a
+ * published fallback key would let anyone mint a token for any userId, so
+ * there is deliberately no default here.
+ */
+function signSessionPayload(payload: string): string {
+    const secret = process.env.DASHBOARD_SECRET;
+    if (!secret) {
+        throw new Error('DASHBOARD_SECRET is required to issue session tokens.');
+    }
+    return crypto.createHmac('sha256', secret).update(payload).digest('hex');
+}
+
+/**
  * Verify a session token. Returns userId if valid, null otherwise.
+ *
+ * The HMAC only proves the token was minted by this server with the current
+ * secret. It is not sufficient on its own: the token must also still exist and
+ * not be expired. `requireSession` enforces both against the Session table.
  */
 function verifySessionToken(token: string): { userId: string } | null {
     if (!token.startsWith(TOKEN_PREFIX)) return null;
@@ -46,10 +62,10 @@ function verifySessionToken(token: string): { userId: string } | null {
     if (lastDot === -1) return null;
     const payload = rest.slice(0, lastDot);
     const hmac = rest.slice(lastDot + 1);
-    const expectedHmac = crypto.createHmac('sha256', process.env.DASHBOARD_SECRET || 'fallback-secret')
-        .update(payload)
-        .digest('hex');
-    if (hmac !== expectedHmac) return null;
+    if (!/^[a-f0-9]{64}$/.test(hmac)) return null;
+    if (!process.env.DASHBOARD_SECRET) return null;
+    const expectedHmac = signSessionPayload(payload);
+    if (!safeSecretEquals(hmac, expectedHmac)) return null;
     const [userId] = payload.split('.');
     return { userId };
 }

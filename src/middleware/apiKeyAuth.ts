@@ -4,6 +4,7 @@ import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { createWriteBehind } from '../utils/writeBehind';
 import { AppError, ErrorType, sendErrorResponse } from '../utils/errorHandler';
+import { safeSecretEquals } from '../utils/secretCompare';
 import {
   BILLING_PAYMENT_OPERATION,
   INTERNAL_OPERATION_HEADER,
@@ -140,7 +141,7 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
   // The Next.js UI server authenticates as itself, scoped to a workspace.
   const dashboardKeyHeader = req.headers['x-dashboard-key'] as string | undefined;
   const workspaceIdHeader = req.headers['x-workspace-id'] as string | undefined;
-  if (DASHBOARD_SECRET && dashboardKeyHeader === DASHBOARD_SECRET && workspaceIdHeader) {
+  if (safeSecretEquals(dashboardKeyHeader, DASHBOARD_SECRET) && workspaceIdHeader) {
     try {
       const workspace = await prisma.workspace.findUnique({
         where: { id: workspaceIdHeader },
@@ -171,7 +172,7 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
   // NOTE: x-public-verify-key is DASHBOARD_SECRET — server-side only, never
   // expose it to browsers. Browser clients must use POST /verify/public.
   const publicVerifyHeader = req.headers['x-public-verify-key'] as string | undefined;
-  if (DASHBOARD_SECRET && publicVerifyHeader === DASHBOARD_SECRET && PUBLIC_VERIFY_PATHS.has(req.path)) {
+  if (safeSecretEquals(publicVerifyHeader, DASHBOARD_SECRET) && PUBLIC_VERIFY_PATHS.has(req.path)) {
     (req as any).publicVerify = true;
     (req as any).apiKeyData = null;
     return next();
@@ -190,7 +191,7 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
   // behalf of a user without their raw key (new-format keys store only a hash).
   const adminKeyHeader = req.headers['x-admin-key'] as string | undefined;
   const keyIdOverride  = req.headers['x-api-key-id'] as string | undefined;
-  if (ADMIN_SECRET && adminKeyHeader === ADMIN_SECRET && keyIdOverride) {
+  if (safeSecretEquals(adminKeyHeader, ADMIN_SECRET) && keyIdOverride) {
     try {
       const keyData = await prisma.apiKey.findUnique({
         where: { id: keyIdOverride, isActive: true },

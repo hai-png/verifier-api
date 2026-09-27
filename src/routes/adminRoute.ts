@@ -7,6 +7,7 @@ import { getWebhookQueueHealth, replayWebhookDelivery } from '../queues/webhookQ
 import { accountMatches, extractPaymentDetails } from '../utils/paymentMatch';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import { safeSecretEquals } from '../utils/secretCompare';
 import {
     BillingConfigValidationError,
     getBillingConfig,
@@ -15,8 +16,10 @@ import {
 
 const router = Router();
 
-// Admin secret key for authentication (use environment variable in production)
-const ADMIN_SECRET = process.env.ADMIN_SECRET || 'change-this-secret-key';
+// Fail closed: with no ADMIN_SECRET configured, no request may authenticate.
+// There is deliberately no fallback literal — a published default would make
+// /admin/* reachable by anyone who can read the repository.
+const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
 
 // Middleware to check admin authentication
 const checkAdminAuth = (req: Request, res: Response, next: NextFunction) => {
@@ -24,7 +27,7 @@ const checkAdminAuth = (req: Request, res: Response, next: NextFunction) => {
     const normalizedQueryKey = Array.isArray(rawAdminKey) ? rawAdminKey[0] : rawAdminKey;
     const adminKey = req.headers['x-admin-key'] || normalizedQueryKey;
 
-    if (adminKey !== ADMIN_SECRET) {
+    if (!safeSecretEquals(adminKey, ADMIN_SECRET)) {
         return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
     }
 
