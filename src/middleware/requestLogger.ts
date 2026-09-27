@@ -43,7 +43,26 @@ export const usageLogStats = () => ({
   dropped: usageLogWriter.droppedCount(),
 });
 
-// In-memory cache for quick stats access
+// In-memory cache for quick stats access.
+//
+// Both maps are hard-capped. They are written on every request from a middleware
+// that runs before authentication, and their keys are attacker-controlled: the
+// endpoint key embeds the request path and the IP key came from a header, so
+// anonymous callers could otherwise grow these without bound until the 512 MB
+// instance ran out of memory. The rate limiter's MemoryWindowCounter solved this
+// for itself; these two were missed.
+const STATS_MAX_KEYS = Number(process.env.STATS_MAX_KEYS ?? 5_000);
+
+function setBounded<V>(map: Map<string, V>, key: string, value: V): void {
+    // Re-insert so Map iteration order stays least-recently-used first.
+    map.delete(key);
+    map.set(key, value);
+    if (map.size > STATS_MAX_KEYS) {
+        const oldest = map.keys().next();
+        if (!oldest.done) map.delete(oldest.value);
+    }
+}
+
 const statsCache = {
   totalRequests: 0,
   endpointStats: new Map<string, {
@@ -54,6 +73,14 @@ const statsCache = {
   }>(),
   ipStats: new Map<string, number>()
 };
+
+/** Sizes of the in-memory stats maps, for /status and for leak assertions. */
+export const statsCacheState = () => ({
+  totalRequests: statsCache.totalRequests,
+  endpointKeys: statsCache.endpointStats.size,
+  ipKeys: statsCache.ipStats.size,
+  maxKeys: STATS_MAX_KEYS,
+});
 
 // Initialize cache from database on startup
 export const initializeStatsCache = async () => {
@@ -132,7 +159,7 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
   // Track by endpoint
   const endpoint = `${req.method} ${req.originalUrl.split('?')[0]}`;
   if (!statsCache.endpointStats.has(endpoint)) {
-    statsCache.endpointStats.set(endpoint, {
+    setBounded(statsCache.endpointStats, endpoint, {
       count: 0,
       successCount: 0,
       failureCount: 0,
@@ -141,24 +168,28 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
   }
   const endpointStat = statsCache.endpointStats.get(endpoint)!;
   endpointStat.count++;
+  setBounded(statsCache.endpointStats, endpoint, endpointStat);
 
   // Track by IP address
   const ipCount = statsCache.ipStats.get(requestIp) || 0;
-  statsCache.ipStats.set(requestIp, ipCount + 1);
+  setBounded(statsCache.ipStats, requestIp, ipCount + 1);
 
   // Use the 'finish' event to capture response completion
   res.on('finish', async () => {
     const responseTime = Date.now() - start;
-    const endpointStat = statsCache.endpointStats.get(endpoint)!;
+    // The entry can have been evicted by the cap while the request was in
+    // flight, so this lookup is not guaranteed to resolve.
+    const finished = statsCache.endpointStats.get(endpoint);
+    if (!finished) return;
 
     if (res.statusCode < 400) {
-      endpointStat.successCount++;
+      finished.successCount++;
     } else {
-      endpointStat.failureCount++;
+      finished.failureCount++;
     }
 
-    endpointStat.avgResponseTime =
-      (endpointStat.avgResponseTime * (endpointStat.count - 1) + responseTime) / endpointStat.count;
+    finished.avgResponseTime =
+      (finished.avgResponseTime * (finished.count - 1) + responseTime) / finished.count;
 
     // Get auth context for logging
     const context = getWorkspaceContext(req);

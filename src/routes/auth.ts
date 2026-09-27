@@ -17,6 +17,8 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { safeSecretEquals } from '../utils/secretCompare';
+import { MemoryWindowCounter } from '../utils/expiringStore';
+import { getRequestIp } from '../utils/requestIp';
 import { isResetEmailConfigured, sendPasswordResetEmail } from '../utils/passwordResetEmail';
 
 const router = Router();
@@ -103,6 +105,12 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         res.status(400).json({ success: false, error: 'Invalid email format.' });
+        return;
+    }
+    // Each signup costs a bcrypt hash plus two writes, and the route is
+    // unauthenticated: cap how many one client can create per hour.
+    if (!signupAllowed(getRequestIp(req))) {
+        res.status(429).json({ success: false, error: 'Too many accounts created from this address. Try again later.' });
         return;
     }
 
@@ -204,9 +212,21 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
         return;
     }
 
+    const normalisedEmail = normaliseEmail(email);
+    if (!normalisedEmail) {
+        // Same shape as a wrong password: never reveal whether the address is
+        // registered, and never spend bcrypt on garbage input.
+        res.status(401).json({ success: false, error: 'Invalid email or password.' });
+        return;
+    }
+    if (!loginAllowed(normalisedEmail, getRequestIp(req))) {
+        res.status(429).json({ success: false, error: 'Too many login attempts. Try again later.' });
+        return;
+    }
+
     try {
         const user = await prisma.user.findUnique({
-            where: { email: email.toLowerCase() },
+            where: { email: normalisedEmail },
             include: {
                 accounts: {
                     where: { provider: 'credentials' },
@@ -385,21 +405,51 @@ export async function createPasswordResetToken(userId: string): Promise<{ rawTok
     return { rawToken, expiresAt };
 }
 
-// Simple in-memory throttle so forgot-password can't be used to spam email
-// (or probe accounts by timing). Max 3 requests per email per 15 minutes.
-const forgotThrottle = new Map<string, { count: number; windowStart: number }>();
+// Throttle so forgot-password cannot be used to spam email or probe accounts by
+// timing. Bounded, because the key is caller-supplied and the route is
+// unauthenticated: an unbounded Map was a memory-exhaustion lever.
+const forgotThrottle = new MemoryWindowCounter({ maxEntries: 10_000 });
 const FORGOT_WINDOW_MS = 15 * 60 * 1000;
 const FORGOT_MAX_PER_WINDOW = 3;
 
+// Credential endpoints run bcrypt at cost 10 (~100 ms of CPU each) and are
+// unauthenticated, so without a limit they are both an online brute-force
+// vector and a CPU-exhaustion DoS against a shared-CPU instance.
+const loginThrottle = new MemoryWindowCounter({ maxEntries: 10_000 });
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_PER_WINDOW = 10;
+const loginIpThrottle = new MemoryWindowCounter({ maxEntries: 20_000 });
+const LOGIN_MAX_PER_IP = 50;
+
+const signupThrottle = new MemoryWindowCounter({ maxEntries: 20_000 });
+const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
+const SIGNUP_MAX_PER_IP = 5;
+
+// Deliberately permissive: this rejects obvious abuse, it does not attempt to
+// implement RFC 5322. The reset/login flows compare on the same normalised
+// value, so a permissive check cannot lock a real user out of their own account.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+const MAX_EMAIL_LENGTH = 254;
+
+function normaliseEmail(raw: unknown): string | null {
+    if (typeof raw !== 'string') return null;
+    const email = raw.trim().toLowerCase();
+    if (email.length === 0 || email.length > MAX_EMAIL_LENGTH) return null;
+    if (!EMAIL_PATTERN.test(email)) return null;
+    return email;
+}
+
 function forgotAllowed(email: string): boolean {
-    const now = Date.now();
-    const entry = forgotThrottle.get(email);
-    if (!entry || now - entry.windowStart > FORGOT_WINDOW_MS) {
-        forgotThrottle.set(email, { count: 1, windowStart: now });
-        return true;
-    }
-    entry.count += 1;
-    return entry.count <= FORGOT_MAX_PER_WINDOW;
+    return forgotThrottle.increment(email, FORGOT_WINDOW_MS).count <= FORGOT_MAX_PER_WINDOW;
+}
+
+function loginAllowed(email: string, ip: string): boolean {
+    return loginThrottle.increment(`email:${email}`, LOGIN_WINDOW_MS).count <= LOGIN_MAX_PER_WINDOW
+        && loginIpThrottle.increment(`ip:${ip}`, LOGIN_WINDOW_MS).count <= LOGIN_MAX_PER_IP;
+}
+
+function signupAllowed(ip: string): boolean {
+    return signupThrottle.increment(`ip:${ip}`, SIGNUP_WINDOW_MS).count <= SIGNUP_MAX_PER_IP;
 }
 
 router.post('/forgot-password', async (req: Request, res: Response): Promise<void> => {
@@ -415,7 +465,13 @@ router.post('/forgot-password', async (req: Request, res: Response): Promise<voi
         message: 'If an account exists for that email, a password reset link has been sent.',
     };
 
-    const normalizedEmail = email.toLowerCase().trim();
+    // Validate before using the address as a throttle key, so the bounded
+    // counter cannot be filled with arbitrary strings by an anonymous caller.
+    const normalizedEmail = normaliseEmail(email);
+    if (!normalizedEmail) {
+        res.json(uniformResponse);
+        return;
+    }
     if (!forgotAllowed(normalizedEmail)) {
         res.json(uniformResponse);
         return;
