@@ -689,7 +689,7 @@ function positiveInteger(value: string | undefined, fallback: number): number {
  * roughly the moment the relay gives up on its own budget and is about to
  * explain which stage stalled. Keep the two in step when either side changes.
  */
-const RELAY_BUDGET_MS = 11_000;
+const RELAY_BUDGET_MS = 13_500;
 
 /**
  * Budget for the direct provider hop that runs before the relay pool.
@@ -888,7 +888,7 @@ async function verifyWithTelebirrProxyPool(
 ): Promise<TelebirrReceipt | null> {
     const configuredProxyTimeoutMs = positiveInteger(
         env.TELEBIRR_PROXY_TIMEOUT_MS,
-        12_000
+        16_000
     );
     const hedgeDelayMs = positiveInteger(
         env.TELEBIRR_HEDGE_DELAY_MS,
@@ -910,12 +910,14 @@ async function verifyWithTelebirrProxyPool(
     // fall back to. The attempt then held the connection for 18s and reported a
     // bare ECONNABORTED, even when the relay was about to answer.
     //
-    // The default of 12s is what actually fixes that, and it is deliberately a
-    // little above RELAY_BUDGET_MS (11s) in verify.php so the relay's own staged
+    // The default of 16s is what actually fixes that, and it is deliberately
+    // above RELAY_BUDGET_MS (13.5s) in verify.php so the relay's own staged
     // diagnosis arrives instead of this side hanging up on an empty body. The
-    // clamp below only enforces the invariant that keeps the pool deadline
-    // reachable; it deliberately does not try to second-guess an operator who
-    // deliberately configured short timeouts.
+    // relay needs the headroom: the provider's TLS handshake is bimodal, and
+    // attempts that succeed do so at up to ~3.3s, so it retries three times at
+    // 4s each. The clamp below only enforces the invariant that keeps the pool
+    // deadline reachable; it deliberately does not try to second-guess an
+    // operator who deliberately configured short timeouts.
     const proxyTimeoutMs = Math.min(
         configuredProxyTimeoutMs,
         Math.max(1, totalTimeoutMs - 1)

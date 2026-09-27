@@ -24,13 +24,13 @@ header("Content-Type: application/json");
 // below is the cheapest place to read it, because it never touches the upstream
 // provider — useful for confirming which build is actually deployed.
 // Declared before the shutdown handler that reports it.
-const RELAY_VERSION = '2026-09-27.bounded-extract';
+const RELAY_VERSION = '2026-09-27.dns-retry';
 
 // Wall-clock ceiling for the whole script, in ms, and the slice of it reserved for
 // the DOM/XPath fallback. The fallback is the only stage that cannot be bounded by
 // a socket option, so it is the one that gets skipped when the budget is spent.
-const RELAY_BUDGET_MS = 11000;
-const RELAY_DOM_RESERVE_MS = 2500;
+const RELAY_BUDGET_MS = 13500;
+const RELAY_DOM_RESERVE_MS = 3000;
 
 // Hard cap on the provider page size. A receipt page is a few tens of KB; a
 // megabyte is far past anything legitimate and is the input that makes loadHTML
@@ -129,11 +129,12 @@ $url = "https://transactioninfo.ethiotelecom.et/receipt/" . urlencode($reference
 
 const UPSTREAM_HOST = 'transactioninfo.ethiotelecom.et';
 const UPSTREAM_PORT = 443;
-// Per-attempt fetch budget. Three of these plus the pre-check fit inside
-// RELAY_BUDGET_MS with room to spare, which is what makes retrying safe: the
-// handshake to this provider fails roughly half the time, so a single attempt is
-// a coin flip rather than a plan.
-const FETCH_ATTEMPT_TIMEOUT_MS = 2500;
+// Per-attempt fetch budget. Four seconds, because the handshake to this provider
+// is bimodal and attempts that succeed do so at up to ~3.3s, so anything tighter
+// discards attempts that were about to work. Three of these plus the 1s pre-check
+// fit inside RELAY_BUDGET_MS with room to spare, and the API allows 16s per
+// attempt, so the relay can finish and be diagnosed well before the API gives up.
+const FETCH_ATTEMPT_TIMEOUT_MS = 4000;
 const FETCH_MAX_ATTEMPTS = 3;
 // Last known address, used when there is no cache file yet. It is a floor, not
 // a pin: if a request to it fails, the address is re-resolved and the new one
@@ -170,11 +171,27 @@ const UPSTREAM_SEED_IP = '196.188.116.120';
  * The cache is best-effort: if it is not writable the relay still works, it just
  * pays for a lookup on every request.
  */
-function resolveUpstreamAddress($forceResolve = false): array {
-    $cacheFile = __DIR__ . '/.telebirr-upstream-ip';
-
-    // 1. A cached address from an earlier successful request.
-    $cached = @file_get_contents($cacheFile);
+/**
+ * The provider address, without ever calling the system resolver.
+ *
+ * Why there is no resolver call here
+ * ----------------------------------
+ * gethostbyname() cannot be interrupted from PHP, and on this host it has been
+ * measured blocking for 28s and 50s. That unbounded call is the entire failure
+ * this script exists to prevent, so it must not appear on a request path --
+ * including a retry path. An earlier version of this function re-resolved after a
+ * failed attempt and reintroduced exactly the stall it was written to avoid,
+ * turning a 6s request into a 34s one.
+ *
+ * So the address comes from a cache file or the seed constant, and nothing else.
+ * The seed is maintained by hand: it is verified correct as of this writing, and
+ * if the provider ever changes address the response reports `ipSource=seed` plus
+ * the address it used, which makes a stale seed obvious in the logs rather than
+ * something to diagnose blind. To move to a new address, update
+ * UPSTREAM_SEED_IP and delete .telebirr-upstream-ip.
+ */
+function resolveUpstreamAddress(): array {
+    $cached = @file_get_contents(__DIR__ . '/.telebirr-upstream-ip');
     if (is_string($cached)) {
         $cached = trim($cached);
         // A plain IPv4 literal only. Anything else counts as no cache, so a
@@ -184,35 +201,17 @@ function resolveUpstreamAddress($forceResolve = false): array {
         }
     }
 
-    // 2. The seed, so a cold install and the common path never call the resolver.
-    if (!$forceResolve && UPSTREAM_SEED_IP !== '') {
+    if (UPSTREAM_SEED_IP !== '') {
         return ['ip' => UPSTREAM_SEED_IP, 'source' => 'seed'];
     }
 
-    // 3. Last resort, and the one path that can still block for a long time.
-    $startedAt = microtime(true);
-    $ip = gethostbyname(UPSTREAM_HOST);
-    $elapsedMs = round((microtime(true) - $startedAt) * 1000);
-
-    // gethostbyname returns its input unchanged when it fails, so an address
-    // that still looks like a hostname means nothing was found.
-    if ($ip === UPSTREAM_HOST || !preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', (string) $ip)) {
-        return ['ip' => null, 'source' => 'unresolved', 'elapsedMs' => $elapsedMs];
-    }
-
-    rememberUpstreamAddress($ip);
-
-    return ['ip' => $ip, 'source' => 'resolved', 'elapsedMs' => $elapsedMs];
+    return ['ip' => null, 'source' => 'unset'];
 }
 
 function rememberUpstreamAddress($ip): void {
     // Last writer wins. This is a single-address cache, not shared state needing
     // locking, and a concurrent write of the same value is harmless.
     @file_put_contents(__DIR__ . '/.telebirr-upstream-ip', $ip, LOCK_EX);
-}
-
-function forgetUpstreamAddress(): void {
-    @unlink(__DIR__ . '/.telebirr-upstream-ip');
 }
 
 /**
@@ -258,9 +257,13 @@ function attemptFetch($url, $ip, $timeoutMs) {
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    // Below the per-attempt timeout so a blackholed route is reported as a
-    // connect failure rather than consuming the whole attempt.
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
+    // Equal to the per-attempt timeout, not lower. The handshake to this provider
+    // is bimodal: probes on the relay host succeeded at 26-38ms, 1064ms, 3081ms
+    // and 3319ms, and failed past 4000ms. A connect timeout below ~3.5s therefore
+    // kills handshakes that were about to succeed, which is how a 2s connect
+    // timeout produced three consecutive errno=28 on a host whose TCP connect to
+    // the same address completed in 0ms.
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, (int) ceil($timeoutMs / 1000));
     curl_setopt($ch, CURLOPT_TIMEOUT, (int) ceil($timeoutMs / 1000));
     // Abort a connection that stalls mid-body instead of burning the full
     // timeout waiting for more data that never arrives.
@@ -322,14 +325,13 @@ function fetchReceipt($url) {
     $ip = $resolution['ip'];
 
     $__stage = 'dns-precheck';
-    $precheck = measureUpstreamReachability(UPSTREAM_HOST, UPSTREAM_PORT, 2, $ip);
+    $precheck = measureUpstreamReachability(UPSTREAM_HOST, UPSTREAM_PORT, 1, $ip);
 
     $__stage = 'provider-fetch';
     $attempts = [];
     $body = '';
     $lastErrno = 0;
     $lastError = '';
-    $retried = false;
 
     for ($i = 1; $i <= FETCH_MAX_ATTEMPTS; $i++) {
         $attempt = attemptFetch($url, $ip, FETCH_ATTEMPT_TIMEOUT_MS);
@@ -339,31 +341,27 @@ function fetchReceipt($url) {
             $body = $attempt['body'];
             $lastErrno = $attempt['errno'];
             $lastError = $attempt['error'];
+            // Promote whatever worked, so a later request starts from a verified
+            // address instead of the seed.
+            if ($ip !== null && $ip !== '' && $resolution['source'] !== 'cache') {
+                rememberUpstreamAddress($ip);
+            }
             break;
         }
 
         $lastErrno = $attempt['errno'];
         $lastError = $attempt['error'];
 
-        // A failed attempt against a pinned address means the address may be
-        // stale, and a stale seed would otherwise fail forever. So re-resolve
-        // once and cache the result, which is what makes this self-healing if
-        // the provider ever changes address.
+        // Deliberately no re-resolve here. An earlier version did, and because
+        // the seed counted as a cached address it fired on the very first failed
+        // attempt, putting the unbounded gethostbyname() call straight back on
+        // the request path: three 2s attempts turned into a 34s request that the
+        // API had already given up on. The address is now pinned for the whole
+        // request and the remaining attempts simply retry against it, which is
+        // what the intermittency actually calls for.
         //
-        // Trade-off, stated plainly: gethostbyname() is the unbounded call this
-        // design exists to keep off the request path, so this branch can be slow.
-        // It is only reached when the address is genuinely wrong, which is rare,
-        // and a slow request still answers via the shutdown handler. Refusing to
-        // re-resolve would trade a rare slow response for a permanent outage the
-        // first time the provider moves.
-        if ($attempt['fromCache'] && !$retried) {
-            $retried = true;
-            forgetUpstreamAddress();
-            $fresh = resolveUpstreamAddress(true);
-            if ($fresh['ip'] !== null && $fresh['ip'] !== $ip) {
-                $ip = $fresh['ip'];
-            }
-        }
+        // The address is reported as `ipSource=` and in the precheck line, so a
+        // stale seed is visible in the logs rather than something to infer.
     }
 
     $probe = sprintf(
