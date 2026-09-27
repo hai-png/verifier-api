@@ -1,0 +1,87 @@
+name: ci
+
+# The production image had never been built by CI. render.yaml records that an
+# earlier `env: node` service silently ignored the Dockerfile and ran without
+# Chromium, and this job is what would catch that class of regression (plus the
+# non-root USER and the /ready probe) before a deploy rather than after.
+on:
+  push:
+    branches: [selfhosted]
+  pull_request:
+    branches: [selfhosted]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build the production image
+        run: docker build -t verifier-api:ci .
+
+      - name: Chromium is present in the runtime image
+        run: docker run --rm --entrypoint /usr/bin/chromium verifier-api:ci --version
+
+      - name: The runtime image does not run as root
+        run: |
+          uid="$(docker run --rm --entrypoint id verifier-api:ci -u)"
+          if [ "$uid" = "0" ]; then echo "::error::image runs as root"; exit 1; fi
+          echo "runtime uid=$uid"
+
+      - name: The API boots and reports readiness
+        run: |
+          docker run -d --name verifier-api-ci \
+            -e PORT=3001 -e NODE_ENV=production \
+            -e ADMIN_SECRET=ci-admin-secret-0123456789abcdef \
+            -e DASHBOARD_SECRET=ci-dashboard-secret-0123456789abcdef \
+            -e SKIP_SCHEMA_PUSH=true -e KEEP_ALIVE_PINGER=false -e LOG_TO_FILES=false \
+            -p 3001:3001 verifier-api:ci
+
+          # /ready probes the database, so a boot without DATABASE_URL can never
+          # pass this. Assert the cheaper liveness path and the boot sequence:
+          # the container must stay up rather than crash-loop on a missing DB.
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:3001/health" >/dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::container never served /health"
+            docker logs verifier-api-ci
+            exit 1
+          fi
+
+          curl -fsS "http://127.0.0.1:3001/health" | tee /dev/stderr | grep -q '"status":"ok"'
+          # Reachable but not ready: the database is intentionally absent here.
+          code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3001/ready")"
+          if [ "$code" = "200" ]; then
+            echo "::error::/ready reported ready with no database configured"
+            exit 1
+          fi
+          echo "health=200 ready=$code (expected non-200 without a database)"
+
+      - name: Logs
+        if: failure()
+        run: docker logs verifier-api-ci || true

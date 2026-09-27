@@ -110,8 +110,15 @@ router.post('/', rateLimiter, permissionGate('verify-batch'), async (req, res, n
     }
   })();
 
+  // `success` describes the request, not the receipts: the batch itself ran and
+  // produced a per-item result set. It previously reported `success: true` even
+  // when every reference failed, which reads as "verified" to any client that
+  // only checks the flag. `succeeded`/`failed` carry the real outcome, and the
+  // HTTP status stays 200 because a definitive "no such receipt" is a valid
+  // answer — and a billable one: the provider was queried, which is the same
+  // policy single verification already applies.
   res.json({
-    success: true,
+    success: succeeded > 0,
     total: results.length,
     succeeded,
     failed,
