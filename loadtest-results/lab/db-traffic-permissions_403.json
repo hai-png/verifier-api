@@ -11,7 +11,12 @@
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 125.2
+      "totalMs": 125.3
+    },
+    {
+      "status": 402,
+      "class": "quota_402",
+      "totalMs": 124.3
     },
     {
       "status": 402,
@@ -21,12 +26,7 @@
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 124.5
-    },
-    {
-      "status": 402,
-      "class": "quota_402",
-      "totalMs": 124.1
+      "totalMs": 124.3
     },
     {
       "status": 402,
@@ -38,8 +38,7 @@
   "sqlPerRequest": 0.2,
   "comCountersPerRequest": {
     "Com_select": 2.2,
-    "Com_stmt_execute": 2,
-    "Com_stmt_prepare": 0.2
+    "Com_stmt_execute": 2
   },
   "controlNoise": {
     "statements": 4,
