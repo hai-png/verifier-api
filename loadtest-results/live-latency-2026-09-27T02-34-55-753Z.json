@@ -1,0 +1,400 @@
+{
+  "label": "live",
+  "workflowRunId": "36288719278",
+  "baseUrl": "https://verify.noveld.com.et",
+  "startedAt": "2026-09-27T02:30:46.340Z",
+  "profile": "latency",
+  "scenarios": [
+    "health",
+    "root",
+    "status_summary",
+    "ready",
+    "auth_missing_401",
+    "auth_invalid_403",
+    "verify_validate_400"
+  ],
+  "skippedScenarios": [],
+  "authenticated": true,
+  "authMode": "api-key",
+  "node": "v22.23.2",
+  "platform": "linux/x64",
+  "cpuCount": 4,
+  "maxSockets": 128,
+  "authPaceRps": 0.12,
+  "dns": {
+    "hostname": "verify.noveld.com.et",
+    "addresses": [
+      "216.24.57.18 (4)",
+      "216.24.57.16 (4)"
+    ],
+    "cname": "verifier-api-selfhosted.onrender.com"
+  },
+  "connections": {
+    "created": 1,
+    "reused": 195
+  },
+  "coldStart": null,
+  "latency": {
+    "stages": [
+      {
+        "label": "sequential ×25",
+        "aggregate": {
+          "count": 175,
+          "ttfb": {
+            "count": 175,
+            "mean": 192.14684846857133,
+            "min": 76.764299,
+            "max": 703.935528,
+            "p50": 92.726082,
+            "p75": 244.250312,
+            "p90": 416.088596,
+            "p95": 562.0716957,
+            "p99": 579.7257478399999
+          },
+          "total": {
+            "count": 175,
+            "mean": 192.3389430457142,
+            "min": 76.932297,
+            "max": 704.099376,
+            "p50": 92.914769,
+            "p75": 244.419267,
+            "p90": 416.27608879999997,
+            "p95": 562.2647896,
+            "p99": 579.8979228
+          },
+          "classes": {
+            "ok": 100,
+            "unauthenticated_401": 25,
+            "forbidden_403": 25,
+            "client_error_4xx": 25
+          },
+          "responseClasses": {
+            "ok": 100,
+            "unauthenticated_401": 25,
+            "forbidden_403": 25,
+            "client_error_4xx": 25
+          },
+          "cacheOutcomes": {},
+          "serverTiming": {
+            "rate_limit": {
+              "count": 25,
+              "mean": 44.263999999999996,
+              "min": 0,
+              "max": 309.3,
+              "p50": 0,
+              "p75": 0,
+              "p90": 159.58,
+              "p95": 167.06,
+              "p99": 275.5799999999997
+            },
+            "verify_total": {
+              "count": 25,
+              "mean": 44.412000000000006,
+              "min": 0.1,
+              "max": 309.4,
+              "p50": 0.2,
+              "p75": 0.2,
+              "p90": 159.68,
+              "p95": 167.23999999999998,
+              "p99": 275.7039999999997
+            }
+          },
+          "problemCount": 0,
+          "errorRate": 0
+        },
+        "rps": 0.7639386055282963,
+        "byScenario": {
+          "health": {
+            "count": 25,
+            "ttfb": {
+              "count": 25,
+              "mean": 85.91489436,
+              "min": 77.172424,
+              "max": 101.438665,
+              "p50": 88.650466,
+              "p75": 90.740094,
+              "p90": 93.3860814,
+              "p95": 97.87280379999999,
+              "p99": 100.79667676
+            },
+            "total": {
+              "count": 25,
+              "mean": 86.15036491999999,
+              "min": 77.453051,
+              "max": 101.906703,
+              "p50": 88.872606,
+              "p75": 90.933208,
+              "p90": 93.5956922,
+              "p95": 98.0575626,
+              "p99": 101.19537156
+            },
+            "classes": {
+              "ok": 25
+            },
+            "responseClasses": {
+              "ok": 25
+            },
+            "cacheOutcomes": {},
+            "serverTiming": {},
+            "problemCount": 0,
+            "errorRate": 0
+          },
+          "root": {
+            "count": 25,
+            "ttfb": {
+              "count": 25,
+              "mean": 85.8428264,
+              "min": 77.606774,
+              "max": 104.051902,
+              "p50": 82.260993,
+              "p75": 90.061719,
+              "p90": 96.09420700000001,
+              "p95": 98.1874938,
+              "p99": 102.66099951999999
+            },
+            "total": {
+              "count": 25,
+              "mean": 86.03647855999999,
+              "min": 77.9553,
+              "max": 104.216543,
+              "p50": 82.476247,
+              "p75": 90.279734,
+              "p90": 96.28809120000001,
+              "p95": 98.3820516,
+              "p99": 102.83491315999999
+            },
+            "classes": {
+              "ok": 25
+            },
+            "responseClasses": {
+              "ok": 25
+            },
+            "cacheOutcomes": {},
+            "serverTiming": {},
+            "problemCount": 0,
+            "errorRate": 0
+          },
+          "status_summary": {
+            "count": 25,
+            "ttfb": {
+              "count": 25,
+              "mean": 83.96679676000002,
+              "min": 79.034474,
+              "max": 93.308706,
+              "p50": 81.513126,
+              "p75": 91.281635,
+              "p90": 92.30061280000001,
+              "p95": 93.05866599999999,
+              "p99": 93.26865144
+            },
+            "total": {
+              "count": 25,
+              "mean": 84.1696708,
+              "min": 79.228035,
+              "max": 93.512233,
+              "p50": 81.684457,
+              "p75": 91.490084,
+              "p90": 92.49261340000001,
+              "p95": 93.2364778,
+              "p99": 93.46535428
+            },
+            "classes": {
+              "ok": 25
+            },
+            "responseClasses": {
+              "ok": 25
+            },
+            "cacheOutcomes": {},
+            "serverTiming": {},
+            "problemCount": 0,
+            "errorRate": 0
+          },
+          "ready": {
+            "count": 25,
+            "ttfb": {
+              "count": 25,
+              "mean": 237.78626520000006,
+              "min": 230.201912,
+              "max": 250.526614,
+              "p50": 236.349694,
+              "p75": 243.352388,
+              "p90": 245.0300708,
+              "p95": 247.25097839999998,
+              "p99": 249.87250407999997
+            },
+            "total": {
+              "count": 25,
+              "mean": 237.97557292000002,
+              "min": 230.378408,
+              "max": 250.706807,
+              "p50": 236.552834,
+              "p75": 243.522896,
+              "p90": 245.2255432,
+              "p95": 247.422168,
+              "p99": 250.04983628
+            },
+            "classes": {
+              "ok": 25
+            },
+            "responseClasses": {
+              "ok": 25
+            },
+            "cacheOutcomes": {},
+            "serverTiming": {},
+            "problemCount": 0,
+            "errorRate": 0
+          },
+          "auth_missing_401": {
+            "count": 25,
+            "ttfb": {
+              "count": 25,
+              "mean": 86.61338791999998,
+              "min": 76.764299,
+              "max": 95.852515,
+              "p50": 88.874051,
+              "p75": 91.315547,
+              "p90": 92.9011438,
+              "p95": 94.620761,
+              "p99": 95.64494403999998
+            },
+            "total": {
+              "count": 25,
+              "mean": 86.78797048,
+              "min": 76.932297,
+              "max": 96.024506,
+              "p50": 89.040395,
+              "p75": 91.491211,
+              "p90": 93.07990180000002,
+              "p95": 94.7905338,
+              "p99": 95.81647016000001
+            },
+            "classes": {
+              "unauthenticated_401": 25
+            },
+            "responseClasses": {
+              "unauthenticated_401": 25
+            },
+            "cacheOutcomes": {},
+            "serverTiming": {},
+            "problemCount": 0,
+            "errorRate": 0
+          },
+          "auth_invalid_403": {
+            "count": 25,
+            "ttfb": {
+              "count": 25,
+              "mean": 246.91344579999995,
+              "min": 237.217228,
+              "max": 258.823327,
+              "p50": 247.401634,
+              "p75": 251.163587,
+              "p90": 255.6210572,
+              "p95": 256.4067804,
+              "p99": 258.27275164
+            },
+            "total": {
+              "count": 25,
+              "mean": 247.08726916,
+              "min": 237.403473,
+              "max": 258.988812,
+              "p50": 247.607823,
+              "p75": 251.33976,
+              "p90": 255.7850644,
+              "p95": 256.5722832,
+              "p99": 258.43829112
+            },
+            "classes": {
+              "forbidden_403": 25
+            },
+            "responseClasses": {
+              "forbidden_403": 25
+            },
+            "cacheOutcomes": {},
+            "serverTiming": {},
+            "problemCount": 0,
+            "errorRate": 0
+          },
+          "verify_validate_400": {
+            "count": 25,
+            "ttfb": {
+              "count": 25,
+              "mean": 517.99032284,
+              "min": 394.35488,
+              "max": 703.935528,
+              "p50": 556.781639,
+              "p75": 566.142328,
+              "p90": 575.469888,
+              "p95": 584.4396151999999,
+              "p99": 675.6755193599997
+            },
+            "total": {
+              "count": 25,
+              "mean": 518.16527448,
+              "min": 394.522651,
+              "max": 704.099376,
+              "p50": 557.01807,
+              "p75": 566.307596,
+              "p90": 575.6316426000001,
+              "p95": 584.635197,
+              "p99": 675.8490640799997
+            },
+            "classes": {
+              "client_error_4xx": 25
+            },
+            "responseClasses": {
+              "client_error_4xx": 25
+            },
+            "cacheOutcomes": {},
+            "serverTiming": {
+              "rate_limit": {
+                "count": 25,
+                "mean": 44.263999999999996,
+                "min": 0,
+                "max": 309.3,
+                "p50": 0,
+                "p75": 0,
+                "p90": 159.58,
+                "p95": 167.06,
+                "p99": 275.5799999999997
+              },
+              "verify_total": {
+                "count": 25,
+                "mean": 44.412000000000006,
+                "min": 0.1,
+                "max": 309.4,
+                "p50": 0.2,
+                "p75": 0.2,
+                "p90": 159.68,
+                "p95": 167.23999999999998,
+                "p99": 275.7039999999997
+              }
+            },
+            "problemCount": 0,
+            "errorRate": 0
+          }
+        }
+      }
+    ],
+    "timeline": []
+  },
+  "load": null,
+  "soak": null,
+  "failures": [],
+  "budgets": [
+    {
+      "name": "valid measurement",
+      "passed": true,
+      "detail": "At least one non-failing measured response is required; all-failure runs cannot pass."
+    },
+    {
+      "name": "scenario contracts",
+      "passed": true,
+      "detail": "Unexpected endpoint status codes invalidate the run, independently of transport budgets."
+    }
+  ],
+  "authHint": null,
+  "memory": {
+    "peakRssMb": 66,
+    "freeMemMb": 15019
+  }
+}
