@@ -1,1 +1,1 @@
-{"status":"operational","timestamp":"2026-09-27T08:47:55.129Z","uptimeSeconds":115,"diagnostics":null,"providers":["telebirr","cbe","cbebirr","dashen","abyssinia","mpesa","awash","zemen"],"capabilities":{"batchVerification":true,"imageVerification":false,"hostedCommerce":true}}
+{"status":"operational","timestamp":"2026-09-27T09:34:13.048Z","uptimeSeconds":114,"diagnostics":null,"providers":["telebirr","cbe","cbebirr","dashen","abyssinia","mpesa","awash","zemen"],"capabilities":{"batchVerification":true,"imageVerification":false,"hostedCommerce":true}}
