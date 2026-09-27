@@ -116,3 +116,38 @@ test('pool size: default when absent, explicit URL kept, env override wins', () 
   assert.equal(resolveDatasourceUrl(undefined, '12'), undefined);
   assert.equal(resolveDatasourceUrl('not a url', '12'), 'not a url');
 });
+
+test('credit charge is one conditional UPDATE; zero rows means insufficient credits', async () => {
+  const { chargeVerificationCredits, refundVerificationCredits } = await import('../utils/quotaCharge');
+  const statements: string[] = [];
+  let balance = 1;
+  const db: any = {
+    $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('?');
+      statements.push(sql);
+      assert.doesNotMatch(sql, /BEGIN|COMMIT/);
+      if (sql.includes('- ?')) {
+        const [units, , min] = values as number[];
+        if (balance < min) return 0;
+        balance -= units; return 1;
+      }
+      balance += values[0] as number; return 1;
+    },
+    workspace: { updateMany: async () => { throw new Error('fallback must not run'); } },
+  };
+  assert.equal(await chargeVerificationCredits('w1', 1, db), true);
+  assert.equal(await chargeVerificationCredits('w1', 1, db), false);
+  await refundVerificationCredits('w1', 1, db);
+  assert.equal(balance, 1);
+  assert.equal(statements.length, 3);
+  assert.match(statements[0], /verificationCredits` >= \?/);
+});
+
+test('credit charge falls back to Prisma updateMany when raw SQL fails', async () => {
+  const { chargeVerificationCredits } = await import('../utils/quotaCharge');
+  const db: any = {
+    $executeRaw: async () => { throw new Error('dialect'); },
+    workspace: { updateMany: async (args: any) => { assert.equal(args.where.verificationCredits.gte, 2); return { count: 1 }; } },
+  };
+  assert.equal(await chargeVerificationCredits('w1', 2, db), true);
+});

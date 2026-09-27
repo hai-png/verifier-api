@@ -390,16 +390,17 @@ jobs:
             --out-dir loadtest-results \
             | tee loadtest-console.txt
 
-      - name: Assert single-query API key auth ran on real MySQL
+      - name: Assert single-statement auth + credit writes ran on real MySQL
         # The raw JOIN falls back to the two-query Prisma include on error, which
         # would keep every test green while silently losing the latency win.
         run: |
-          if grep -q 'Single-query API key lookup failed' api.log api-restart.log 2>/dev/null; then
-            grep -h -A3 'Single-query API key lookup failed' api.log api-restart.log | head -20
-            echo "::error::Single-query API key lookup fell back to Prisma include on MySQL"
+          pattern='Single-query API key lookup failed|Single-statement credit write failed'
+          if grep -qE "$pattern" api.log api-restart.log 2>/dev/null; then
+            grep -hE -A3 "$pattern" api.log api-restart.log | head -20
+            echo "::error::A raw fast path fell back to Prisma on MySQL"
             exit 1
           fi
-          mkdir -p loadtest-results/lab && echo "single-query API key lookup: no fallback observed" | tee -a loadtest-results/lab/auth-lookup.txt
+          mkdir -p loadtest-results/lab && echo "single-query key lookup + single-statement credit writes: no fallback observed ($(date -u +%FT%TZ))" | tee loadtest-results/lab/auth-lookup.txt
 
       - name: Server logs on failure
         if: failure()
