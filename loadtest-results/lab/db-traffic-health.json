@@ -11,22 +11,22 @@
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 2.6
+      "totalMs": 2.5
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 1.5
-    },
-    {
-      "status": 200,
-      "class": "ok",
-      "totalMs": 1.2
+      "totalMs": 1.7
     },
     {
       "status": 200,
       "class": "ok",
       "totalMs": 1.2
+    },
+    {
+      "status": 200,
+      "class": "ok",
+      "totalMs": 1.1
     },
     {
       "status": 200,
