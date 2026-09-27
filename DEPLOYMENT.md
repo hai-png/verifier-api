@@ -534,9 +534,19 @@ workspace overview, manual verification, API keys, payouts, payment links,
 webhooks). It calls the Render API with `Authorization: Bearer` tokens.
 
 - **Local:** `cd web && npm install && NEXT_PUBLIC_API_URL=http://localhost:3001 npm run dev`
-- **Deploy:** push to `selfhosted` → `.github/workflows/deploy-web.yml` builds
-  `web/out` and publishes to the `noveld-pay-dashboard` Pages project.
-  Needs repo secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
+- **`NEXT_PUBLIC_API_URL` is required at build time.** It is inlined into the
+  client bundle, so changing it means rebuilding. There is no default: if it is
+  unset the build warns and the dashboard calls its own origin, which on a static
+  export fails every request. (It previously defaulted to one specific
+  third-party Render host — on a self-hosted fork that silently posted users'
+  credentials and API keys to a server the operator did not control.)
+- **Deploy:** push to `selfhosted`, then build `web/out` and publish it to the
+  `noveld-pay-dashboard` Cloudflare Pages project. This document and
+  `web/README.md` both used to name `.github/workflows/deploy-web.yml` as doing
+  that automatically; no such workflow exists in the repository, so the Pages
+  build is whatever Cloudflare is configured to run. Set `NEXT_PUBLIC_API_URL` in
+  the Pages project's build environment variables — a Pages build will not read
+  `web/.env.example`, and `web/.env` is not committed.
 - **Custom domain:** CNAME `dashboard.noveld.com.et` → `<project>.pages.dev`.
 - **Important:** the API's `VERITAS_APP_URL` must be the dashboard URL, so
   password-reset emails link to a real `/reset-password` page.

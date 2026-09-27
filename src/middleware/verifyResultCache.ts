@@ -65,9 +65,19 @@ export function createVerificationCache(options: { ttlMs?: number; maxEntries?: 
         return { result: { success: false, httpStatus: 503, error: 'Verification capacity reached. Retry shortly.' }, cache: 'bypass' };
       }
       // Always settle, so the `finally` below always releases the slot.
+      //
+      // The timer is deliberately NOT unref'd. It is the only thing that makes
+      // `task` settle when the provider call hangs, so unref'ing it lets the
+      // event loop drain with the promise still pending: the slot is never
+      // released, the caller is never answered, and the process can exit
+      // mid-request. That is exactly what happened in the test suite — four
+      // concurrency tests were silently reported as "cancelled" ("Promise
+      // resolution is still pending but the event loop has already resolved")
+      // instead of running, because nothing else held the loop open. A ref'd
+      // timer bounded by executeTimeoutMs cannot keep the process alive longer
+      // than that bound, and graceful shutdown still force-exits.
       const task = new Promise<SmartVerifyResult>((resolve, reject) => {
         const timer = setTimeout(() => reject(new ExecuteTimeoutError(executeTimeoutMs)), executeTimeoutMs);
-        timer.unref?.();
         Promise.resolve().then(execute).then(
           (value) => { clearTimeout(timer); resolve(value); },
           (error) => { clearTimeout(timer); reject(error); },

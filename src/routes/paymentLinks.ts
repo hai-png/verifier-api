@@ -13,7 +13,7 @@
 import { Prisma } from '@prisma/client';
 import { Router, Request, Response, NextFunction } from 'express';
 import { runSmartVerify } from '../services/verifyUniversal';
-import { accountMatches, cbeAccountMatches, extractPaymentDetails, maskCbeAccount } from '../utils/paymentMatch';
+import { extractPaymentDetails, maskCbeAccount, recipientMatches } from '../utils/paymentMatch';
 import { sendBuyerPurchaseEmail } from '../utils/purchaseEmail';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
@@ -1019,10 +1019,9 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
     return;
   }
 
-  const { amount: verifiedAmount, account: verifiedAccount } = extractPaymentDetails(
-    verifyResult.data,
-    trimmedProvider,
-  );
+  const paymentDetails = extractPaymentDetails(verifyResult.data, trimmedProvider);
+  const verifiedAmount = paymentDetails.amount;
+  const verifiedAccount = paymentDetails.account;
 
   if (verifiedAmount === null || isNaN(verifiedAmount)) {
     res.status(422).json({
@@ -1038,17 +1037,19 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
     });
     return;
   }
-  const recipientMatches =
-    trimmedProvider === 'cbe'
-      ? cbeAccountMatches(verifiedAccount, payoutAccount.account)
-      : accountMatches(verifiedAccount, payoutAccount.account);
+  // One shared check: provider-specific matching plus the explicit "this
+  // provider reports no account" exception. A receipt that yields no account is
+  // a refusal, not a pass.
+  const recipientOk = recipientMatches(trimmedProvider, paymentDetails, payoutAccount.account);
 
-  if (!recipientMatches) {
+  if (!recipientOk) {
     const verifiedRecord = verifyResult.data as Record<string, unknown> | undefined;
+    const accountMissing = paymentDetails.account === null;
     logger.warn('payment-link confirm recipient mismatch', {
       paymentLinkId: paymentLink.id,
       provider: trimmedProvider,
       reference: trimmedReference,
+      code: accountMissing ? 'RECIPIENT_NOT_REPORTED' : 'RECIPIENT_MISMATCH',
       verifiedAmount,
       expectedAmount: paymentLink.fixedAmount,
       verifiedAccount,
@@ -1061,9 +1062,17 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
         typeof payoutAccount.accountHolderName === 'string' ? payoutAccount.accountHolderName : null,
     });
 
+    // Two different failures reach this branch, and telling a buyer "wrong
+    // account" when the receipt simply did not name one sends everyone — buyer,
+    // merchant, support — chasing a problem that did not happen. A receipt that
+    // yields no account is refused rather than trusted (that fail-open was the
+    // settlement bypass), but it is reported as what it is.
     res.status(422).json({
       success: false,
-      error: 'The payment was not sent to the expected payout account.',
+      code: accountMissing ? 'RECIPIENT_NOT_REPORTED' : 'RECIPIENT_MISMATCH',
+      error: accountMissing
+        ? 'The provider receipt did not include a credited account, so the recipient could not be confirmed. The payment was not accepted automatically — the merchant can settle it manually from the dashboard.'
+        : 'The payment was not sent to the expected payout account.',
     });
     return;
   }

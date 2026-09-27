@@ -1,12 +1,29 @@
-/** Base URL of the verifier-api. Baked in at build time. */
-export const API_URL =
-  (process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com").replace(/\/$/, "");
+import { API_BASE } from "./config";
 
-const TOKEN_KEY = "nvd_token";
+/** Base URL of the verifier-api. Baked in at build time; see lib/config.ts. */
+export const API_URL = API_BASE;
+
+/**
+ * The session token key.
+ *
+ * This said `nvd_token` while app/page.tsx and app/verify/page.tsx — the only two
+ * places that actually sign a user in or out — read and wrote `noveld_token`. So
+ * getToken() returned null for every logged-in user, setToken() wrote a key
+ * nothing read, and the two names were one refactor away from a dashboard that
+ * silently loses its session. There is now one key, exported, and the pages use
+ * these helpers instead of touching localStorage directly.
+ *
+ * The value stays `noveld_token` because that is the key real users' browsers
+ * already hold; renaming it would sign everybody out on deploy.
+ */
+export const TOKEN_KEY = "noveld_token";
 const WORKSPACE_KEY = "nvd_workspace_id";
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
+  // A token written under the abandoned `nvd_token` name is a live credential
+  // sitting in localStorage that no logout path would ever remove. Drop it.
+  window.localStorage.removeItem("nvd_token");
   return window.localStorage.getItem(TOKEN_KEY);
 }
 

@@ -4,6 +4,7 @@ import type { ConnectionOptions, Job } from 'bullmq';
 import { Queue, Worker } from 'bullmq';
 import { Prisma } from '@prisma/client';
 import logger from '../utils/logger';
+import { decryptSecret } from '../utils/secretVault';
 import { prisma } from '../utils/prisma';
 import { emitWorkspaceEvent } from '../utils/workspaceEvents';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
@@ -228,7 +229,9 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
 
   const payload = delivery.payload as unknown as WebhookPayload;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const signature = buildSignature(payload, delivery.webhook.signingSecret);
+  // The stored value is ciphertext whenever WEBHOOK_SECRET_KEY is set; legacy
+  // rows are plaintext and decryptSecret passes those through untouched.
+  const signature = buildSignature(payload, decryptSecret(delivery.webhook.signingSecret));
   if (signature) {
     headers['X-Veritas-Signature'] = `sha256=${signature}`;
   }

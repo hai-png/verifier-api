@@ -2,6 +2,7 @@ import axios from 'axios';
 import pdfParse from 'pdf-parse';
 import { VerifyResult } from './verifyCBE';
 import logger from '../utils/logger';
+import { receiptTextDigest, redactReceiptRecord } from '../utils/redactPii';
 
 export interface CBEBirrReceipt {
   customerName: string;
@@ -22,15 +23,28 @@ export interface CBEBirrReceipt {
   paymentChannel: string;
 }
 
+/**
+ * Every other provider adapter returns `{ success: boolean, ...fields }`. This one
+ * used to return a bare receipt object on success and `{ success: false }` on
+ * failure, which forced every caller to special-case it — and forced
+ * `executeVerification` to treat "no `success` field at all" as success, because
+ * that was the only way a CBE Birr receipt could pass. That is a fail-open
+ * contract: any adapter returning an unrecognised shape would be reported as a
+ * confirmed payment. The envelope is now consistent, so the dispatcher can demand
+ * positive proof.
+ */
 export async function verifyCBEBirr(
   receiptNumber: string,
   phoneNumber: string
-): Promise<CBEBirrReceipt | { success: false; error: string }> {
+): Promise<(CBEBirrReceipt & { success: true }) | { success: false; error: string }> {
   try {
-    logger.info(`[CBEBirr] Starting verification for receipt: ${receiptNumber}, phone: ${phoneNumber}`);
+    logger.info(`[CBEBirr] Starting verification for receipt ${receiptNumber.length} chars, phone ${phoneNumber.replace(/\d(?=\d{2})/g, '*')}`);
 
     // Construct the CBE Birr URL
-    const url = `https://cbepay1.cbe.com.et/aureceipt?TID=${receiptNumber}&PH=${phoneNumber}`;
+    // Both values are caller-supplied and land in a query string, so both are
+    // encoded. Interpolated raw, a receipt number of `X&PH=2519...` appended a
+    // second parameter and changed whose receipt the bank was asked for.
+    const url = `https://cbepay1.cbe.com.et/aureceipt?TID=${encodeURIComponent(receiptNumber)}&PH=${encodeURIComponent(phoneNumber)}`;
     logger.info(`[CBEBirr] Fetching PDF from: ${url}`);
 
     // Fetch the PDF
@@ -64,10 +78,13 @@ export async function verifyCBEBirr(
     const pdfData = await pdfParse(pdfBuffer);
     const pdfText = pdfData.text;
 
-    logger.info(`[CBEBirr] PDF text extracted (${pdfText.length} characters)`);
-    logger.info('[CBEBirr] PDF content preview:', pdfText.substring(0, 1000));
-    logger.info('[CBEBirr] Full PDF text content:');
-    logger.info(pdfText);
+    // A CBE Birr receipt is a bank statement: payer name, phone, account. It used
+    // to be written to the log three times over at INFO, which turned the log
+    // directory into an unencrypted copy of customer banking data. The digest
+    // below carries every fact needed to diagnose a parse failure (empty? HTML?
+    // which labels present?) without any value.
+    logger.info('[CBEBirr] PDF text extracted:', receiptTextDigest(pdfText));
+    logger.debug('[CBEBirr] Raw PDF text (debug only, contains PII):', pdfText);
 
     // Parse the receipt data
     const receiptData = parseCBEBirrReceipt(pdfText);
@@ -77,8 +94,10 @@ export async function verifyCBEBirr(
       return { success: false, error: 'Failed to parse receipt data from PDF' };
     }
 
-    logger.info('[CBEBirr] Successfully parsed receipt data:', receiptData);
-    return receiptData;
+    logger.info('[CBEBirr] Successfully parsed receipt data:', redactReceiptRecord(receiptData));
+    // Receipt fields stay top-level: `extractPaymentDetails` and API consumers
+    // read `paidAmount` / `creditAccount` straight off the payload.
+    return { success: true, ...receiptData };
 
   } catch (error) {
     logger.error('[CBEBirr] Error during verification:', error);
@@ -91,8 +110,7 @@ export async function verifyCBEBirr(
 
 function parseCBEBirrReceipt(pdfText: string): CBEBirrReceipt | null {
   try {
-    logger.info('[CBEBirr] Starting PDF text parsing...');
-    logger.info('[CBEBirr] Full PDF text for debugging:', pdfText);
+    logger.debug('[CBEBirr] Starting PDF text parsing...', receiptTextDigest(pdfText));
 
     const extractValue = (text: string, pattern: RegExp): string => {
       const match = text.match(pattern);
@@ -159,7 +177,7 @@ function parseCBEBirrReceipt(pdfText: string): CBEBirrReceipt | null {
       paymentChannel
     };
 
-    logger.info('[CBEBirr] Extracted receipt data:', receiptData);
+    logger.debug('[CBEBirr] Extracted receipt data:', redactReceiptRecord(receiptData));
 
     // Validate that we have at least some essential fields
     if (!customerName && !receiptNumber && !amount) {

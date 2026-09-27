@@ -20,6 +20,9 @@ import { workspaceDeliveryCacheState } from '../utils/workspaceEvents';
 import { quotaRefundState } from '../utils/quotaCharge';
 import { safeSecretEquals } from '../utils/secretCompare';
 import { dbMetricsSnapshot } from '../utils/dbMetrics';
+import { tlsPolicyState } from '../utils/tlsPolicy';
+import { clientIpTrustState } from '../utils/requestIp';
+import { secretVaultState } from '../utils/secretVault';
 
 /**
  * Lightweight process diagnostics.
@@ -58,6 +61,12 @@ function buildDiagnostics() {
         },
         rateLimiter: rateLimiterState(),
         quotaRefunds: quotaRefundState(),
+        // Both of these describe how much an outside caller can influence an
+        // IP-based throttle or a provider TLS decision. They are booleans and
+        // hostnames only — no secret values.
+        clientIp: clientIpTrustState(),
+        tls: tlsPolicyState(),
+        secretVault: secretVaultState(),
         // The number that matters for capacity planning: how many SQL statements
         // one request costs, measured on this instance (see DEPLOYMENT.md).
         database: dbMetricsSnapshot(),
@@ -98,13 +107,18 @@ const PROVIDERS = [
  * version, cache sizes, buffer depths, which secrets are configured, and real
  * SQL statement text. That is a free reconnaissance and memory-pressure oracle
  * for anyone who can reach the URL, so it is now gated on a secret.
+ *
+ * The secret is accepted from headers only. A `?secret=` query parameter used to
+ * be an alternative, but query strings are the one part of a request that gets
+ * copied everywhere — proxy access logs, browser history, analytics, the
+ * `Referer` header of any page linked from the response. A credential that lands
+ * in an access log is not a credential.
  */
 function diagnosticsAuthorised(req: Request): boolean {
     const secret = process.env.STATUS_MONITOR_SECRET;
     if (!secret) return false;
     const presented =
         (req.headers['x-status-secret'] as string | undefined) ??
-        (req.query.secret as string | undefined) ??
         (req.headers['x-admin-key'] as string | undefined);
     return safeSecretEquals(presented, secret) || safeSecretEquals(presented, process.env.ADMIN_SECRET);
 }

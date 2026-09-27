@@ -12,7 +12,7 @@ import { createWriteBehind } from '../utils/writeBehind';
 const USAGE_LOG_FLUSH_MS = Number(process.env.USAGE_LOG_FLUSH_MS ?? 2_000);
 const USAGE_LOG_MAX_BATCH = Number(process.env.USAGE_LOG_MAX_BATCH ?? 500);
 
-interface UsageLogEntry {
+export interface UsageLogEntry {
   apiKeyId: string;
   endpoint: string;
   method: string;
@@ -29,6 +29,22 @@ const usageLogWriter = createWriteBehind<UsageLogEntry>({
     await prisma.usageLog.createMany({ data: batch });
   },
 });
+
+/**
+ * Queue usage-log rows through the same write-behind buffer the request logger
+ * uses.
+ *
+ * `/verify-batch` used to write its rows with its own `void (async () =>
+ * createMany(...))()`. That is fire-and-forget in the strictest sense: nothing
+ * awaited it, so a graceful shutdown disconnected Prisma with the insert still in
+ * flight and the rows were silently lost, and a failure was only visible as one
+ * error line with no retry. Routing it through this buffer means batch rows are
+ * flushed on the same interval and drained by the same shutdown path as every
+ * other usage record.
+ */
+export function enqueueUsageLogs(entries: UsageLogEntry[]): void {
+  for (const entry of entries) usageLogWriter.push(entry);
+}
 
 /** Persist buffered usage logs (called during graceful shutdown). */
 export const flushUsageLogs = async (): Promise<void> => {
@@ -72,6 +88,49 @@ function setBounded<V>(map: Map<string, V>, key: string, value: V): void {
     }
 }
 
+/**
+ * A path segment that is an identifier rather than a route component: a long
+ * opaque token, a UUID, a run of digits. Collapsing these is what keeps the
+ * endpoint label bounded when a request matched no route at all.
+ */
+const IDENTIFIER_SEGMENT = /^(?:\d+|[0-9a-fA-F][0-9a-fA-F-]{15,}|[A-Za-z0-9_-]{20,})$/;
+const MAX_LABEL_SEGMENTS = 6;
+
+/** `/pl/cm3x9f2k0001abc/pay` → `/pl/:id/pay`. */
+function normaliseRawPath(originalUrl: string): string {
+  const path = originalUrl.split('?')[0].split('#')[0];
+  const segments = path.split('/').filter(Boolean);
+  const kept = segments.slice(0, MAX_LABEL_SEGMENTS).map((seg) => (IDENTIFIER_SEGMENT.test(seg) ? ':id' : seg));
+  return `/${kept.join('/')}${segments.length > MAX_LABEL_SEGMENTS ? '/…' : ''}` || '/';
+}
+
+/**
+ * The label a request is counted and logged under.
+ *
+ * This used to be the raw path, `${method} ${originalUrl.split('?')[0]}`. Every
+ * distinct receipt reference, payment-link id and crawler probe therefore became
+ * its own endpoint — in the in-memory stats map (where it evicted the real routes
+ * within minutes) and, worse, in the `UsageLog.endpoint` column, which made the
+ * table's cardinality grow with traffic forever and turned the startup
+ * `GROUP BY method, endpoint` into a full scan of every URL ever requested.
+ *
+ * Express has matched a route by the time `finish` fires, so the route pattern is
+ * available and is the correct label. Requests that matched nothing are counted
+ * under their collapsed path for stats (useful — it is how a crawl shows up) but
+ * recorded as `(unrouted)` in the database, where unbounded cardinality is
+ * expensive.
+ */
+export function endpointLabels(req: Request): { statsKey: string; logEndpoint: string } {
+  const method = req.method;
+  const route = (req as Request & { route?: { path?: string } }).route;
+  if (route?.path) {
+    const label = `${method} ${req.baseUrl || ''}${route.path}`;
+    return { statsKey: label, logEndpoint: label };
+  }
+  const collapsed = normaliseRawPath(req.originalUrl);
+  return { statsKey: `${method} ${collapsed}`, logEndpoint: `${method} (unrouted)` };
+}
+
 const statsCache = {
   totalRequests: 0,
   endpointStats: new Map<string, {
@@ -97,9 +156,21 @@ export const initializeStatsCache = async () => {
     // Get total requests
     statsCache.totalRequests = await prisma.usageLog.count();
 
-    // Get endpoint stats
+    // Both of these aggregate the whole UsageLog table and every group they
+    // return is loaded into memory. Without a LIMIT the row count is the number
+    // of distinct endpoints/IPs the service has ever seen, which grows without
+    // bound — on a 512 MB instance a busy table made this the thing that OOM'd
+    // the process during boot, before it could serve a single request. The
+    // busiest groups are the only ones worth preloading; the rest are counted
+    // from the first request that touches them.
+    // Clamped, and an integer by construction: this value goes into a LIMIT
+    // clause, and a mistyped STATS_MAX_KEYS must not turn into "load the table".
+    const limit = Number.isInteger(STATS_MAX_KEYS) && STATS_MAX_KEYS > 0
+      ? Math.min(STATS_MAX_KEYS, 10_000)
+      : 5_000;
+
     const endpointStats = await prisma.$queryRaw`
-      SELECT 
+      SELECT
         CONCAT(method, ' ', endpoint) as endpoint,
         COUNT(*) as count,
         SUM(CASE WHEN statusCode < 400 THEN 1 ELSE 0 END) as successCount,
@@ -107,12 +178,13 @@ export const initializeStatsCache = async () => {
         AVG(responseTime) as avgResponseTime
       FROM UsageLog
       GROUP BY method, endpoint
+      ORDER BY count DESC
+      LIMIT ${limit}
     `;
 
-    // Populate cache
     if (Array.isArray(endpointStats)) {
       endpointStats.forEach((stat: any) => {
-        statsCache.endpointStats.set(stat.endpoint, {
+        setBounded(statsCache.endpointStats, String(stat.endpoint), {
           count: Number(stat.count),
           successCount: Number(stat.successCount),
           failureCount: Number(stat.failureCount),
@@ -121,20 +193,25 @@ export const initializeStatsCache = async () => {
       });
     }
 
-    // Get IP stats
     const ipStats = await prisma.$queryRaw`
       SELECT ip, COUNT(*) as count
       FROM UsageLog
       GROUP BY ip
+      ORDER BY count DESC
+      LIMIT ${limit}
     `;
 
     if (Array.isArray(ipStats)) {
       ipStats.forEach((stat: any) => {
-        statsCache.ipStats.set(stat.ip, Number(stat.count));
+        setBounded(statsCache.ipStats, String(stat.ip), Number(stat.count));
       });
     }
 
-    logger.info('Stats cache initialized from database');
+    logger.info('Stats cache initialized from database', {
+      endpointKeys: statsCache.endpointStats.size,
+      ipKeys: statsCache.ipStats.size,
+      limit,
+    });
   } catch (error) {
     logger.error('Error initializing stats cache:', error);
   }
@@ -165,20 +242,6 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
   // Update in-memory cache for quick access
   statsCache.totalRequests++;
 
-  // Track by endpoint
-  const endpoint = `${req.method} ${req.originalUrl.split('?')[0]}`;
-  if (!statsCache.endpointStats.has(endpoint)) {
-    setBounded(statsCache.endpointStats, endpoint, {
-      count: 0,
-      successCount: 0,
-      failureCount: 0,
-      avgResponseTime: 0
-    });
-  }
-  const endpointStat = statsCache.endpointStats.get(endpoint)!;
-  endpointStat.count++;
-  setBounded(statsCache.endpointStats, endpoint, endpointStat);
-
   // Track by IP address
   const ipCount = statsCache.ipStats.get(requestIp) || 0;
   setBounded(statsCache.ipStats, requestIp, ipCount + 1);
@@ -186,28 +249,34 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
   // Use the 'finish' event to capture response completion
   res.on('finish', async () => {
     const responseTime = Date.now() - start;
-    // The entry can have been evicted by the cap while the request was in
-    // flight, so this lookup is not guaranteed to resolve.
-    const finished = statsCache.endpointStats.get(endpoint);
-    if (!finished) return;
-
+    // Counted here rather than before routing because the route pattern — the
+    // only bounded label available — does not exist until Express has matched.
+    const { statsKey, logEndpoint } = endpointLabels(req);
+    const endpointStat = statsCache.endpointStats.get(statsKey) ?? {
+      count: 0, successCount: 0, failureCount: 0, avgResponseTime: 0,
+    };
+    endpointStat.count++;
     if (res.statusCode < 400) {
-      finished.successCount++;
+      endpointStat.successCount++;
     } else {
-      finished.failureCount++;
+      endpointStat.failureCount++;
     }
-
-    finished.avgResponseTime =
-      (finished.avgResponseTime * (finished.count - 1) + responseTime) / finished.count;
+    endpointStat.avgResponseTime =
+      (endpointStat.avgResponseTime * (endpointStat.count - 1) + responseTime) / endpointStat.count;
+    setBounded(statsCache.endpointStats, statsKey, endpointStat);
 
     // Get auth context for logging
     const context = getWorkspaceContext(req);
     const source = context?.source ?? ((req as any).publicVerify ? 'public' : 'unknown');
     const workspaceId = context?.workspace.id || 'none';
     
-    // Get a safe representation of the key for logging (prefix or legacy substring)
+    // Only the stored, non-secret prefix identifies a key in a log line. Keys
+    // created before prefixes existed fall back to a substring of the secret —
+    // eight characters of a credential in an append-only log is enough to cut the
+    // brute-force space substantially, and logs outlive the key rotation that was
+    // supposed to retire it.
     const keyDetails = (req as any).apiKeyData;
-    const safeKeyLog = keyDetails ? (keyDetails.prefix || (keyDetails.key ? keyDetails.key.substring(0, 8) : 'unknown')) : 'none';
+    const safeKeyLog = keyDetails ? (keyDetails.prefix || 'legacy-key-no-prefix') : 'none';
 
     logger.info(`[${requestId}] Response sent in ${responseTime}ms with status ${res.statusCode}`, {
       statusCode: res.statusCode,
@@ -228,7 +297,7 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
     if (context?.source === 'api_key' && (req as any).apiKeyData) {
       usageLogWriter.push({
         apiKeyId: (req as any).apiKeyData.id,
-        endpoint,
+        endpoint: logEndpoint,
         method: req.method,
         statusCode: res.statusCode,
         responseTime,
@@ -241,13 +310,31 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
 };
 
 // Get usage statistics with cache fallback
+/**
+ * How many groups an admin stats call may return.
+ *
+ * Both queries below used to be unbounded: one `GROUP BY` over every distinct
+ * endpoint and every distinct IP the service had ever logged, serialised whole
+ * into the JSON response. With the endpoint column historically storing raw
+ * request paths, that was a multi-megabyte response and a full-table aggregation
+ * on every call to /admin/usage-summary — and it handed the admin-key holder a
+ * complete census of client IP addresses, which is personal data nobody needed
+ * in bulk. An operator wants the busiest groups, so that is what is returned.
+ */
+const STATS_RESPONSE_LIMIT = Math.min(
+  Number.isInteger(Number(process.env.STATS_RESPONSE_LIMIT)) && Number(process.env.STATS_RESPONSE_LIMIT) > 0
+    ? Number(process.env.STATS_RESPONSE_LIMIT)
+    : 200,
+  1_000,
+);
+
 export const getUsageStats = async () => {
   try {
     // Try to get fresh data from database
     const totalLogs = await prisma.usageLog.count();
 
     const endpointStats = await prisma.$queryRaw`
-      SELECT 
+      SELECT
         CONCAT(method, ' ', endpoint) as endpoint,
         COUNT(*) as count,
         SUM(CASE WHEN statusCode < 400 THEN 1 ELSE 0 END) as successCount,
@@ -255,12 +342,16 @@ export const getUsageStats = async () => {
         AVG(responseTime) as avgResponseTime
       FROM UsageLog
       GROUP BY method, endpoint
+      ORDER BY count DESC
+      LIMIT ${STATS_RESPONSE_LIMIT}
     `;
 
     const ipStats = await prisma.$queryRaw`
       SELECT ip, COUNT(*) as count
       FROM UsageLog
       GROUP BY ip
+      ORDER BY count DESC
+      LIMIT ${STATS_RESPONSE_LIMIT}
     `;
 
     // Convert raw results to proper format
@@ -286,7 +377,14 @@ export const getUsageStats = async () => {
     return {
       totalRequests: totalLogs,
       endpointStats: formattedEndpointStats,
-      ipStats: formattedIpStats
+      ipStats: formattedIpStats,
+      // Say out loud that these are the top groups, so nobody reads a truncated
+      // list as a complete one.
+      truncated: {
+        endpoints: Object.keys(formattedEndpointStats).length >= STATS_RESPONSE_LIMIT,
+        ips: Object.keys(formattedIpStats).length >= STATS_RESPONSE_LIMIT,
+        limit: STATS_RESPONSE_LIMIT,
+      },
     };
   } catch (error) {
     logger.error('Error fetching usage stats from database:', error);

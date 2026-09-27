@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { API_BASE as CONFIGURED_API_BASE } from "@/lib/config";
 import SiteNav from "@/components/SiteNav";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, CheckCircle2, XCircle } from "lucide-react";
 
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com";
+  CONFIGURED_API_BASE;
 
 interface Summary {
   status: string;

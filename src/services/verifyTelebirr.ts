@@ -1,6 +1,7 @@
 import axios, { AxiosError } from "axios";
 import * as cheerio from "cheerio";
 import logger from '../utils/logger';
+import { receiptTextDigest } from '../utils/redactPii';
 import type {
     TelebirrProbeDetails,
     TelebirrRouteStatus
@@ -168,7 +169,10 @@ function scrapeTelebirrReceipt(html: string): TelebirrReceipt {
     // Log HTML content in debug mode to help diagnose scraping issues
     logger.debug(`HTML content length: ${html.length} bytes`);
     if (html.length < 100) {
-        logger.warn(`Suspiciously short HTML response: ${html}`);
+        // Not the HTML itself: a short Telebirr response is usually an error
+        // page, but it can equally be a truncated receipt, and either way the
+        // body may carry a payer's name and phone number.
+        logger.warn('Suspiciously short HTML response.', receiptTextDigest(html));
     }
 
     const getText = (selector: string): string =>

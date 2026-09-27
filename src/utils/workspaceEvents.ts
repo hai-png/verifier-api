@@ -77,7 +77,7 @@ export async function emitWorkspaceEvent(
         const [webhooks, notificationChannels] = await Promise.all([
             prisma.webhook.findMany({
                 where: { workspaceId, active: true },
-                select: { id: true, url: true, signingSecret: true, events: true },
+                select: { id: true, url: true, events: true },
             }),
             prisma.notificationChannel.findMany({
                 where: { workspaceId, active: true },
@@ -95,7 +95,7 @@ export async function emitWorkspaceEvent(
             const events = Array.isArray(webhook.events) ? (webhook.events as string[]) : [];
             if (!events.includes(event)) continue;
 
-            fireRegisteredWebhook(webhook.id, webhook.signingSecret, webhook.url, eventPayload);
+            fireRegisteredWebhook(webhook.id, eventPayload);
         }
 
         if (webhooks.length === 0 && notificationChannels.length === 0) {

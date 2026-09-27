@@ -20,5 +20,23 @@ uploads/
 
 # loadtest-results/ deliberately stays tracked: the CI report publisher commits
 # there by design, and `git add loadtest-results` (no -f) only works while the
-# directory is not ignored. Note the committed reports include a server log with
-# request bodies and a 6-character API key prefix — see the prelaunch notes.
+# directory is not ignored.
+#
+# A warning here used to say the committed reports contain request bodies and a
+# 6-character API key prefix. They do not: loadtest-results/lab/api-restart.log
+# carries 5,156 `[redacted]` markers and no `"body"` entries, and a sweep of the
+# directory finds no DATABASE_URL, REDIS_URL, DASHBOARD_SECRET, ADMIN_SECRET,
+# bearer token or unredacted key. The only phone-shaped values are synthetic
+# load-test fixtures (251900000000 and generated sequences).
+#
+# Keep it that way: if the report publisher ever starts committing a raw server
+# log again, that is a credential leak into git history, and history has to be
+# rewritten to undo it. Re-run that sweep before committing new results.
+
+# Stale patch files. cbe-receipt-fix.patch was committed at the root and applied
+# to nothing — `git apply --check` failed forwards and backwards against every
+# file it named. A patch in the tree that does not apply reads as "a fix that was
+# meant to be here" and wastes whoever picks it up next.
+*.patch
+*.orig
+*.rej

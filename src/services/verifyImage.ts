@@ -3,6 +3,13 @@ import fs from "fs";
 import { Request, Response, NextFunction } from "express";
 import multer from "multer";
 import logger from "../utils/logger";
+import { redactReceiptRecord, receiptTextDigest } from "../utils/redactPii";
+import {
+    compareAgainstExpectations,
+    ocrOnlyTypes,
+    ocrTrustEnabled,
+    providerForOcrType,
+} from "../utils/ocrVerification";
 import { runSmartVerify } from "./verifyUniversal";
 import { prisma } from "../utils/prisma";
 import dotenv from "dotenv";
@@ -159,9 +166,10 @@ Recognized providers:
 
 Rules:
 - Identify the bank/provider from the receipt header, logo, URL, or text content.
-- For Telebirr and CBE (providers 1-2), extract only the reference fields (these can be auto-verified via the bank's API).
-- For all other banks (providers 3-23), extract ALL available fields: transaction_id, payer_name, payer_account, receiver_name, receiver_account, amount (number, in ETB), date (ISO 8601 if possible, else raw string), reference, payment_reason.
+- For Telebirr, CBE, CBE Birr, Dashen, Abyssinia, Awash, Zemen and M-Pesa (providers 1-8) the reference is the critical field: this service confirms the payment by asking that provider's own API, so extract the reference exactly as printed, even if other fields are illegible. Never guess or reformat a reference.
+- For all providers, extract ALL available fields: transaction_id, payer_name, payer_account, receiver_name, receiver_account, amount (number, in ETB), date (ISO 8601 if possible, else raw string), reference, payment_reason.
 - If the receipt is unreadable or doesn't match any known provider, return type "unknown".
+- If a field is not legible, omit it. An omitted field is recoverable; an invented one is not.
 - Amount should be a number (e.g. 299.00, not "299 Birr").
 
 Return this JSON format exactly, with no extra prose:
@@ -238,8 +246,36 @@ Return this JSON format exactly, with no extra prose:
             }
 
             // ── 4. Parse and route result (credit already consumed) ───────────
-            const result = JSON.parse(messageContent);
-            logger.info("OCR Result", result);
+            // This parse was unguarded. Every other model-side failure above
+            // refunds the credit before responding, but a malformed or non-object
+            // JSON body threw straight out to the outer `catch (err)`, which does
+            // not refund — so the one failure mode most likely to happen (an LLM
+            // returning prose, a fenced block, or `null`) was also the one that
+            // charged the user for our infrastructure fault. It also surfaced as a
+            // bare 500 with no indication the credit was lost.
+            let result: any;
+            try {
+                result = JSON.parse(messageContent);
+            } catch (parseErr) {
+                logger.error("OCR returned unparseable JSON, refunding credit:", parseErr, {
+                    ...receiptTextDigest(messageContent),
+                });
+                await refundCredit(resolvedAccount).catch((e) => logger.error("Failed to refund credit:", e));
+                res.status(502).json({ error: "OCR service returned an unreadable result. Your credit has been refunded." });
+                return;
+            }
+            if (result === null || typeof result !== "object" || Array.isArray(result)) {
+                logger.error("OCR returned JSON that is not a receipt object, refunding credit:", {
+                    parsedType: Array.isArray(result) ? "array" : typeof result,
+                });
+                await refundCredit(resolvedAccount).catch((e) => logger.error("Failed to refund credit:", e));
+                res.status(502).json({ error: "OCR service returned an unusable result. Your credit has been refunded." });
+                return;
+            }
+
+            // The OCR result names the payer and their phone number, so it is
+            // redacted rather than written to the log verbatim.
+            logger.info("OCR Result", redactReceiptRecord(result));
 
             if (result.type === "telebirr" && result.transaction_number) {
                 if (autoVerify) {
@@ -305,23 +341,132 @@ Return this JSON format exactly, with no extra prose:
                 return;
             }
 
-            // ── OCR-verified banks (no public API — receipt image IS the verification) ──
-            // For these banks, the OCR result itself is the verification. The receipt
-            // image was analyzed by Mistral Vision, and the extracted fields are
-            // returned directly. The caller (e.g. the FitLife Hub Worker) can then
-            // match the amount + payer against expected values.
-            const ocrVerifiedTypes = [
-                "cbe-birr", "dashen", "abyssinia", "awash", "zemen", "mpesa",
-                "coop-oromia", "oromia-bank", "hijra", "amhara", "wegagen",
-                "berhan", "abay", "lion", "bunna", "enat", "gadaa", "tsehay",
-                "orbit", "shabelle", "sinqee",
-            ];
+            // ── Banks this service has a real adapter for ────────────────────
+            // cbe-birr, dashen, abyssinia, awash, zemen and mpesa all have an
+            // upstream API. For those the image is only a way of *reading the
+            // reference*; the payment itself is confirmed by asking the bank. That
+            // used not to happen — these six were in the "trust the image" list
+            // below, so a real ground truth was available and was ignored.
+            const adapter = providerForOcrType(result.type);
+            const ocrReference = result.transaction_id || result.transaction_number || result.reference;
 
-            if (ocrVerifiedTypes.includes(result.type)) {
+            if (adapter && ocrReference && String(ocrReference).trim()) {
+                const phone = result.payer_phone || req.body?.phoneNumber || undefined;
+                const suffix = result.account_suffix || accountSuffix || undefined;
+                const missingInput =
+                    (adapter.needsPhone && !phone) || (adapter.needsSuffix && !suffix);
+
+                if (!autoVerify || missingInput) {
+                    res.json({
+                        verified: false,
+                        type: result.type,
+                        reference: ocrReference,
+                        forward_to: `/verify-${adapter.provider}`,
+                        verification: {
+                            method: "none",
+                            authoritative: false,
+                            outcome: "not_attempted",
+                            reason: !autoVerify
+                                ? "autoVerify was not requested; the reference can be checked against the bank's API"
+                                : `the receipt did not legibly include the ${adapter.needsPhone ? "payer phone number" : "account suffix"} this adapter requires`,
+                        },
+                    });
+                    return;
+                }
+
+                try {
+                    const verification = await runSmartVerify({
+                        reference: String(ocrReference).trim(),
+                        suffix,
+                        phoneNumber: phone,
+                        provider: adapter.provider,
+                    });
+                    if (!verification.success) {
+                        // A 400 means the reference we read was unusable, which is
+                        // an extraction problem, not the bank saying "no". Only a
+                        // genuine rejection is reported as one. Either way the bank's
+                        // answer overrides the image: there is no OCR fallback here,
+                        // because falling back would let a forged picture win
+                        // whenever the real check failed.
+                        const unusableReference = verification.httpStatus === 400;
+                        res.status(unusableReference ? 422 : verification.httpStatus).json({
+                            verified: false,
+                            type: result.type,
+                            reference: ocrReference,
+                            verification: {
+                                method: "provider_api",
+                                authoritative: !unusableReference,
+                                outcome: unusableReference ? "not_attempted" : "rejected",
+                                reason: unusableReference
+                                    ? "the reference read from the image is not a valid reference for this provider"
+                                    : undefined,
+                            },
+                            error: verification.error,
+                        });
+                        return;
+                    }
+                    res.json({
+                        verified: true,
+                        type: result.type,
+                        reference: ocrReference,
+                        details: verification.data,
+                        verification: {
+                            method: "provider_api",
+                            authoritative: true,
+                            outcome: "confirmed",
+                        },
+                    });
+                    return;
+                } catch (verifyErr) {
+                    logger.error(`${result.type} verification failed for OCR-supplied reference`, {
+                        verifyErr: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
+                    });
+                    res.status(502).json({
+                        verified: false,
+                        type: result.type,
+                        reference: ocrReference,
+                        verification: { method: "provider_api", authoritative: false, outcome: "error" },
+                        error: `Verification against ${result.type} failed. No credit for the image read is refunded because the read succeeded.`,
+                    });
+                    return;
+                }
+            }
+
+            // ── OCR-only receipts: no upstream API exists for these banks ──────
+            // Reading a picture is extraction, not verification. The pixels can say
+            // anything, because anyone can produce the picture — so the response
+            // never claims `verified: true` on the strength of the image alone. It
+            // reports what was read, whether it matches what *this order* expected,
+            // and says plainly that a human or a real provider check is still needed.
+            if (ocrOnlyTypes().includes(result.type) || (adapter && !ocrReference)) {
+                const comparison = compareAgainstExpectations(result, {
+                    amount: req.body?.expectedAmount ?? req.query.expectedAmount,
+                    payerName: req.body?.expectedPayerName ?? req.query.expectedPayerName,
+                    payerPhone: req.body?.expectedPayerPhone ?? req.query.expectedPayerPhone,
+                    receiverName: req.body?.expectedReceiverName ?? req.query.expectedReceiverName,
+                    receiverAccount: req.body?.expectedReceiverAccount ?? req.query.expectedReceiverAccount,
+                    reference: req.body?.expectedReference ?? req.query.expectedReference,
+                });
+
+                // Opt-in escape hatch for integrations that do their own matching
+                // and depend on the old response shape. Logged, because it is the
+                // difference between "we checked" and "we read a picture".
+                const trustImage = ocrTrustEnabled({ query: req.query as Record<string, unknown> });
+                if (trustImage) {
+                    logger.warn("OCR-only receipt accepted with trustOcr; no upstream confirmation was performed.", {
+                        type: result.type,
+                        expectationsProvided: comparison.expectationsProvided,
+                        satisfied: comparison.satisfied,
+                    });
+                }
+
                 res.json({
-                    verified: true,
+                    // `verified` reflects whether anything authoritative confirmed
+                    // the payment. For an OCR-only receipt the answer is no, unless
+                    // the deployment has explicitly opted into the legacy shorthand.
+                    verified: trustImage,
                     type: result.type,
-                    reference: result.transaction_id || result.transaction_number || result.reference,
+                    reference: ocrReference || null,
                     details: {
                         payerName: result.payer_name,
                         payerAccount: result.payer_account,
@@ -333,12 +478,30 @@ Return this JSON format exactly, with no extra prose:
                         reference: result.reference || result.transaction_id || result.transaction_number,
                         paymentReason: result.payment_reason,
                     },
-                    note: "OCR-verified receipt (no public API available for this provider). Verify amount + payer against expected values before issuing subscription.",
+                    verification: {
+                        method: "ocr_only",
+                        authoritative: false,
+                        outcome: comparison.expectationsProvided
+                            ? (comparison.satisfied ? "matches_expectations" : "does_not_match_expectations")
+                            : "unverified",
+                        // Machine-readable, so a caller can act on it instead of
+                        // having to notice a prose `note`.
+                        expectationsProvided: comparison.expectationsProvided,
+                        satisfied: comparison.satisfied,
+                        checks: comparison.checks,
+                        extractedAmount: comparison.extractedAmount,
+                        requiresManualReview: !trustImage && !comparison.satisfied,
+                    },
+                    note: trustImage
+                        ? "OCR-verified receipt (no public API available for this provider). trustOcr is enabled, so `verified` reflects the image read only — nothing upstream confirmed this payment."
+                        : "Receipt read by OCR only; no provider API exists for this bank, so nothing confirmed the payment actually happened. `verified` is false by design. Pass expectedAmount / expectedPayerName / expectedPayerPhone to have them compared server-side, and do not issue goods on this response alone.",
                 });
                 return;
             }
 
-            res.status(422).json({ error: "Unknown or unrecognized receipt type", ocr_result: result });
+            // The model's own output may contain a payer name it read off an
+            // arbitrary image, so it is redacted before going back or into a log.
+            res.status(422).json({ error: "Unknown or unrecognized receipt type", ocr_result: redactReceiptRecord(result) });
 
         } catch (err) {
             logger.error(

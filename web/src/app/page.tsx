@@ -19,6 +19,8 @@
 'use client'
 
 import { useState, useEffect, createContext, useContext, useCallback } from 'react'
+import { API_BASE as CONFIGURED_API_BASE } from "@/lib/config";
+import { getToken, setToken } from "@/lib/api";
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -46,7 +48,9 @@ import {
 
 // ─── API Config ─────────────────────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://verifier-api-selfhosted.onrender.com'
+// One definition, in lib/config.ts. This line used to carry its own copy of the
+// third-party fallback URL; see that file for why there is no longer a default.
+const API_BASE = CONFIGURED_API_BASE
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -164,7 +168,9 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Load token from localStorage on mount
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('noveld_token') : null
+    // getToken() is SSR-safe and owns the storage key; this file used to spell
+    // the key out itself, in five places, and lib/api.ts spelled it differently.
+    const token = getToken()
     if (token) {
       fetch(`${API_BASE}/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -174,7 +180,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
           if (data?.user) {
             setState({ user: data.user, token, loading: false })
           } else {
-            localStorage.removeItem('noveld_token')
+            setToken(null)
             setState({ user: null, token: null, loading: false })
           }
         })
@@ -194,7 +200,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       const data = await res.json()
       if (data.success) {
-        localStorage.setItem('noveld_token', data.token)
+        setToken(data.token)
         setState({ user: data.user, token: data.token, loading: false })
         return true
       }
@@ -213,7 +219,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       const data = await res.json()
       if (data.success) {
-        localStorage.setItem('noveld_token', data.token)
+        setToken(data.token)
         setState({ user: data.user, token: data.token, loading: false })
         return true
       }
@@ -224,7 +230,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const logout = () => {
-    localStorage.removeItem('noveld_token')
+    setToken(null)
     setState({ user: null, token: null, loading: false })
   }
 

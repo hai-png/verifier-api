@@ -4,7 +4,7 @@ import { generateApiKey, getApiKeys } from '../middleware/apiKeyAuth';
 import { getUsageStats } from '../middleware/requestLogger';
 import { fireRegisteredWebhook } from '../utils/fireWebhook';
 import { getWebhookQueueHealth, replayWebhookDelivery } from '../queues/webhookQueue';
-import { accountMatches, extractPaymentDetails } from '../utils/paymentMatch';
+import { extractPaymentDetails, recipientMatches } from '../utils/paymentMatch';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { safeSecretEquals } from '../utils/secretCompare';
@@ -474,7 +474,7 @@ router.post(
     try {
       const webhook = await prisma.webhook.findUnique({
         where: { id: webhookId },
-        select: { id: true, url: true, signingSecret: true, active: true },
+        select: { id: true, url: true, active: true },
       });
       if (!webhook) {
         res.status(404).json({ success: false, error: 'Webhook not found.' });
@@ -532,7 +532,7 @@ router.post(
     try {
       const webhook = await prisma.webhook.findUnique({
         where: { id: webhookId },
-        select: { id: true, url: true, signingSecret: true, active: true },
+        select: { id: true, url: true, active: true },
       });
       if (!webhook) {
         res.status(404).json({ success: false, error: 'Webhook not found.' });
@@ -559,7 +559,7 @@ router.post(
         },
       };
 
-      fireRegisteredWebhook(webhook.id, webhook.signingSecret, webhook.url, testPayload);
+      fireRegisteredWebhook(webhook.id, testPayload);
       res.json({ success: true, message: 'Test event queued for delivery.' });
     } catch (err) {
       logger.error('Admin webhook-test failed:', err);
@@ -660,7 +660,8 @@ router.post(
     }
 
     // Extract amount + credited account using the provider-specific shape
-    const { amount, account } = extractPaymentDetails(verifiedData, provider);
+    const paymentDetails = extractPaymentDetails(verifiedData, provider);
+    const { amount, account } = paymentDetails;
 
     if (amount === null || isNaN(amount)) {
       res.status(422).json({
@@ -679,7 +680,11 @@ router.post(
       });
       return;
     }
-    if (!accountMatches(account, expectedAccount)) {
+    // Same check /payment-links/:id/confirm uses. This endpoint previously ran
+    // the generic matcher for every provider, so CBE receipts (which mask the
+    // account) could never match the merchant's full account number, and a
+    // receipt with no account at all matched by default.
+    if (!recipientMatches(provider, paymentDetails, expectedAccount)) {
       res.status(422).json({
         success: false,
         code: 'RECIPIENT_MISMATCH',
@@ -723,7 +728,7 @@ router.post(
     try {
       const webhooks = await prisma.webhook.findMany({
         where: { workspaceId, active: true },
-        select: { id: true, url: true, signingSecret: true, events: true },
+        select: { id: true, url: true, events: true },
       });
 
       let fired = 0;
@@ -731,7 +736,7 @@ router.post(
         const events = Array.isArray(wh.events) ? (wh.events as string[]) : [];
         if (!events.includes(event)) continue;
 
-        fireRegisteredWebhook(wh.id, wh.signingSecret, wh.url, {
+        fireRegisteredWebhook(wh.id, {
           event,
           firedAt: new Date().toISOString(),
           ...payload,

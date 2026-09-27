@@ -15,6 +15,7 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { fireRegisteredWebhook } from '../utils/fireWebhook';
+import { encryptSecret } from '../utils/secretVault';
 import { replayWebhookDelivery } from '../queues/webhookQueue';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
@@ -213,8 +214,10 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  // Generate a signing secret. Stored RAW so we can HMAC the outgoing payload
-  // with the same value the customer received — standard verification flow.
+  // Generate a signing secret. The customer sees the raw value once; the database
+  // keeps it encrypted (see secretVault), because the service has to be able to
+  // reproduce it to sign deliveries but a database read should not hand over
+  // every merchant's signing key.
   const rawSecret = crypto.randomBytes(32).toString('hex');
 
   try {
@@ -223,7 +226,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
         workspaceId,
         url: safeUrl,
         events: events as WebhookEvent[],
-        signingSecret: rawSecret,
+        signingSecret: encryptSecret(rawSecret),
       },
       select: { id: true, url: true, events: true, active: true, createdAt: true },
     });
@@ -387,16 +390,23 @@ router.post('/:id/rotate-secret', async (req: Request, res: Response): Promise<v
     }
 
     const rawSecret = crypto.randomBytes(32).toString('hex');
-    const updatedWebhook = await prisma.webhook.update({
-      where: { id },
-      data: { signingSecret: rawSecret },
-      select: {
-        id: true,
-        url: true,
-        events: true,
-        active: true,
-        createdAt: true,
-      },
+    // updateMany scoped by { id, workspaceId }, not update by { id } alone. The
+    // findFirst above established ownership, but a read-then-write on a bare
+    // primary key is the shape that turns into a cross-tenant write the moment
+    // the two statements drift apart; this way the write itself cannot touch
+    // another workspace's webhook, and a row deleted in between is a clean 404
+    // rather than a Prisma P2025.
+    const { count } = await prisma.webhook.updateMany({
+      where: { id, workspaceId },
+      data: { signingSecret: encryptSecret(rawSecret) },
+    });
+    if (count === 0) {
+      res.status(404).json({ success: false, error: 'Webhook not found.' });
+      return;
+    }
+    const updatedWebhook = await prisma.webhook.findFirst({
+      where: { id, workspaceId },
+      select: { id: true, url: true, events: true, active: true, createdAt: true },
     });
 
     res.json({
@@ -497,7 +507,7 @@ router.post(
     try {
       const webhook = await prisma.webhook.findFirst({
         where: { id, workspaceId: (req as any).apiKeyData.workspaceId },
-        select: { id: true, url: true, signingSecret: true, active: true },
+        select: { id: true, url: true, active: true },
       });
       if (!webhook) {
         res.status(404).json({ success: false, error: 'Webhook not found.' });

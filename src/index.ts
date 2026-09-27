@@ -1,7 +1,6 @@
 import express, { Request, Response, NextFunction, ErrorRequestHandler, RequestHandler } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import cookieParser from 'cookie-parser';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -41,6 +40,9 @@ import { verifyWebhookHook } from './middleware/verifyWebhookHook';
 import { getWebhookQueueHealth, startWebhookQueueWorker, stopWebhookQueueWorker } from './queues/webhookQueue';
 import { getNotificationQueueHealth, startNotificationQueueWorker, stopNotificationQueueWorker } from './queues/notificationQueue';
 import { prisma, disconnectPrisma } from './utils/prisma';
+import { logTlsPolicy } from './utils/tlsPolicy';
+import { startSessionMaintenance, stopSessionMaintenance, drainSessionMaintenance } from './utils/sessionMaintenance';
+import { logSecretVaultState, migrateLegacyWebhookSecrets } from './utils/secretVault';
 
 // Dashboard-facing routes (session-authenticated, not API-key-authenticated)
 import authRouter from './routes/auth';
@@ -168,6 +170,11 @@ async function initializeRuntime(): Promise<void> {
         logger.info(
             `Telebirr verification config: primary ${process.env.SKIP_PRIMARY_VERIFICATION === 'true' ? 'disabled' : 'enabled'}, fallback relays ${telebirrRelayCount}`
         );
+
+        // Which provider hosts are fetched without certificate verification is a
+        // security property of the running service, so it belongs in the boot log
+        // rather than only in the source of four different adapters.
+        logTlsPolicy();
         if (process.env.SKIP_PRIMARY_VERIFICATION === 'true' && telebirrRelayCount === 0) {
             logger.warn('⚠️ Telebirr primary is disabled but FALLBACK_PROXIES is empty.');
         }
@@ -184,6 +191,19 @@ async function initializeRuntime(): Promise<void> {
         // background instead — it self-heals on error and the admin usage-stats
         // endpoint re-queries the DB directly anyway.
         void initializeStatsCache();
+
+        // Lapsed sessions and never-used password-reset tokens accumulate forever
+        // otherwise, and sessions written before tokens were hashed still hold
+        // plaintext credentials. Background, off the readiness path, same as the
+        // stats cache above.
+        startSessionMaintenance();
+
+        // Webhook signing secrets are encrypted at rest when WEBHOOK_SECRET_KEY is
+        // set. Say so either way, and re-encrypt any row that predates the key so
+        // switching it on migrates the table without a script.
+        logSecretVaultState();
+        void migrateLegacyWebhookSecrets()
+            .catch((error) => logger.error('Webhook secret migration failed:', error));
 
         // BullMQ queue workers require Redis. When REDIS_URL is unset (e.g. on
         // Render free tier without a Redis instance), skip the workers gracefully
@@ -229,7 +249,11 @@ app.use(cors({
     exposedHeaders: ['Server-Timing', 'X-Verify-Cache', 'Retry-After'],
 }));
 app.use(express.json());
-app.use(cookieParser());
+// cookie-parser was mounted for a `req.cookies?.session` fallback in routes/auth.ts
+// that nothing ever set — no code in the repository calls res.cookie(). Reading a
+// session credential from a cookie means accepting one that a browser attaches
+// automatically, which is the CSRF shape; the routes now take the token from the
+// Authorization header only, so the parser is gone with them.
 
 // Add request logging middleware
 app.use(requestLogger);
@@ -243,6 +267,62 @@ app.use((_req, _res, next) => {
 // Refund the monthly verification credit when a charged request fails without
 // ever reaching a provider (400/403/5xx). See utils/quotaCharge.ts.
 app.use(quotaRefundHook);
+
+const runtimeGuestPaths = ['/', '/health', '/ready', '/status'];
+
+// How long a non-guest request waits for the runtime before being told to
+// retry. Both Render (free tier) and TiDB Serverless scale to zero, so the
+// first request after an idle period can wait on a database resume. Holding the
+// connection for 90s exceeded Cloudflare's origin timeout and turned a slow
+// start into an opaque 524; a short wait plus Retry-After lets the client
+// retry instead. Raise it with STARTUP_WAIT_MS if your platform is slower.
+const STARTUP_WAIT_MS = Math.max(0, Number(process.env.STARTUP_WAIT_MS ?? 15_000));
+const STARTUP_RETRY_AFTER_SECONDS = Math.max(1, Math.ceil(STARTUP_WAIT_MS / 1000));
+
+/**
+ * Cold-start gate.
+ *
+ * Registration order is load-bearing: Express walks its middleware stack in the
+ * order handlers were registered and a router that matches ends the chain. This
+ * used to be registered *after* every router, so a request to /verify-cbe,
+ * /products, /dashboard, /admin or any other mounted path was handled by its
+ * router and never reached the gate — the cold-start protection was dead code
+ * for exactly the routes it was written for, and a request arriving during a
+ * TiDB scale-to-zero resume went straight into `prisma` and failed.
+ *
+ * It must therefore stay above every router and above apiKeyAuth (which itself
+ * issues a database query), and below requestLogger so cold-start requests are
+ * still logged.
+ */
+const waitForRuntime: RequestHandler = async (req, res, next) => {
+    if (runtimeGuestPaths.some(p => req.path === p || req.path.startsWith(`${p}/`))) {
+        return next();
+    }
+    if (startupState.ready) {
+        return next();
+    }
+    const deadline = Date.now() + STARTUP_WAIT_MS;
+    while (Date.now() < deadline) {
+        if (startupState.ready) {
+            return next();
+        }
+        if (!startupState.initializing && startupState.lastError) {
+            return res.status(503).json({
+                success: false,
+                error: 'Service initialization failed',
+                detail: startupState.lastError,
+            });
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    res.set('Retry-After', String(STARTUP_RETRY_AFTER_SECONDS));
+    return res.status(503).json({
+        success: false,
+        error: 'Service is starting up. Retry in a few seconds.',
+        retryAfterSeconds: STARTUP_RETRY_AFTER_SECONDS,
+    });
+};
+app.use(waitForRuntime);
 
 // Register admin routes BEFORE API key authentication
 app.use('/admin', adminRouter);
@@ -307,47 +387,6 @@ const invalidateDeliveryCacheAfterMutation: RequestHandler = (req, res, next) =>
 };
 app.use('/webhooks', permissionGate('webhooks'), invalidateDeliveryCacheAfterMutation, webhooksRouter);
 app.use('/notifications', permissionGate('webhooks'), invalidateDeliveryCacheAfterMutation, notificationsRouter);
-
-
-const runtimeGuestPaths = ['/', '/health', '/ready', '/status'];
-
-// How long a non-guest request waits for the runtime before being told to
-// retry. Both Render (free tier) and TiDB Serverless scale to zero, so the
-// first request after an idle period can wait on a database resume. Holding the
-// connection for 90s exceeded Cloudflare's origin timeout and turned a slow
-// start into an opaque 524; a short wait plus Retry-After lets the client
-// retry instead. Raise it with STARTUP_WAIT_MS if your platform is slower.
-const STARTUP_WAIT_MS = Math.max(0, Number(process.env.STARTUP_WAIT_MS ?? 15_000));
-const STARTUP_RETRY_AFTER_SECONDS = Math.max(1, Math.ceil(STARTUP_WAIT_MS / 1000));
-const waitForRuntime: RequestHandler = async (req, res, next) => {
-    if (runtimeGuestPaths.some(p => req.path === p || req.path.startsWith(`${p}/`))) {
-        return next();
-    }
-    if (startupState.ready) {
-        return next();
-    }
-    const deadline = Date.now() + STARTUP_WAIT_MS;
-    while (Date.now() < deadline) {
-        if (startupState.ready) {
-            return next();
-        }
-        if (!startupState.initializing && startupState.lastError) {
-            return res.status(503).json({
-                success: false,
-                error: 'Service initialization failed',
-                detail: startupState.lastError,
-            });
-        }
-        await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    res.set('Retry-After', String(STARTUP_RETRY_AFTER_SECONDS));
-    return res.status(503).json({
-        success: false,
-        error: 'Service is starting up. Retry in a few seconds.',
-        retryAfterSeconds: STARTUP_RETRY_AFTER_SECONDS,
-    });
-};
-app.use(waitForRuntime);
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
@@ -480,15 +519,32 @@ const flushBufferedWrites = async () => {
     ]);
 };
 
+/**
+ * Stop every background worker and flush every buffered write, in one place.
+ *
+ * This sequence was written out twice — once for the "no HTTP server" path and
+ * once inside the `server.close()` callback — and the two had already drifted in
+ * what they awaited. Teardown that exists in two copies is teardown that gets one
+ * of them wrong on the day it matters, which is the day the process is being
+ * killed.
+ */
+const releaseResources = async (): Promise<void> => {
+    stopKeepAlivePinger();
+    // Stop scheduling sweeps before draining, so a sweep cannot start while the
+    // one in flight is being awaited.
+    stopSessionMaintenance();
+    await drainSessionMaintenance();
+    await closeCBEBrowser();
+    await flushBufferedWrites();
+    await stopWebhookQueueWorker();
+    await stopNotificationQueueWorker();
+    await disconnectPrisma();
+};
+
 const gracefulShutdown = async () => {
     logger.info('Shutting down server...');
-    stopKeepAlivePinger();
     if (!server) {
-        await closeCBEBrowser();
-        await flushBufferedWrites();
-        await stopWebhookQueueWorker();
-        await stopNotificationQueueWorker();
-        await disconnectPrisma();
+        await releaseResources();
         process.exit(0);
         return;
     }
@@ -498,11 +554,7 @@ const gracefulShutdown = async () => {
     // server.close() waits on keep-alive sockets that have no idle timeout.
     server.close(async () => {
         logger.info('HTTP server closed');
-        await closeCBEBrowser();
-        await flushBufferedWrites();
-        await stopWebhookQueueWorker();
-        await stopNotificationQueueWorker();
-        await disconnectPrisma();
+        await releaseResources();
         process.exit(0);
     });
     (server as unknown as { closeIdleConnections?: () => void }).closeIdleConnections?.();
@@ -541,7 +593,13 @@ async function bootstrap(): Promise<void> {
         startKeepAlivePinger();
     } catch (error) {
         logger.error('Startup failed. Exiting.', error);
+        // releaseResources() assumes a healthy runtime; on a failed boot some of
+        // these may never have started, so each is guarded.
         stopKeepAlivePinger();
+        stopSessionMaintenance();
+        await drainSessionMaintenance();
+        await closeCBEBrowser().catch(() => undefined);
+        await flushBufferedWrites().catch(() => undefined);
         await stopWebhookQueueWorker().catch(() => undefined);
         await stopNotificationQueueWorker().catch(() => undefined);
         await disconnectPrisma().catch(() => undefined);

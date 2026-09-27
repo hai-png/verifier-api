@@ -1,10 +1,14 @@
 import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
-import https from 'https';
 import fs from 'fs';
 import puppeteer, { Browser, HTTPResponse, Page } from 'puppeteer';
 import logger from '../utils/logger';
+import { httpsAgentFor, isTlsVerificationDisabledFor, verifyingAgentWithExtraCa } from '../utils/tlsPolicy';
 import { extractLegacyCbeUrlData, extractNewCbeToken } from '../utils/cbeReference';
+
+/** Legacy CBE receipt host, used by both the direct fetch and the Chromium
+ *  fallback so the TLS policy decision is made against one hostname. */
+const CBE_LEGACY_RECEIPT_HOST = 'apps.cbe.com.et';
 
 export interface VerifyResult {
     success: boolean;
@@ -274,7 +278,6 @@ async function getBrowser(): Promise<Browser> {
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--ignore-certificate-errors',
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
@@ -288,6 +291,16 @@ async function getBrowser(): Promise<Browser> {
             '--mute-audio',
         ],
     };
+
+    // Chromium ignores Node's https agents, so the browser needs the same policy
+    // decision the axios path gets from tlsPolicy: only relax certificate
+    // checking when the CBE receipt host is on the explicit list.
+    if (isTlsVerificationDisabledFor(CBE_LEGACY_RECEIPT_HOST)) {
+        launchOptions.args.splice(2, 0, '--ignore-certificate-errors');
+        logger.warn(
+            `⚠️ Chromium certificate verification disabled for ${CBE_LEGACY_RECEIPT_HOST} (INSECURE_TLS_HOSTS).`
+        );
+    }
 
     logger.info(`🔧 Using Chrome at: ${executablePath}`);
     // @types/puppeteer 5 is also installed for legacy imports in this project
@@ -353,7 +366,7 @@ async function waitForPdfResponse(page: Page, timeoutMs: number): Promise<HTTPRe
 }
 
 async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer> {
-    const url = `https://apps.cbe.com.et:100/?id=${encodeURIComponent(fullId)}`;
+    const url = `https://${CBE_LEGACY_RECEIPT_HOST}:100/?id=${encodeURIComponent(fullId)}`;
     // Bound concurrent Chromium work so a burst cannot exhaust the instance.
     await acquireBrowserSlot();
     try {
@@ -432,8 +445,8 @@ export async function verifyCBELegacy(
     accountSuffix: string
 ): Promise<VerifyResult> {
     const fullId = `${reference}${accountSuffix}`;
-    const url = `https://apps.cbe.com.et:100/?id=${encodeURIComponent(fullId)}`;
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    const url = `https://${CBE_LEGACY_RECEIPT_HOST}:100/?id=${encodeURIComponent(fullId)}`;
+    const httpsAgent = verifyingAgentWithExtraCa(url) ?? httpsAgentFor(url);
 
     try {
         logger.info(`🔎 Attempting direct CBE PDF fetch: ${url}`);
@@ -489,8 +502,9 @@ export async function verifyCBELegacy(
 }
 
 export async function verifyCBENew(token: string): Promise<VerifyResult> {
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
     const url = `https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/${encodeURIComponent(token)}`;
+    // Certificate verification is decided by one policy module, not inline here.
+    const httpsAgent = verifyingAgentWithExtraCa(url) ?? httpsAgentFor(url);
     const maxRetries = 4;
     const retryDelayMs = 1_800;
 

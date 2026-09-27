@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
+import { API_BASE as CONFIGURED_API_BASE } from "@/lib/config";
 import { useSearchParams } from "next/navigation";
 import SiteNav from "@/components/SiteNav";
 import { Button } from "@/components/ui/button";
@@ -11,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, AlertCircle, CheckCircle2, CreditCard } from "lucide-react";
 
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com";
+  CONFIGURED_API_BASE;
 
 interface PublicLink {
   id: string;

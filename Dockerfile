@@ -92,7 +92,9 @@ COPY --from=build --chown=app:app /app/node_modules ./node_modules
 COPY --from=build --chown=app:app /app/dist ./dist
 COPY --from=build --chown=app:app /app/package.json ./package.json
 COPY --from=build --chown=app:app /app/prisma ./prisma
-COPY --from=build --chown=app:app /app/scripts ./scripts
+# scripts/ holds reset-db.js, which drops every table in the database. It has no
+# runtime purpose and no business being present in a production image, where one
+# stray `node scripts/reset-db.js` is a total data loss.
 
 USER app
 

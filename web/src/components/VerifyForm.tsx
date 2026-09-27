@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { API_BASE as CONFIGURED_API_BASE } from "@/lib/config";
 import { AlertCircle, CheckCircle2, Loader2, ShieldCheck } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -8,7 +9,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com"
+// One definition, in lib/config.ts — see that file for why there is no default.
+const API_BASE = CONFIGURED_API_BASE
 
 export const VERIFICATION_PROVIDERS = [
   { id: "auto", label: "Auto-detect", help: "Let the reference format choose the provider." },

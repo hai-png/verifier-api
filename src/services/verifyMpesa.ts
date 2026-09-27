@@ -1,7 +1,7 @@
 import axios from 'axios';
 import pdf from 'pdf-parse';
-import https from 'https';
 import logger from '../utils/logger';
+import { httpsAgentFor, verifyingAgentWithExtraCa } from '../utils/tlsPolicy';
 
 export interface MpesaVerifyResult {
     success: boolean;
@@ -27,22 +27,46 @@ export async function verifyMpesa(
 ): Promise<MpesaVerifyResult> {
     const primaryUrl = `https://m-pesabusiness.safaricom.et/api/receipt/getReceipt?trxNo=${encodeURIComponent(transactionId)}`;
     const proxyKey = process.env.MPESA_PROXY_KEY || '';
-    // Configurable fallback URL â€” defaults to the original leul.et proxy.
-    // Set MPESA_FALLBACK_URL env var to point at your own self-hosted mpesa.php
-    // (e.g. https://your-ethio-hosting.com/mpesa.php)
-    const fallbackBase = process.env.MPESA_FALLBACK_URL || 'https://leul.et/mpesa.php';
-    const fallbackUrl = `${fallbackBase}?reference=${transactionId}&key=${proxyKey}`;
+    /**
+     * The self-hosted relay to fall back on, or null when none is configured.
+     *
+     * This used to default to `https://leul.et/mpesa.php`. That is somebody's
+     * personal hosting: with MPESA_FALLBACK_URL unset, every M-Pesa verification
+     * silently sent its transaction references — and, in the query string, the
+     * operator's proxy key — to a third party who could read, alter or drop the
+     * receipt on the way back, and who would see it as a confirmed payment.
+     * `verifyTelebirr` already refuses to guess a relay (it errors loudly when
+     * FALLBACK_PROXIES is unset); M-Pesa now behaves the same way.
+     */
+    const fallbackBase = process.env.MPESA_FALLBACK_URL?.trim() || null;
+    // Encoded, exactly as the primary URL does it. Interpolating the raw
+    // reference let a caller inject extra relay parameters — a reference of
+    // `ABC&debug=true` reached mpesa.php as two parameters and switched the relay
+    // into its verbose debug mode instead of verifying anything. (The relay now
+    // gates diagnostics on a server-side flag, so this is defence in depth.)
+    //
+    // The key still travels in the query string as well as the header below so
+    // the API and the relay can be deployed in either order; see mpesa.php for
+    // the warning it logs when only the query form arrives.
+    const fallbackUrl = fallbackBase
+        ? `${fallbackBase}?reference=${encodeURIComponent(transactionId)}&key=${encodeURIComponent(proxyKey)}`
+        : null;
     const skipPrimary = process.env.SKIP_PRIMARY_VERIFICATION === "true";
 
-    async function fetchFromUrl(url: string, source: string): Promise<any> {
+    async function fetchFromUrl(url: string, source: string, extraHeaders: Record<string, string> = {}): Promise<any> {
         // Relay URLs contain the proxy key and must never enter logs.
-        logger.info(`ðŸ”Ž Fetching receipt data from ${source}`);
+        logger.info(`🔎 Fetching receipt data from ${source}`);
         const response = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                 'Accept': 'application/json, text/plain, */*',
-                'Referer': 'https://m-pesabusiness.safaricom.et/'
+                'Referer': 'https://m-pesabusiness.safaricom.et/',
+                ...extraHeaders
             },
+            // Verification is on for both the provider and any self-hosted relay:
+            // a receipt fetched over an unverified connection is a receipt anyone
+            // on the path could have written.
+            httpsAgent: verifyingAgentWithExtraCa(url) ?? httpsAgentFor(url),
             timeout: 60000
         });
         return response.data;
@@ -55,18 +79,30 @@ export async function verifyMpesa(
             try {
                 data = await fetchFromUrl(primaryUrl, "primary API");
             } catch (err: any) {
-                logger.warn(`âš ï¸ Primary M-Pesa fetch failed: ${err.message}. Trying fallback proxy...`);
+                logger.warn(`⚠️ Primary M-Pesa fetch failed: ${err.message}. Trying fallback proxy...`);
             }
         } else {
-            logger.info(`â­ï¸ Skipping primary verifier due to SKIP_PRIMARY_VERIFICATION=true`);
+            logger.info(`⏭️ Skipping primary verifier due to SKIP_PRIMARY_VERIFICATION=true`);
         }
 
         // Try proxy if primary failed, skipped or returned a bad responseCode
         if (!data || data.responseCode !== "0" || !data.base64Data) {
+            if (!fallbackUrl) {
+                // Reported distinctly rather than as "failed to fetch from both
+                // sources": there is no second source, and an operator reading
+                // that message goes looking for a network problem instead of a
+                // missing environment variable. Same shape verifyTelebirr uses
+                // when FALLBACK_PROXIES is unset.
+                logger.error('CRITICAL: primary M-Pesa fetch did not yield a receipt and MPESA_FALLBACK_URL is not configured.');
+                return {
+                    success: false,
+                    error: 'M-Pesa verification is not configured: set MPESA_FALLBACK_URL to a self-hosted mpesa.php relay and MPESA_PROXY_KEY to its shared secret.',
+                };
+            }
             try {
-                data = await fetchFromUrl(fallbackUrl, "fallback proxy");
+                data = await fetchFromUrl(fallbackUrl, "fallback proxy", proxyKey ? { 'X-Proxy-Key': proxyKey } : {});
             } catch (err: any) {
-                logger.error(`âŒ M-Pesa fallback proxy request failed: ${err.message}`);
+                logger.error(`❌ M-Pesa fallback proxy request failed: ${err.message}`);
             }
         }
 
@@ -77,24 +113,27 @@ export async function verifyMpesa(
             };
         }
 
-        logger.info(`ðŸ“¡ API Response Code: ${data.responseCode}, Description: ${data.responseDescription}`);
+        logger.info(`📡 API Response Code: ${data.responseCode}, Description: ${data.responseDescription}`);
 
         if (data.responseCode === "0" && data.base64Data) {
-            logger.info('âœ… API returned success and base64 data. Converting to buffer...');
+            logger.info('✅ API returned success and base64 data. Converting to buffer...');
 
             try {
                 const pdfBuffer = Buffer.from(data.base64Data, 'base64');
-                logger.info(`ðŸ“¦ PDF Buffer created (${pdfBuffer.length} bytes). Parsing PDF...`);
+                logger.info(`📦 PDF Buffer created (${pdfBuffer.length} bytes). Parsing PDF...`);
                 return await parseMpesaReceipt(pdfBuffer);
             } catch (err: any) {
-                logger.error(`âŒ Failed to convert/parse base64 PDF: ${err.message}`);
+                logger.error(`❌ Failed to convert/parse base64 PDF: ${err.message}`);
                 return {
                     success: false,
                     error: `Failed to process PDF data: ${err.message}`
                 };
             }
         } else {
-            logger.warn(`âš ï¸ M-Pesa returned unsuccessful code or missing data: ${JSON.stringify(data)}`);
+            logger.warn('⚠️ M-Pesa returned unsuccessful code or missing data', {
+                responseCode: typeof data.responseCode === 'string' ? data.responseCode : undefined,
+                hasBase64Data: Boolean(data.base64Data),
+            });
             return {
                 success: false,
                 error: `API Error: ${data.responseDescription || 'Unknown error'}`
@@ -102,7 +141,7 @@ export async function verifyMpesa(
         }
 
     } catch (error: any) {
-        logger.error(`âŒ M-Pesa verification failed: ${error.message}`);
+        logger.error(`❌ M-Pesa verification failed: ${error.message}`);
         return {
             success: false,
             error: `Request failed: ${error.message}`
@@ -116,16 +155,16 @@ async function parseMpesaReceipt(buffer: Buffer | ArrayBuffer): Promise<MpesaVer
         // Remove multiple spaces but keep some structure
         const rawText = parsed.text.replace(/\s+/g, ' ').trim();
 
-        logger.info('ðŸ“„ Parsing M-Pesa receipt text');
-        logger.debug(`ðŸ“ Raw PDF text length: ${rawText.length} characters`);
+        logger.info('📄 Parsing M-Pesa receipt text');
+        logger.debug(`📝 Raw PDF text length: ${rawText.length} characters`);
 
         // Log preview for debugging
         const textPreview = rawText.length > 1000
             ? `${rawText.substring(0, 500)}...${rawText.substring(rawText.length - 500)}`
             : rawText;
-        logger.debug(`ðŸ” PDF text preview: ${textPreview}`);
+        logger.debug(`🔍 PDF text preview: ${textPreview}`);
 
-        const payerNameMatch = rawText.match(/PAYER NAME\s+(.*?)\s+(?:PAYER PHONE|00\d+|Addis Ababa|\+251|á‹¨áŠ¨á‹á‹­ áˆµáˆ)/i);
+        const payerNameMatch = rawText.match(/PAYER NAME\s+(.*?)\s+(?:PAYER PHONE|00\d+|Addis Ababa|\+251|የከፋይ ስም)/i);
         let payerName = payerNameMatch ? payerNameMatch[1].trim() : undefined;
 
         const payerPhoneMatch = rawText.match(/PAYER PHONE NUMBER\s+(\d+)/i);
@@ -155,7 +194,7 @@ async function parseMpesaReceipt(buffer: Buffer | ArrayBuffer): Promise<MpesaVer
         const dateMatch = rawText.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/);
         const paymentDate = dateMatch ? new Date(dateMatch[1]) : undefined;
 
-        const receiverNameMatch = rawText.match(/RECEIVER NAME.*?(?:á‹¨á‰°á‰€á‰£á‹© á‰¢á‹áŠáˆµ áˆµáˆ)?\s+([A-Za-z\s]+?)\s+\//i);
+        const receiverNameMatch = rawText.match(/RECEIVER NAME.*?(?:የተቀባዩ ቢዝነስ ስም)?\s+([A-Za-z\s]+?)\s+\//i);
         let receiverName = receiverNameMatch ? receiverNameMatch[1].trim() : undefined;
 
         const receiverNumMatch = rawText.match(/RECEIVER NUMBER\s+(\d+)/i);
@@ -174,6 +213,25 @@ async function parseMpesaReceipt(buffer: Buffer | ArrayBuffer): Promise<MpesaVer
             payerName = titleCase(payerName);
         }
 
+        // A PDF that parsed is not a receipt. Every other provider adapter
+        // refuses to report success without its identifying fields; this one
+        // returned `success: true` with every value `undefined`, so any document
+        // Safaricom (or anything able to answer in its place) served was billed
+        // as a verified M-Pesa payment. Amount and an identifier are the minimum
+        // that makes the result usable by settlement, and a receiver is what lets
+        // the merchant check the money reached them.
+        const missing: string[] = [];
+        if (amount === undefined) missing.push('amount');
+        if (!receiptNo && !transactionId) missing.push('receiptNo/transactionId');
+        if (!receiverPhone && !receiverName) missing.push('receiver');
+        if (missing.length > 0) {
+            logger.warn(`⚠️ M-Pesa receipt parsed but essential fields are missing: ${missing.join(', ')}`);
+            return {
+                success: false,
+                error: `Could not extract required fields from the M-Pesa receipt (missing: ${missing.join(', ')}).`
+            };
+        }
+
         return {
             success: true,
             payerName,
@@ -189,7 +247,7 @@ async function parseMpesaReceipt(buffer: Buffer | ArrayBuffer): Promise<MpesaVer
         };
 
     } catch (err: any) {
-        logger.error(`âŒ Error parsing PDF buffer: ${err.message}`);
+        logger.error(`❌ Error parsing PDF buffer: ${err.message}`);
         return {
             success: false,
             error: `Failed to parse PDF content: ${err.message}`

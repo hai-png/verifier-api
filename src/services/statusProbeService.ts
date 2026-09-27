@@ -81,10 +81,7 @@ function providerOperation(
       const phone = env.STATUS_PROBE_CBEBIRR_PHONE;
       if (!reference?.trim() || !phone?.trim()) return null;
       return async () => {
-        const result = await verifyCBEBirr(reference, phone);
-        return {
-          healthy: !('success' in result) || result.success !== false,
-        };
+        return { healthy: (await verifyCBEBirr(reference, phone)).success };
       };
     }
     case 'dashen': {

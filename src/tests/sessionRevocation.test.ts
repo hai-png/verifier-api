@@ -1,5 +1,6 @@
 // requireSession used to accept any correctly-signed token forever: no database
-// lookup and no expiry check. Logout deleted the row but the token kept working
+// lookup and no expiry check. It also looked the row up by the raw bearer token,
+// which meant Session.sessionToken stored live credentials in plaintext. Logout deleted the row but the token kept working
 // on every /dashboard and /workspaces route, and a token signed with the old
 // 'fallback-secret' constant was accepted whenever DASHBOARD_SECRET was unset.
 import test from 'node:test';
@@ -9,6 +10,7 @@ import express from 'express';
 import { AddressInfo } from 'node:net';
 import { prisma } from '../utils/prisma';
 import workspacesRouter from '../routes/workspaces';
+import { hashSessionToken } from '../routes/auth';
 
 const SECRET = 'session-revocation-test-secret-value';
 const USER_ID = 'user-revocation';
@@ -32,8 +34,12 @@ test('a session token is only valid while its row exists and is unexpired', asyn
     originals.push(() => { object[key] = original; });
   }
   let authedLookups = 0;
+  const lookedUpWith: string[] = [];
   replace(prisma.session, 'findUnique', async ({ where }: any) => {
-    if (where.sessionToken !== token) return null;
+    lookedUpWith.push(String(where.sessionToken));
+    // Sessions are stored as SHA-256 of the token; the raw value must never be
+    // the lookup key, because then it is also what sits in the column.
+    if (where.sessionToken !== hashSessionToken(token)) return null;
     return row ? { ...row } : null;
   });
   replace(prisma.membership, 'findMany', async () => { authedLookups++; return []; });
@@ -59,6 +65,14 @@ test('a session token is only valid while its row exists and is unexpired', asyn
   // A live session works.
   assert.equal((await get(token)).status, 200);
   assert.equal(authedLookups, 1);
+
+  // The bearer token itself is never used as a database key.
+  assert.ok(lookedUpWith.length > 0);
+  assert.ok(
+    lookedUpWith.every((key) => /^[a-f0-9]{64}$/.test(key)),
+    `session lookups must use a sha256, saw: ${lookedUpWith[0]?.slice(0, 32)}`,
+  );
+  assert.ok(!lookedUpWith.includes(token), 'the raw token must not be queried or stored');
 
   // Logout deletes the row; the same token must stop working immediately.
   row = null;

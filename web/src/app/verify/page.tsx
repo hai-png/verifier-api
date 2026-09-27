@@ -1,12 +1,16 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { API_BASE as CONFIGURED_API_BASE } from "@/lib/config";
+// Aliased: this component already has a React state setter named setToken.
+import { getToken as readStoredToken, setToken as writeStoredToken } from "@/lib/api";
 import { Loader2, LogOut, LayoutDashboard, ShieldCheck } from "lucide-react"
 import VerifyForm from "@/components/VerifyForm"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com"
+// One definition, in lib/config.ts — see that file for why there is no default.
+const API_BASE = CONFIGURED_API_BASE
 
 type SessionUser = {
   id: string
@@ -30,7 +34,7 @@ export default function VerifyPage() {
   const [workspaceId, setWorkspaceId] = useState("")
 
   useEffect(() => {
-    const sessionToken = localStorage.getItem("noveld_token")
+    const sessionToken = readStoredToken()
     if (!sessionToken) {
       setLoading(false)
       return
@@ -42,7 +46,7 @@ export default function VerifyPage() {
       .then(response => response.ok ? response.json() : null)
       .then(data => {
         if (!data?.success || !data.user) {
-          localStorage.removeItem("noveld_token")
+          writeStoredToken(null)
           return
         }
 
@@ -57,7 +61,7 @@ export default function VerifyPage() {
         )
       })
       .catch(() => {
-        localStorage.removeItem("noveld_token")
+        writeStoredToken(null)
       })
       .finally(() => setLoading(false))
   }, [])
@@ -69,7 +73,7 @@ export default function VerifyPage() {
         headers: { Authorization: `Bearer ${token}` },
       }).catch(() => undefined)
     }
-    localStorage.removeItem("noveld_token")
+    writeStoredToken(null)
     window.location.href = "/"
   }
 

@@ -37,10 +37,17 @@ model Account {
 
 model Session {
     id           String   @id @default(cuid())
+    // SHA-256 of the bearer token, not the token: see hashSessionToken() in
+    // routes/auth.ts. Same length and uniqueness, so a database read no longer
+    // yields live dashboard sessions.
     sessionToken String   @unique
     userId       String
     expires      DateTime
     user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    // The expired-credential sweep deletes on this column; without an index it is
+    // a full table scan that grows with every login the service has ever had.
+    @@index([expires])
 }
 
 model User {
@@ -147,6 +154,9 @@ model VerificationToken {
     expires    DateTime
 
     @@unique([identifier, token])
+    // Password-reset tokens that are never clicked were only deleted if their
+    // owner submitted them after expiry; the sweep deletes the rest on this index.
+    @@index([expires])
 }
 
 enum ApiTier {

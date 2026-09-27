@@ -96,6 +96,11 @@ export function prepareVerification(input: unknown): VerificationPreparation {
       if (!/^\d{5}$/.test(suffix ?? '') || phoneNumber) return bad('Abyssinia requires a 5-digit suffix and no phoneNumber.');
     } else if (provider === 'CBE_BIRR') {
       if (!/^251\d{9}$/.test(phoneNumber ?? '') || suffix) return bad('CBE Birr requires a 12-digit phone number starting with 251 and no suffix.');
+      // The TID goes into a query string. verifyCBEBirr encodes it, and this
+      // rejects the structural characters as well, so a receipt number can never
+      // carry a second parameter into the bank's endpoint. A real TID is
+      // alphanumeric, so this cannot reject a legitimate reference.
+      if (/[&#?/\\\s\u0000-\u001f]/.test(reference)) return bad('Invalid CBE Birr reference.');
     } else if (suffix || phoneNumber) return bad(`${provider} verification expects only a reference.`);
     return { ok: true, plan: { provider, reference, suffix, phoneNumber } };
   } catch (error) {
@@ -106,7 +111,21 @@ export function prepareVerification(input: unknown): VerificationPreparation {
 export const providerVerifiers = {
   CBE: (p: VerificationPlan) => verifyCBE(p.reference, p.suffix),
   CBE_BIRR: (p: VerificationPlan) => verifyCBEBirr(p.reference, p.phoneNumber!),
-  TELEBIRR: (p: VerificationPlan) => verifyTelebirr(p.reference),
+  /**
+   * `verifyTelebirr` resolves to a `TelebirrReceipt` or `null`; it is the only
+   * adapter that never carried a `success` flag. Normalising the envelope here —
+   * rather than in the 1,100-line service that also feeds the relay pool and the
+   * status probes — is what lets `executeVerification` demand positive proof of
+   * success instead of treating an unrecognised shape as a confirmed payment.
+   *
+   * Receipt fields stay top-level: `extractPaymentDetails` reads `settledAmount`
+   * and `creditedPartyAccountNo` straight off the payload, and so do API
+   * consumers of the legacy `/verify-telebirr` envelope.
+   */
+  TELEBIRR: async (p: VerificationPlan) => {
+    const receipt = await verifyTelebirr(p.reference);
+    return receipt ? { success: true as const, ...receipt } : null;
+  },
   DASHEN: (p: VerificationPlan) => verifyDashen(p.reference),
   ABYSSINIA: (p: VerificationPlan) => verifyAbyssinia(p.reference, p.suffix!),
   MPESA: (p: VerificationPlan) => verifyMpesa(p.reference),
@@ -133,6 +152,24 @@ export async function executeVerification(plan: VerificationPlan, verifiers: Pro
       success: false, data, error: result.error ?? 'Verification failed.',
       httpStatus: result.statusCode ?? 422, provider,
     };
+    // Success must be asserted, not merely un-denied. This used to return
+    // `success: true` for anything that was not literally `success === false` —
+    // an adapter that threw away its status field, returned `{}`, returned
+    // `{ error: 'not found' }`, or was refactored to a different envelope, would
+    // all have been reported to a paying customer as a confirmed payment.
+    if (result.success !== true) {
+      logger.error('Provider returned a payload that does not assert success; refusing to report it as verified.', {
+        provider,
+        // Shape only — the payload is a receipt and may name a payer.
+        keys: typeof data === 'object' ? Object.keys(data as object).slice(0, 12) : typeof data,
+        hasErrorField: typeof result.error === 'string' && result.error.length > 0,
+      });
+      return {
+        success: false, data, provider,
+        error: result.error ?? 'The provider returned a response this service could not confirm as a successful payment.',
+        httpStatus: result.statusCode ?? 502,
+      };
+    }
     return { success: true, data, httpStatus: 200, provider };
   } catch (error) {
     logger.error('Provider verification failed', { provider, error: error instanceof Error ? error.message : 'Unknown error' });

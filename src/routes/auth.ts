@@ -18,6 +18,8 @@ import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { safeSecretEquals } from '../utils/secretCompare';
 import { MemoryWindowCounter } from '../utils/expiringStore';
+import { getBillingConfig } from '../config/billingConfig';
+import { addMonths, getMonthlyImageCredits, getVerificationMonthlyQuota } from '../config/plans';
 import { getRequestIp } from '../utils/requestIp';
 import { isResetEmailConfigured, sendPasswordResetEmail } from '../utils/passwordResetEmail';
 
@@ -35,6 +37,25 @@ function createSessionToken(userId: string): string {
     const payload = `${userId}.${random}`;
     const hmac = signSessionPayload(payload);
     return `${TOKEN_PREFIX}${payload}.${hmac}`;
+}
+
+/**
+ * The value persisted in `Session.sessionToken`.
+ *
+ * The column used to hold the bearer token itself, in plaintext, so a database
+ * read — a dump, a backup, a stale replica, a compromised admin console, a SQL
+ * injection somewhere else in the stack — handed over live dashboard sessions for
+ * every logged-in user, with no way to tell which ones had been taken. Passwords
+ * in `Account.passwordHash` are bcrypt'd and reset tokens in `VerificationToken`
+ * are sha256'd; sessions were the one credential stored raw.
+ *
+ * SHA-256 rather than bcrypt is deliberate here: the token carries 192 bits of
+ * `randomBytes` plus an HMAC, so there is no dictionary to slow down, and the
+ * `@unique` index needs an exact-match lookup — a salted hash could not be
+ * queried by value at all.
+ */
+export function hashSessionToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 /**
@@ -103,7 +124,14 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
         res.status(400).json({ success: false, error: 'Password must be at least 8 characters.' });
         return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    // Same normaliser login and forgot-password use, not a looser local pattern.
+    // Signup previously stored `email.toLowerCase()` without trimming and under a
+    // more permissive regex, so an address accepted here (" User@dom..ain") could
+    // never be matched again by login or by a password reset: the account existed
+    // but was permanently unreachable. Validating on the normalised value makes
+    // the three flows agree by construction.
+    const signupEmail = normaliseEmail(email);
+    if (!signupEmail) {
         res.status(400).json({ success: false, error: 'Invalid email format.' });
         return;
     }
@@ -116,7 +144,7 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
 
     try {
         // Check if user already exists
-        const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+        const existing = await prisma.user.findUnique({ where: { email: signupEmail } });
         if (existing) {
             res.status(409).json({ success: false, error: 'An account with this email already exists.' });
             return;
@@ -128,13 +156,26 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
         // Create user + default workspace + membership in a transaction
         const userId = `usr_${crypto.randomBytes(12).toString('hex')}`;
         const workspaceId = `ws_${crypto.randomBytes(12).toString('hex')}`;
+        const displayName = typeof name === 'string' && name.trim() ? name.trim() : signupEmail.split('@')[0];
+
+        // Plan entitlements come from PlanPricingConfig, the same source
+        // tierGate.syncWorkspacePlanState reads. Hardcoding 100 credits and a
+        // 30-day reset here created a second source of truth: an operator who
+        // changed freeQuotaNewMonthly saw no effect on new signups until the
+        // first reset, and `+30 days` did not match `addMonths(now, 1)` used
+        // everywhere else, so the very first reset landed on a different
+        // anniversary than every subsequent one.
+        const billingConfig = await getBillingConfig();
+        const freeQuota = getVerificationMonthlyQuota('FREE', false, billingConfig);
+        const freeImageCredits = getMonthlyImageCredits('FREE', billingConfig);
+        const creditsResetAt = addMonths(new Date(), 1);
 
         await prisma.$transaction([
             prisma.user.create({
                 data: {
                     id: userId,
-                    email: email.toLowerCase(),
-                    name: name || email.split('@')[0],
+                    email: signupEmail,
+                    name: displayName,
                     // Store password hash in the Account table (NextAuth pattern:
                     // provider='credentials', providerAccountId=userId)
                     accounts: {
@@ -151,13 +192,14 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
             prisma.workspace.create({
                 data: {
                     id: workspaceId,
-                    name: `${name || email.split('@')[0]}'s Workspace`,
+                    name: `${displayName}'s Workspace`,
                     tier: 'FREE',
-                    verificationCredits: 100,
-                    verificationCreditsMonthly: 100,
-                    verificationCreditsResetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-                    imageCredits: 0,
-                    imageCreditsMonthly: 0,
+                    verificationCredits: freeQuota,
+                    verificationCreditsMonthly: freeQuota,
+                    verificationCreditsResetAt: creditsResetAt,
+                    imageCredits: freeImageCredits,
+                    imageCreditsMonthly: freeImageCredits,
+                    imageCreditsResetAt: creditsResetAt,
                 },
             }),
             prisma.membership.create({
@@ -174,26 +216,30 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
         const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
         await prisma.session.create({
             data: {
-                sessionToken: token,
+                sessionToken: hashSessionToken(token),
                 userId,
                 expires: expiresAt,
             },
         });
 
-        logger.info(`New user signed up: ${email}`);
+        logger.info('New user signed up', { userId, workspaceId });
 
         res.status(201).json({
             success: true,
             token,
             user: {
                 id: userId,
-                email: email.toLowerCase(),
-                name: name || email.split('@')[0],
+                email: signupEmail,
+                name: displayName,
             },
             workspace: {
                 id: workspaceId,
-                name: `${name || email.split('@')[0]}'s Workspace`,
+                name: `${displayName}'s Workspace`,
                 tier: 'FREE',
+                verificationCredits: freeQuota,
+                verificationCreditsMonthly: freeQuota,
+                imageCredits: freeImageCredits,
+                imageCreditsMonthly: freeImageCredits,
             },
         });
     } catch (err) {
@@ -252,13 +298,13 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
         const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
         await prisma.session.create({
             data: {
-                sessionToken: token,
+                sessionToken: hashSessionToken(token),
                 userId: user.id,
                 expires: expiresAt,
             },
         });
 
-        logger.info(`User logged in: ${email}`);
+        logger.info('User logged in', { userId: user.id });
 
         res.json({
             success: true,
@@ -278,10 +324,14 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 // ─── Get current user ────────────────────────────────────────────────────────
 
 router.get('/me', async (req: Request, res: Response): Promise<void> => {
+    // Bearer only. A `req.cookies?.session` fallback used to sit here, but
+    // nothing in this codebase ever calls `res.cookie('session', ...)` — the
+    // branch could only be reached by a cookie set from another origin or tossed
+    // by an attacker who can write to the domain. A session credential that
+    // arrives automatically with every same-site request is also the CSRF shape;
+    // an explicit Authorization header is not. Dead code, and a loaded gun.
     const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ')
-        ? authHeader.slice(7)
-        : req.cookies?.session || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
     if (!token) {
         res.status(401).json({ success: false, error: 'Not authenticated.' });
@@ -297,7 +347,7 @@ router.get('/me', async (req: Request, res: Response): Promise<void> => {
     try {
         // Check session in DB (not expired, not deleted)
         const session = await prisma.session.findUnique({
-            where: { sessionToken: token },
+            where: { sessionToken: hashSessionToken(token) },
             include: {
                 user: {
                     select: {
@@ -351,14 +401,18 @@ router.get('/me', async (req: Request, res: Response): Promise<void> => {
 // ─── Logout ──────────────────────────────────────────────────────────────────
 
 router.post('/logout', async (req: Request, res: Response): Promise<void> => {
+    // Bearer only. A `req.cookies?.session` fallback used to sit here, but
+    // nothing in this codebase ever calls `res.cookie('session', ...)` — the
+    // branch could only be reached by a cookie set from another origin or tossed
+    // by an attacker who can write to the domain. A session credential that
+    // arrives automatically with every same-site request is also the CSRF shape;
+    // an explicit Authorization header is not. Dead code, and a loaded gun.
     const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ')
-        ? authHeader.slice(7)
-        : req.cookies?.session || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
     if (token) {
         try {
-            await prisma.session.deleteMany({ where: { sessionToken: token } });
+            await prisma.session.deleteMany({ where: { sessionToken: hashSessionToken(token) } });
         } catch {
             // ignore — session may already be deleted
         }
@@ -423,6 +477,17 @@ const LOGIN_MAX_PER_IP = 50;
 
 const signupThrottle = new MemoryWindowCounter({ maxEntries: 20_000 });
 const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
+
+// /reset-password was the one unauthenticated credential endpoint with no limit.
+// The token is 256 random bits, so it cannot be guessed — but each attempt is a
+// free database round trip, and a *valid* token is single-use, so an attacker who
+// has intercepted one can also burn it by racing the owner to the endpoint. The
+// bcrypt.hash below is ~100 ms of CPU per call on a shared-CPU instance.
+const resetThrottle = new MemoryWindowCounter({ maxEntries: 10_000 });
+const RESET_WINDOW_MS = 15 * 60 * 1000;
+const RESET_MAX_PER_WINDOW = 5;
+const resetIpThrottle = new MemoryWindowCounter({ maxEntries: 20_000 });
+const RESET_MAX_PER_IP = 25;
 const SIGNUP_MAX_PER_IP = 5;
 
 // Deliberately permissive: this rejects obvious abuse, it does not attempt to
@@ -444,8 +509,13 @@ function forgotAllowed(email: string): boolean {
 }
 
 function loginAllowed(email: string, ip: string): boolean {
-    return loginThrottle.increment(`email:${email}`, LOGIN_WINDOW_MS).count <= LOGIN_MAX_PER_WINDOW
-        && loginIpThrottle.increment(`ip:${ip}`, LOGIN_WINDOW_MS).count <= LOGIN_MAX_PER_IP;
+    // Count both before comparing. `a <= N && b <= M` short-circuits, so once the
+    // per-email budget tripped the per-IP counter stopped being incremented — an
+    // attacker rotating addresses accumulated no IP history at all and the
+    // per-IP cap never engaged.
+    const perEmail = loginThrottle.increment(`email:${email}`, LOGIN_WINDOW_MS).count;
+    const perIp = loginIpThrottle.increment(`ip:${ip}`, LOGIN_WINDOW_MS).count;
+    return perEmail <= LOGIN_MAX_PER_WINDOW && perIp <= LOGIN_MAX_PER_IP;
 }
 
 function signupAllowed(ip: string): boolean {
@@ -515,8 +585,31 @@ router.post('/forgot-password', async (req: Request, res: Response): Promise<voi
     }
 });
 
+/**
+ * Whether a password-reset attempt may proceed.
+ *
+ * Both counters are incremented before either is compared — the short-circuit
+ * bug that `loginAllowed` had would otherwise let an attacker rotating source
+ * addresses accumulate no IP history at all.
+ *
+ * The per-token key is the sha256 the route already computes for the lookup, not
+ * the token: a throttle map is not a place to keep a live credential.
+ */
+function resetAllowed(tokenHash: string, ip: string): boolean {
+    const perToken = resetThrottle.increment(`token:${tokenHash}`, RESET_WINDOW_MS).count;
+    const perIp = resetIpThrottle.increment(`ip:${ip}`, RESET_WINDOW_MS).count;
+    return perToken <= RESET_MAX_PER_WINDOW && perIp <= RESET_MAX_PER_IP;
+}
+
 router.post('/reset-password', async (req: Request, res: Response): Promise<void> => {
     const { token, password } = req.body as { token?: string; password?: string };
+
+    if (!resetAllowed(hashResetToken(String(token ?? '')), getRequestIp(req))) {
+        // The IP is logged, the token is not: it may still be valid for its owner.
+        logger.warn('Password reset throttled', { ip: getRequestIp(req) });
+        res.status(429).json({ success: false, error: 'Too many reset attempts. Try again later.' });
+        return;
+    }
 
     if (!token || typeof token !== 'string') {
         res.status(400).json({ success: false, error: 'Reset token is required.' });
@@ -570,10 +663,14 @@ router.post('/reset-password', async (req: Request, res: Response): Promise<void
  * Use this to protect dashboard-facing endpoints (workspace management, etc.)
  */
 export async function requireSession(req: Request, res: Response, next: NextFunction): Promise<void> {
+    // Bearer only. A `req.cookies?.session` fallback used to sit here, but
+    // nothing in this codebase ever calls `res.cookie('session', ...)` — the
+    // branch could only be reached by a cookie set from another origin or tossed
+    // by an attacker who can write to the domain. A session credential that
+    // arrives automatically with every same-site request is also the CSRF shape;
+    // an explicit Authorization header is not. Dead code, and a loaded gun.
     const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ')
-        ? authHeader.slice(7)
-        : req.cookies?.session || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
     if (!token) {
         res.status(401).json({ success: false, error: 'Authentication required.' });
@@ -591,7 +688,7 @@ export async function requireSession(req: Request, res: Response, next: NextFunc
     // still exist, still be unexpired, and still belong to the same user.
     try {
         const session = await prisma.session.findUnique({
-            where: { sessionToken: token },
+            where: { sessionToken: hashSessionToken(token) },
             select: { userId: true, expires: true },
         });
         if (!session || session.expires < new Date() || session.userId !== sessionData.userId) {

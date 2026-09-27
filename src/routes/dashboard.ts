@@ -17,6 +17,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import { encryptSecret } from '../utils/secretVault';
 import { requireSession } from './auth';
 import { generateApiKey } from '../middleware/apiKeyAuth';
 import { createVerificationPipeline, dashboardVerificationAccess } from '../middleware/verificationPipeline';
@@ -468,8 +469,13 @@ router.post('/:workspaceId/webhooks', async (req: Request, res: Response): Promi
                 url: safeUrl,
                 events,
                 active: true,
-                signingSecret,
+                // Encrypted at rest; the plaintext is returned below exactly once.
+                signingSecret: encryptSecret(signingSecret),
             },
+            // Without a select the whole row is serialised into the response, which
+            // once signingSecret is encrypted means shipping ciphertext to a browser
+            // for no reason — and before that, shipping the secret a second time.
+            select: { id: true, workspaceId: true, url: true, events: true, active: true, createdAt: true },
         });
 
         res.status(201).json({

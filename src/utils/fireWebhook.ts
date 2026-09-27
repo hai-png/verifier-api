@@ -3,41 +3,33 @@
  *
  * Shared utility for firing outbound webhooks.
  *
- * Two flavours:
- *   fireSessionWebhook  – one-off ad-hoc webhook URL.
- *                         Fire-and-forget; not tied to a registered Webhook record.
- *   fireRegisteredWebhook – queues a registered webhook delivery through BullMQ.
+ * Every delivery goes through a registered Webhook record and the BullMQ queue,
+ * because that is the only path that re-validates the destination with
+ * `assertSafeOutboundUrl` before connecting, signs the payload, bounds the
+ * response size, refuses to follow redirects and retries with backoff.
+ *
+ * A `fireSessionWebhook(url, payload)` helper used to live here for ad-hoc URLs.
+ * It had no callers and none of those protections — an unvalidated, unsigned POST
+ * to an arbitrary URL is exactly the SSRF shape the queued path exists to avoid,
+ * so it was removed rather than left as a loaded gun for the next call site.
  */
 
-import axios from 'axios';
 import type { WebhookPayload } from '../queues/webhookQueue';
 import { enqueueWebhookDelivery } from '../queues/webhookQueue';
 import logger from './logger';
 
-const REQUEST_TIMEOUT_MS = 10_000;
-
-/**
- * Fire-and-forget POST to a raw webhook URL.
- * This remains process-local because it is not backed by a registered webhook record.
- */
-export function fireSessionWebhook(url: string, payload: Record<string, unknown>): void {
-  void axios.post(url, payload, {
-    headers: { 'Content-Type': 'application/json' },
-    timeout: REQUEST_TIMEOUT_MS,
-  }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : 'Unknown session webhook error';
-    logger.warn(`Session webhook delivery failed to ${url}: ${message}`);
-  });
-}
-
 /**
  * Queue a registered webhook delivery.
- * Legacy signature preserved so existing call sites remain simple during the migration.
+ *
+ * The signing secret and URL used to be passed in and then ignored — the queue
+ * re-reads both from the Webhook row at delivery time, which is correct, because
+ * a delivery can sit in the queue across a secret rotation. Carrying them here
+ * meant four call sites selected a plaintext credential out of the database for
+ * no reason, and a reader could reasonably assume the value passed was the value
+ * used to sign.
  */
 export function fireRegisteredWebhook(
   webhookId: string,
-  _signingSecret: string | null,
-  _url: string,
   payload: Record<string, unknown>,
 ): void {
   const event = typeof payload.event === 'string' ? payload.event : 'webhook.event';

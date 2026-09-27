@@ -142,7 +142,15 @@ function fetchReceipt($url) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    // The upstream is one fixed HTTPS URL, so a redirect is either a trailing
+    // slash or a misconfiguration — never a reason to follow to an arbitrary
+    // host. Scheme is pinned to HTTPS and the hop count to 2 so a redirect cannot
+    // be used to reach an internal address or a non-HTTP protocol.
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_MAXREDIRS, 2);
+    if (defined('CURLPROTO_HTTPS')) {
+        curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+    }
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
     // 5s DNS/TCP pre-check + 10s fetch = 15s worst case, comfortably inside the
     // API's 18s relay timeout, so this script is the one that always answers

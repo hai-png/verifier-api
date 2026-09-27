@@ -44,7 +44,7 @@ export function quotaRefundState(): { refunds: number; failures: number; refunde
     return { ...state };
 }
 
-async function refund(charge: QuotaCharge): Promise<void> {
+async function refund(charge: QuotaCharge, reason = 'request never reached the provider'): Promise<void> {
     try {
         // Imported lazily so the policy helpers in this module stay unit
         // testable without a generated Prisma client.
@@ -58,11 +58,31 @@ async function refund(charge: QuotaCharge): Promise<void> {
         });
         state.refunds += 1;
         state.refundedUnits += charge.units;
-        logger.info(`Refunded ${charge.units} verification credit(s) to workspace ${charge.workspaceId}`);
+        logger.info(`Refunded ${charge.units} verification credit(s) to workspace ${charge.workspaceId} (${reason})`);
     } catch (error) {
         state.failures += 1;
         logger.error(`Failed to refund ${charge.units} credit(s) to workspace ${charge.workspaceId}:`, error);
     }
+}
+
+/**
+ * Refund part of this request's charge, before the response finishes.
+ *
+ * `verifyQuotaGate` deducts one credit per reference in a batch before any of
+ * them are executed. Repeated references collapse to a single provider lookup, so
+ * the duplicates were work the service never did — but they had already been
+ * billed. This refunds them and reduces the recorded charge by the same amount,
+ * so the response-finish hook cannot refund the same units a second time.
+ *
+ * Returns false (and changes nothing) when there is no recorded charge or the
+ * request asks for more units back than were taken.
+ */
+export async function refundPartialQuota(req: Request, units: number, reason: string): Promise<boolean> {
+    const charge = getQuotaCharge(req);
+    if (!charge || !Number.isInteger(units) || units <= 0 || units > charge.units) return false;
+    charge.units -= units;
+    await refund({ workspaceId: charge.workspaceId, units }, reason);
+    return true;
 }
 
 /**
