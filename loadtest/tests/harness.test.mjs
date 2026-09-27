@@ -110,3 +110,25 @@ test('CI annotations never substitute historical reports for the current run', a
   assert.match(output, /fresh/);
   assert.doesNotMatch(output, /stale/);
 });
+test('browser-session scenario targets the dashboard path and records phase/cache metrics without leaking the token', async (t) => {
+  const token = 'synthetic-session-secret';
+  process.env.TEST_DASHBOARD_SESSION = token;
+  t.after(() => { delete process.env.TEST_DASHBOARD_SESSION; });
+  const url = await fixture(t, (req, res) => {
+    assert.equal(req.url, '/dashboard/ws_test/verify');
+    assert.equal(req.headers.authorization, `Bearer ${token}`);
+    res.setHeader('server-timing', 'access;dur=12.3, quota;dur=4, provider;dur=0.2');
+    res.setHeader('x-verify-cache', 'hit');
+    res.statusCode = 400; res.end('{}');
+  });
+  const { code, report } = await run(t, url, ['--scenarios', 'dashboard_validate_400', '--session-token-env', 'TEST_DASHBOARD_SESSION', '--workspace-id', 'ws_test']);
+  assert.equal(code, 0);
+  assert.equal(report.authMode, 'session');
+  assert.equal(report.latency.stages[0].aggregate.cacheOutcomes.hit, 2);
+  assert.equal(report.latency.stages[0].aggregate.serverTiming.access.p50, 12.3);
+  assert.ok(!JSON.stringify(report).includes(token));
+});
+test('server-to-server credentials cannot masquerade as a browser-session measurement', async (t) => {
+  const url = await fixture(t, () => assert.fail('must not send a mismatched auth request'));
+  assert.equal((await run(t, url, ['--scenarios', 'dashboard_validate_400', '--api-key', 'synthetic'])).code, 2);
+});

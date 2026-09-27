@@ -42,19 +42,25 @@ export async function verifyDashen(
     transactionReference: string
 ): Promise<DashenVerifyResult> {
     const url = `https://receipts.dashenbanksc.com/receipt/${transactionReference}`;
-    const maxRetries = 5;
-    const retryDelay = 2000; // 2 seconds
+    // Bound total retry time rather than five independent 30-second waits.
+    const configured = Number(process.env.DASHEN_TOTAL_TIMEOUT_MS ?? 15_000);
+    const budgetMs = Number.isSafeInteger(configured) && configured > 0 && configured <= 120_000 ? configured : 15_000;
+    const deadline = Date.now() + budgetMs;
+    const signal = AbortSignal.timeout(budgetMs);
+    const maxRetries = 2;
+    const retryDelay = 250;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             logger.info(`🔎 Fetching Dashen receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
             const response: AxiosResponse<string> = await axios.get(url, {
                 responseType: 'text',
+                signal,
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                     'Accept': 'text/html,application/xhtml+xml',
                 },
-                timeout: 30000,
+                timeout: Math.max(1, Math.min(8_000, deadline - Date.now())),
             });
 
             logger.info('✅ Dashen receipt fetch success, parsing HTML');
@@ -66,16 +72,16 @@ export async function verifyDashen(
             logger.warn(`⚠️ Dashen receipt fetch failed (Attempt ${attempt}/${maxRetries}): ${error.message}`);
 
             // Unknown/expired references — the host answers 400, no point retrying.
-            if (status === 400) {
+            if (status === 400 || status === 404) {
                 return { success: false, error: 'Receipt not found. Check the reference and try again.' };
             }
 
-            // If it's the last attempt, return failure
-            if (isLastAttempt) {
+            // Do not retry auth/rate-limit/other permanent 4xx failures.
+            if (isLastAttempt || (status >= 400 && status < 500 && status !== 408) || Date.now() + retryDelay >= deadline) {
                 logger.error('❌ All retry attempts failed for Dashen receipt.');
                 return {
                     success: false,
-                    error: `Failed to fetch receipt after ${maxRetries} attempts: ${error.message}`
+                    error: `Failed to fetch receipt after ${attempt} attempt(s): ${error.message}`
                 };
             }
 

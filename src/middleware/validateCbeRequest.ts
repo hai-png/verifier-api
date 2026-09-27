@@ -1,19 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
-import { extractLegacyCbeUrlData, isLegacyCbeReference, isNewCbeReference } from '../utils/cbeReference';
+import { prepareVerification } from '../services/verifyUniversal';
 
-/** Pure validation shared by the early gate and the route itself. */
+/** Backward-compatible helper; validation itself lives in the shared engine. */
 export function cbeRequestError(input: unknown): string | null {
-  const { reference, accountSuffix } = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
-  if (!reference || typeof reference !== 'string') return 'Missing or invalid reference.';
-  const normalized = reference.trim();
-  const legacy = isLegacyCbeReference(normalized);
-  if (!legacy && !extractLegacyCbeUrlData(normalized) && !isNewCbeReference(normalized)) {
-    return 'Invalid CBE reference format.';
-  }
-  const suffix = typeof accountSuffix === 'string' ? accountSuffix.trim() : '';
-  if (legacy && !suffix) return 'Legacy CBE verification requires accountSuffix.';
-  if (legacy && !/^\d{8}$/.test(suffix)) return 'CBE accountSuffix must be exactly 8 digits from the payer account.';
-  return null;
+  const result = prepareVerification({ ...(input && typeof input === 'object' ? input : {}), provider: 'cbe' });
+  return result.ok ? null : result.result.error ?? 'Invalid CBE input.';
 }
 
 /** After authentication and rate limiting, but before any credit reservation. */

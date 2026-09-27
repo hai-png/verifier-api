@@ -14,16 +14,21 @@ import crypto from 'node:crypto';
 const jsonHeaders = { 'content-type': 'application/json' };
 
 /**
- * Credentials for authenticated scenarios. Two modes are supported:
+ * Credentials for authenticated scenarios. Three modes are supported:
  *
  *   api-key          `x-api-key: sk_live_…` — what a real integration sends, but
  *                    minting one needs database access (see loadtest/seed.mjs),
  *                    which a run against a live deployment does not have.
  *   dashboard-secret `x-dashboard-key: <DASHBOARD_SECRET>` + `x-workspace-id`,
- *                    the same path the Next.js dashboard server uses. Read-only
+ *                    a trusted server-to-server path, NOT the browser session route. Read-only
  *                    with respect to setup: pick any existing workspace id.
  */
-export function resolveAuth({ apiKey = null, dashboardKey = null, workspaceId = null } = {}) {
+export function resolveAuth({ apiKey = null, dashboardKey = null, sessionToken = null, workspaceId = null } = {}) {
+  if (sessionToken) {
+    if (apiKey || dashboardKey) throw new Error('Choose session auth or API/server auth, not both.');
+    if (!workspaceId) throw new Error('Session auth needs --workspace-id.');
+    return { mode: 'session', workspaceId, headers: { authorization: `Bearer ${sessionToken}` } };
+  }
   if (apiKey) return { mode: 'api-key', headers: { 'x-api-key': apiKey } };
   if (dashboardKey) {
     if (!workspaceId) {
@@ -43,6 +48,19 @@ export const authHeaders = ({ auth, apiKey } = {}) =>
   (auth ? { ...auth.headers } : { 'x-api-key': apiKey });
 
 export const SCENARIOS = {
+  dashboard_validate_400: {
+    expectedStatuses: [400],
+    group: 'authenticated',
+    authModes: ['session'],
+    external: false,
+    describe: 'POST /dashboard/:workspaceId/verify — actual browser-session route, malformed CBE; no provider I/O',
+    request: (ctx) => ({
+      method: 'POST',
+      path: `/dashboard/${encodeURIComponent(ctx.auth.workspaceId)}/verify`,
+      headers: { ...jsonHeaders, ...authHeaders(ctx) },
+      body: { provider: 'cbe', reference: 'NOT-A-CBE-REFERENCE' },
+    }),
+  },
   health: {
     expectedStatuses: [200],
     group: 'public',

@@ -45,6 +45,7 @@ Options:
   --api-key-env <VAR>       Read the API key from an environment variable instead
   --dashboard-secret <s>    DASHBOARD_SECRET of the target, used with --workspace-id
                             (alias: --dashboard-key)
+  --session-token-env <VAR>  Browser session token (paired with --workspace-id); use dashboard scenarios
   --dashboard-secret-env <VAR>
   --workspace-id <id>       Existing workspace id to attribute the run to
   --workspace-id-env <VAR>
@@ -78,6 +79,7 @@ function parseCli() {
       scenarios: { type: 'string' },
       'api-key': { type: 'string' },
       'api-key-env': { type: 'string' },
+      'session-token-env': { type: 'string' },
       'dashboard-secret': { type: 'string' },
       'dashboard-key': { type: 'string' },
       'dashboard-secret-env': { type: 'string' },
@@ -129,6 +131,7 @@ function parseCli() {
   };
   const auth = resolveAuth({
     apiKey: fromEnv('api-key', 'api-key-env', 'authenticated'),
+    sessionToken: fromEnv('session-token', 'session-token-env', 'session'),
     dashboardKey:
       values['dashboard-secret'] ||
       values['dashboard-key'] ||
@@ -192,6 +195,7 @@ function credentialHint(report, targets) {
 
   const classes = new Set(all.flatMap((set) => [...set]));
   if (classes.has('unauthenticated_401')) {
+    if (report.authMode === 'session') return 'The dashboard rejected the session token. Sign in again and use the session workspace.';
     return report.authMode === 'dashboard-secret'
       ? "every authenticated scenario returned 401: the target ignored x-dashboard-key, so its DASHBOARD_SECRET does not match the LOADTEST_DASHBOARD_SECRET secret (or is unset on the service)."
       : "every authenticated scenario returned 401: the target ignored x-api-key. Check that the key exists on *this* deployment and is still active.";
@@ -233,7 +237,8 @@ function createAuthPacer({ rps, targets }) {
 
 function buildTask(name, ctx) {
   const scenario = SCENARIOS[name];
-  if (scenario.group === 'authenticated' && !ctx.auth) {
+  const authModes = scenario.authModes ?? ['api-key', 'dashboard-secret'];
+  if (scenario.group === 'authenticated' && (!ctx.auth || !authModes.includes(ctx.auth.mode))) {
     return null;
   }
   return { name, scenario, get descriptor() { return scenario.request(ctx); } };
@@ -249,6 +254,8 @@ function recordSample(store, name, result, startedAtMs) {
     status: result.status,
     class: klass,
     responseClass: classify(result),
+    verifyCache: result.headers?.['x-verify-cache'] ?? null,
+    serverTiming: result.headers?.['server-timing'] ?? null,
     ttfbMs: result.ttfbMs,
     totalMs: result.totalMs,
     connectMs: result.connectMs,
@@ -317,7 +324,14 @@ function aggregate(samples) {
   const total = summarize(samples.map((s) => s.totalMs));
   const classes = {};
   const responseClasses = {};
+  const cacheOutcomes = {};
+  const phaseSamples = {};
   for (const sample of samples) {
+    if (sample.verifyCache) cacheOutcomes[sample.verifyCache] = (cacheOutcomes[sample.verifyCache] || 0) + 1;
+    for (const phase of String(sample.serverTiming ?? '').split(',').slice(0, 20)) {
+      const match = phase.trim().match(/^([a-z_]+);dur=(\d+(?:\.\d+)?)$/);
+      if (match) (phaseSamples[match[1]] ??= []).push(Number(match[2]));
+    }
     const responseClass = sample.responseClass ?? sample.class;
     responseClasses[responseClass] = (responseClasses[responseClass] || 0) + 1;
     classes[sample.class] = (classes[sample.class] || 0) + 1;
@@ -329,6 +343,8 @@ function aggregate(samples) {
     total,
     classes,
     responseClasses,
+    cacheOutcomes,
+    serverTiming: Object.fromEntries(Object.entries(phaseSamples).map(([name, values]) => [name, summarize(values)])),
     problemCount: problems.length,
     errorRate: samples.length ? problems.length / samples.length : 0,
   };
@@ -554,7 +570,7 @@ async function main() {
     console.error('         pass --api-key, or --dashboard-secret + --workspace-id for the dashboard path');
   }
   if (targets.length === 0) {
-    throw new Error('No runnable scenarios. Provide --api-key or --dashboard-secret + --workspace-id.');
+    throw new Error('No runnable scenarios. Match the scenario to --api-key, --dashboard-secret or --session-token-env, with --workspace-id where required.');
   }
 
   const pacer = createAuthPacer({ rps: options.authPaceRps, targets });

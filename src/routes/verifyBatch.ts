@@ -1,9 +1,10 @@
 import { Router, Request, Response } from 'express';
-import { runSmartVerify } from '../services/verifyUniversal';
+import { prepareVerification, executeVerification, VerificationPlan } from '../services/verifyUniversal';
+import { rateLimiter } from '../middleware/rateLimiter';
+import { getSyncedPlanState, permissionGate, verifyQuotaGate } from '../middleware/tierGate';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { getWorkspaceContext } from '../utils/workspaceContext';
-import { getBillingConfig } from '../config/billingConfig';
 import { getBatchMaxReferences } from '../config/plans';
 
 const router = Router();
@@ -12,60 +13,52 @@ interface BatchItem {
   reference: string;
   suffix?: string;
   phoneNumber?: string;
+  provider?: string;
 }
 
 interface BatchBody {
   references: BatchItem[];
 }
 
-router.post('/', async (req: Request<{}, {}, BatchBody>, res: Response): Promise<void> => {
-  const apiKeyData = (req as any).apiKeyData;
-  const workspaceContext = getWorkspaceContext(req);
-
-  const workspaceTier = workspaceContext?.workspace.tier ?? 'FREE';
-  const billingConfig = await getBillingConfig();
-  const maxBatch = getBatchMaxReferences(workspaceTier, billingConfig);
-  if (!workspaceContext || maxBatch <= 0) {
-    res.status(402).json({
-      success: false,
-      error: 'Batch verification is not included in this plan.',
-      upgrade: 'https://verify.noveld.com.et/dashboard/billing',
-    });
+router.post('/', rateLimiter, permissionGate('verify-batch'), async (req, res, next) => {
+  const items = req.body?.references;
+  if (!Array.isArray(items) || items.length === 0 || items.length > 500) {
+    res.status(400).json({ success: false, error: 'references must contain between 1 and 500 items.' });
     return;
   }
-
+  if (!getWorkspaceContext(req)) {
+    res.status(402).json({ success: false, error: 'Batch verification requires a workspace.' });
+    return;
+  }
+  const { account, billingConfig } = await getSyncedPlanState(req);
+  const maxBatch = getBatchMaxReferences(account.tier, billingConfig);
+  if (maxBatch <= 0 || items.length > maxBatch) {
+    res.status(maxBatch <= 0 ? 402 : 400).json({ success: false, error: `Batch limit for this plan is ${maxBatch}.` });
+    return;
+  }
+  const plans: VerificationPlan[] = [];
+  for (const [index, item] of items.entries()) {
+    const prepared = prepareVerification(item);
+    if (!prepared.ok) {
+      res.status(400).json({ success: false, error: prepared.result.error, index });
+      return;
+    }
+    plans.push(prepared.plan);
+  }
+  res.locals.verificationPlans = plans;
+  next();
+}, verifyQuotaGate, async (req: Request<{}, {}, BatchBody>, res: Response): Promise<void> => {
+  const apiKeyData = (req as any).apiKeyData;
   const { references } = req.body;
 
-  if (!Array.isArray(references) || references.length === 0) {
-    res.status(400).json({ success: false, error: 'references must be a non-empty array.' });
-    return;
-  }
-
-  if (references.length > maxBatch) {
-    res.status(400).json({
-      success: false,
-      error: `Batch size exceeds maximum of ${maxBatch} references.`,
-    });
-    return;
-  }
-
-  // Pull raw key string for CBE Birr sub-requests
-  const rawApiKey = req.headers['x-api-key'] as string | undefined
-    ?? req.headers.authorization?.replace('Bearer ', '');
-
   const startedAt = Date.now();
-
-  // ── Run all verifications concurrently ────────────────────────────────────────
-  const settled = await Promise.allSettled(
-    references.map((item) =>
-      runSmartVerify({
-        reference: item.reference,
-        suffix: item.suffix,
-        phoneNumber: item.phoneNumber,
-        apiKey: rawApiKey,
-      })
-    )
-  );
+  // Use the same prepared provider plans as single requests, with bounded
+  // batch fan-out. Bulk quota and settlement semantics remain at this layer.
+  const plans = res.locals.verificationPlans as VerificationPlan[];
+  const settled: PromiseSettledResult<Awaited<ReturnType<typeof executeVerification>>>[] = [];
+  for (let offset = 0; offset < plans.length; offset += 5) {
+    settled.push(...await Promise.allSettled(plans.slice(offset, offset + 5).map((plan) => executeVerification(plan))));
+  }
 
   // ── Build results and log each one to UsageLog ───────────────────────────────
   const results = settled.map((outcome, i) => {
@@ -76,16 +69,16 @@ router.post('/', async (req: Request<{}, {}, BatchBody>, res: Response): Promise
       return {
         index: i,
         success: r.success,
-        reference: item.reference,
+        reference: item.reference ?? plans[i].reference,
         provider: r.provider,
         ...(r.success ? { data: r.data } : { error: r.error }),
       };
     } else {
-      // Promise itself rejected (shouldn't normally happen — runSmartVerify catches internally)
+      // Promise itself rejected (shouldn't normally happen — executeVerification catches provider failures)
       return {
         index: i,
         success: false,
-        reference: item.reference,
+        reference: item.reference ?? plans[i].reference,
         error: outcome.reason instanceof Error ? outcome.reason.message : 'Unexpected error',
       };
     }

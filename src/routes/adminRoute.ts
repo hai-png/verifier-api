@@ -1,14 +1,9 @@
+import { runSmartVerify } from '../services/verifyUniversal';
 import { Router, Request, Response, RequestHandler, NextFunction } from 'express';
 import { generateApiKey, getApiKeys } from '../middleware/apiKeyAuth';
 import { getUsageStats } from '../middleware/requestLogger';
 import { fireRegisteredWebhook } from '../utils/fireWebhook';
 import { getWebhookQueueHealth, replayWebhookDelivery } from '../queues/webhookQueue';
-import { verifyTelebirr } from '../services/verifyTelebirr';
-import { verifyCBE } from '../services/verifyCBE';
-import { verifyCBEBirr } from '../services/verifyCBEBirr';
-import { verifyDashen } from '../services/verifyDashen';
-import { verifyAbyssinia } from '../services/verifyAbyssinia';
-import { verifyMpesa } from '../services/verifyMpesa';
 import { accountMatches, extractPaymentDetails } from '../utils/paymentMatch';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
@@ -513,62 +508,27 @@ router.post(
       return;
     }
 
-    // ── Direct provider dispatch (NOT smart routing) ─────────────────────────
-    // Smart router infers the provider from reference shape — for products the
-    // buyer explicitly picked one, so trust that choice and call the service
-    // directly. This avoids cases like Telebirr-with-phone routing to CBE Birr.
+    // Explicit provider selection uses the same validation/dispatch as the API.
+    // Commerce still owns account/amount matching and settlement idempotency.
     const trimmedRef = reference.trim();
-    const trimmedPhone = phoneNumber?.trim();
-    const trimmedSuffix = accountSuffix?.trim();
-
+    const trimmedPhone = typeof phoneNumber === 'string' ? phoneNumber.trim() : undefined;
+    const trimmedSuffix = typeof accountSuffix === 'string' ? accountSuffix.trim() : undefined;
     let verifiedData: unknown = null;
     let verifyError: string | null = null;
-
     try {
-      switch (provider.toLowerCase()) {
-        case 'telebirr': {
-          const result = await verifyTelebirr(trimmedRef);
-          if (!result) verifyError = 'Receipt not found or could not be processed.';
-          else verifiedData = result;
-          break;
-        }
-        case 'cbe': {
-          // verifyCBE supports both new-style tokens (no suffix) and legacy FT* refs
-          verifiedData = await verifyCBE(trimmedRef, trimmedSuffix);
-          break;
-        }
-        case 'dashen': {
-          verifiedData = await verifyDashen(trimmedRef);
-          break;
-        }
-        case 'abyssinia': {
-          if (!trimmedSuffix) {
-            verifyError = 'Abyssinia verification requires the 5-digit accountSuffix.';
-          } else {
-            verifiedData = await verifyAbyssinia(trimmedRef, trimmedSuffix);
-          }
-          break;
-        }
-        case 'mpesa': {
-          verifiedData = await verifyMpesa(trimmedRef);
-          break;
-        }
-        case 'cbebirr': {
-          if (!trimmedPhone) {
-            verifyError = 'CBE Birr verification requires a phone number.';
-            break;
-          }
-          verifiedData = await verifyCBEBirr(trimmedRef, trimmedPhone);
-          break;
-        }
-        default:
-          res.status(400).json({
-            success: false,
-            code: 'BAD_REQUEST',
-            error: `Unknown provider: ${provider}`,
-          });
-          return;
+      const result = await runSmartVerify({
+        reference: trimmedRef,
+        provider,
+        suffix: ['cbe', 'abyssinia'].includes(provider.toLowerCase()) ? trimmedSuffix : undefined,
+        phoneNumber: provider.toLowerCase() === 'cbebirr' ? trimmedPhone : undefined,
+      });
+      if (result.httpStatus === 400) {
+        res.status(400).json({ success: false, code: 'BAD_REQUEST', error: result.error });
+        return;
       }
+      if (result.success) verifiedData = result.data;
+      else verifyError = result.error ?? 'Provider verification failed.';
+
     } catch (err) {
       logger.error(`verify-payment: ${provider} verification threw`, err);
       verifyError = err instanceof Error ? err.message : 'Provider verification failed.';

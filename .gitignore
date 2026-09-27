@@ -11,3 +11,6 @@ package-lock.json
 node_modules/
 dist/
 .env
+
+# TypeScript incremental compilation output
+*.tsbuildinfo

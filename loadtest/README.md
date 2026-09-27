@@ -193,3 +193,26 @@ connection pool even though they do not directly delay that response.
 See [the September 26 review](../loadtest-results/review/FINDINGS.md) for measured
 limits, remediation status and the redeployment checklist. Anonymous capacity,
 uncached synthetic-provider capacity, and real bank capacity are distinct.
+<<<<<<< ours
+=======
+
+## Browser-session dashboard path (not dashboard-secret auth)
+
+`x-dashboard-key` tests the trusted API path; it is **not** the browser's
+`/dashboard/:workspaceId/verify` endpoint. Use the new safe, malformed-input
+scenario with a test session token kept in your local environment:
+
+```bash
+node loadtest/run.mjs --base-url https://YOUR_STAGING_API \
+  --profile latency --scenarios dashboard_validate_400 \
+  --session-token-env LOADTEST_SESSION_TOKEN --workspace-id "$WORKSPACE_ID" \
+  --auth-pace-rps 0.12 --iterations 25
+```
+
+It requires session auth and never calls a bank. Generic API-auth scenarios are
+skipped for session credentials and vice versa; reports must not silently measure
+the wrong authentication path. Tokens are not written into reports. JSON stage
+aggregates include `serverTiming` phase statistics and `cacheOutcomes` whenever
+the server emits them. To measure actual successful-repeat latency, use the
+browser's displayed total and headers with a dedicated workspace: miss followed
+by hit within the configured TTL. Do not load-test real receipts/providers.

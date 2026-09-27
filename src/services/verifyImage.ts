@@ -3,8 +3,7 @@ import fs from "fs";
 import { Request, Response } from "express";
 import multer from "multer";
 import logger from "../utils/logger";
-import { verifyTelebirr } from "./verifyTelebirr";
-import { verifyCBE } from "./verifyCBE";
+import { runSmartVerify } from "./verifyUniversal";
 import { prisma } from "../utils/prisma";
 import dotenv from "dotenv";
 
@@ -194,7 +193,12 @@ Return this JSON format exactly, with no extra prose:
             if (result.type === "telebirr" && result.transaction_number) {
                 if (autoVerify) {
                     try {
-                        const data = await verifyTelebirr(result.transaction_number);
+                        const verification = await runSmartVerify({ reference: result.transaction_number, provider: 'telebirr' });
+                        if (!verification.success) {
+                            res.status(verification.httpStatus).json({ verified: false, error: verification.error });
+                            return;
+                        }
+                        const data = verification.data;
                         res.json({
                             verified: true,
                             type: "telebirr",
@@ -230,15 +234,13 @@ Return this JSON format exactly, with no extra prose:
                     return;
                 }
 
-                if (!accountSuffix) {
-                    res.status(400).json({
-                        error: "Account suffix is required for CBE verification in autoVerify mode",
-                    });
-                    return;
-                }
-
                 try {
-                    const data = await verifyCBE(result.transaction_id, accountSuffix);
+                    const verification = await runSmartVerify({ reference: result.transaction_id, suffix: accountSuffix, provider: 'cbe' });
+                    if (!verification.success) {
+                        res.status(verification.httpStatus).json({ verified: false, error: verification.error });
+                        return;
+                    }
+                    const data = verification.data;
                     res.json({
                         verified: true,
                         type: "cbe",

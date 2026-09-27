@@ -1,192 +1,77 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import express from 'express';
-import type { AddressInfo } from 'node:net';
-import { verifyResultCache, verifyCacheStats, clearVerifyCache } from '../middleware/verifyResultCache';
+import { createVerificationCache } from '../middleware/verifyResultCache';
+import type { SmartVerifyResult, VerificationPlan } from '../services/verifyUniversal';
+const plan: VerificationPlan = { provider: 'DASHEN', reference: '1234567890123456' };
+const good = (): SmartVerifyResult => ({ success: true, provider: 'DASHEN', httpStatus: 200, data: { success: true, amount: 100 } });
 
-interface Harness {
-  url: string;
-  close: () => Promise<void>;
-  calls: () => number;
-}
-
-/** Boot a tiny app that mounts the middleware in front of a slow handler. */
-async function startHarness(options: {
-  delayMs?: number;
-  handler?: (req: express.Request, res: express.Response) => void;
-  workspaceId?: string;
-} = {}): Promise<Harness> {
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    // Stand in for apiKeyAuth: every request belongs to one workspace.
-    (req as any).apiKeyData = { workspace: { id: options.workspaceId ?? 'ws_test' } };
-    next();
-  });
-  // Mounted exactly like production (per-endpoint prefix), so the middleware
-  // sees a relative req.path.
-  app.use('/verify-telebirr', verifyResultCache);
+test('concurrent identical work coalesces and subsequent reads hit', async () => {
+  const cache = createVerificationCache(); let calls = 0;
+  const execute = async () => { calls++; await new Promise((r) => setTimeout(r, 20)); return good(); };
+  const results = await Promise.all(Array.from({ length: 10 }, () => cache.run('a', plan, execute)));
+  assert.equal(calls, 1);
+  assert.equal(results.filter((r) => r.cache === 'coalesced').length, 9);
+  assert.equal((await cache.run('a', plan, execute)).cache, 'hit');
+  assert.equal(cache.stats().inFlight, 0);
+});
+test('workspace, provider, suffix, phone and case-sensitive token isolate cache entries', async () => {
+  const cache = createVerificationCache(); let calls = 0;
+  const execute = async () => { calls++; return good(); };
+  await cache.run('a', plan, execute);
+  await cache.run('b', plan, execute);
+  await cache.run('a', { ...plan, provider: 'TELEBIRR' }, execute);
+  await cache.run('a', { ...plan, suffix: '12345' }, execute);
+  await cache.run('a', { ...plan, phoneNumber: '251911111111' }, execute);
+  await cache.run('a', { provider: 'CBE', reference: 'abcdefghijklmno' }, execute);
+  await cache.run('a', { provider: 'CBE', reference: 'Abcdefghijklmno' }, execute);
+  assert.equal(calls, 7);
+});
+test('expired success re-fetches; failures and exceptions are not retained', async () => {
+  let now = 0; let calls = 0;
+  const cache = createVerificationCache({ ttlMs: 10, now: () => now });
+  const execute = async () => { calls++; return good(); };
+  await cache.run('a', plan, execute); now = 11;
+  assert.equal((await cache.run('a', plan, execute)).cache, 'miss');
+  assert.equal(calls, 2);
+  const bad = async (): Promise<SmartVerifyResult> => ({ success: false, httpStatus: 404 });
+  await cache.run('b', plan, bad);
+  assert.equal((await cache.run('b', plan, execute)).cache, 'miss');
+  await assert.rejects(cache.run('c', plan, async () => { throw new Error('upstream'); }));
+  assert.equal(cache.stats().inFlight, 0);
+  assert.equal((await cache.run('c', plan, execute)).cache, 'miss');
+});
+test('returned results cannot mutate another caller’s cached data', async () => {
+  const cache = createVerificationCache();
+  const first = await cache.run('a', plan, async () => good());
+  (first.result.data as any).amount = 999;
+  const second = await cache.run('a', plan, async () => good());
+  assert.equal((second.result.data as any).amount, 100);
+});
+test('cache and outstanding leader maps are bounded', async () => {
+  const cache = createVerificationCache({ maxEntries: 1, maxInFlight: 1 });
+  let release!: () => void;
+  const first = cache.run('a', plan, async () => { await new Promise<void>((r) => { release = r; }); return good(); });
+  await Promise.resolve();
+  const second = await cache.run('b', plan, async () => good());
+  assert.equal(second.result.httpStatus, 503);
+  release(); await first;
+  await cache.run('b', plan, async () => good());
+  assert.equal(cache.stats().entries, 1);
+  assert.equal(cache.stats().inFlight, 0);
+});
+test('public callers and explicitly disabled caches never share results', async () => {
   let calls = 0;
-  app.post('/verify-telebirr', async (req, res) => {
-    calls += 1;
-    if (options.handler) {
-      options.handler(req, res);
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, options.delayMs ?? 50));
-    res.json({ success: true, receiptNo: req.body.reference });
-  });
-
-  const server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
-  const { port } = server.address() as AddressInfo;
-  return {
-    url: `http://127.0.0.1:${port}`,
-    calls: () => calls,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-  };
-}
-
-const post = (url: string, body: unknown) =>
-  fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-
-test('concurrent identical verifications share one upstream call', async () => {
-  clearVerifyCache();
-  const harness = await startHarness({ delayMs: 120 });
-  try {
-    const [a, b, c] = await Promise.all([
-      post(`${harness.url}/verify-telebirr`, { reference: 'CE2513001XYT' }),
-      post(`${harness.url}/verify-telebirr`, { reference: 'CE2513001XYT' }),
-      post(`${harness.url}/verify-telebirr`, { reference: 'CE2513001XYT' }),
-    ]);
-
-    assert.equal(harness.calls(), 1, 'only one upstream verification should run');
-    assert.equal(a.status, 200);
-    assert.equal(b.status, 200);
-    assert.equal(c.status, 200);
-    const bodyA = await a.json();
-    const bodyB = await b.json();
-    assert.deepEqual(bodyA, bodyB);
-    assert.equal(verifyCacheStats().coalesced, 2);
-  } finally {
-    await harness.close();
-  }
+  const execute = async () => { calls++; return good(); };
+  const cache = createVerificationCache();
+  for (let i = 0; i < 2; i++) assert.equal((await cache.run(undefined, plan, execute)).cache, 'bypass');
+  const disabled = createVerificationCache({ ttlMs: 0 });
+  for (let i = 0; i < 2; i++) assert.equal((await disabled.run('a', plan, execute)).cache, 'bypass');
+  assert.equal(calls, 4);
 });
-
-test('a successful verification is replayed from the short-lived cache', async () => {
-  clearVerifyCache();
-  const harness = await startHarness();
-  try {
-    const first = await post(`${harness.url}/verify-telebirr`, { reference: 'CE2513002ABC' });
-    assert.equal(first.headers.get('x-verify-cache'), null);
-    await first.json();
-
-    const second = await post(`${harness.url}/verify-telebirr`, { reference: 'CE2513002ABC' });
-    assert.equal(second.headers.get('x-verify-cache'), 'hit');
-    assert.equal(harness.calls(), 1, 'the cached response must not hit the handler again');
-  } finally {
-    await harness.close();
-  }
-});
-
-test('failures are never cached', async () => {
-  clearVerifyCache();
-  const harness = await startHarness({
-    handler: (_req, res) => {
-      res.status(404).json({ success: false, error: 'Receipt not found or could not be processed.' });
-    },
-  });
-  try {
-    await post(`${harness.url}/verify-telebirr`, { reference: 'CE2513003DEF' });
-    await post(`${harness.url}/verify-telebirr`, { reference: 'CE2513003DEF' });
-    assert.equal(harness.calls(), 2, 'a 404 must be retried against the provider');
-    assert.equal(verifyCacheStats().entries, 0);
-  } finally {
-    await harness.close();
-  }
-});
-
-test('200 responses with success:false are not cached', async () => {
-  clearVerifyCache();
-  const harness = await startHarness({
-    handler: (_req, res) => {
-      res.json({ success: false, error: 'The transaction receipt number does not exist.' });
-    },
-  });
-  try {
-    await post(`${harness.url}/verify-telebirr`, { reference: 'CE2513004GHI' });
-    await post(`${harness.url}/verify-telebirr`, { reference: 'CE2513004GHI' });
-    assert.equal(harness.calls(), 2);
-    assert.equal(verifyCacheStats().entries, 0);
-  } finally {
-    await harness.close();
-  }
-});
-
-test('different endpoints never share a cached verification', async () => {
-  clearVerifyCache();
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    (req as any).apiKeyData = { workspace: { id: 'ws_same' } };
-    next();
-  });
-  const calls = { telebirr: 0, mpesa: 0 };
-  app.use('/verify-telebirr', verifyResultCache);
-  app.use('/verify-mpesa', verifyResultCache);
-  app.post('/verify-telebirr', (_req, res) => {
-    calls.telebirr += 1;
-    res.json({ success: true, provider: 'telebirr' });
-  });
-  app.post('/verify-mpesa', (_req, res) => {
-    calls.mpesa += 1;
-    res.json({ success: true, provider: 'mpesa' });
-  });
-
-  const server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
-  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-
-  const t = await (await post(`${url}/verify-telebirr`, { reference: 'SAME-REF' })).json();
-  const m = await (await post(`${url}/verify-mpesa`, { reference: 'SAME-REF' })).json();
-
-  assert.equal(calls.telebirr, 1);
-  assert.equal(calls.mpesa, 1, 'a Telebirr result must never answer a M-Pesa request');
-  assert.equal(t.provider, 'telebirr');
-  assert.equal(m.provider, 'mpesa');
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-});
-
-test('different workspaces never share a cached verification', async () => {
-  clearVerifyCache();
-  const harness = await startHarness();
-  try {
-    const app = express();
-    app.use(express.json());
-    let calls = 0;
-    let workspaceId = 'ws_a';
-    app.use((req, _res, next) => {
-      (req as any).apiKeyData = { workspace: { id: workspaceId } };
-      next();
-    });
-    app.use('/verify-telebirr', verifyResultCache);
-    app.post('/verify-telebirr', async (_req, res) => {
-      calls += 1;
-      res.json({ success: true, workspace: workspaceId });
-    });
-    const server = app.listen(0);
-    await new Promise<void>((resolve) => server.once('listening', resolve));
-    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-
-    const first = await (await post(`${url}/verify-telebirr`, { reference: 'SHARED' })).json();
-    workspaceId = 'ws_b';
-    const second = await (await post(`${url}/verify-telebirr`, { reference: 'SHARED' })).json();
-
-    assert.equal(calls, 2, 'each workspace must verify independently');
-    assert.equal(first.workspace, 'ws_a');
-    assert.equal(second.workspace, 'ws_b');
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  } finally {
-    await harness.close();
-  }
+test('non-final transaction statuses are not replayed as final successes', async () => {
+  const cache = createVerificationCache();
+  const pending = async (): Promise<SmartVerifyResult> => ({ success: true, httpStatus: 200, data: { transactionStatus: 'Pending' } });
+  await cache.run('a', plan, pending);
+  assert.equal((await cache.run('a', plan, pending)).cache, 'miss');
+  assert.equal(cache.stats().stored, 0);
 });

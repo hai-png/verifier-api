@@ -1,213 +1,74 @@
-/**
- * verifyResultCache.ts
- *
- * Two protections for the slowest part of the API — the upstream provider call:
- *
- *  1. Single-flight coalescing: identical verifications that arrive while one is
- *     already running share that upstream result instead of opening a second
- *     (third, tenth…) request to the bank or telecom. Mobile clients retry, and
- *     retries are exactly when this happens.
- *  2. A short positive-result cache: a completed receipt is immutable, so a
- *     successful verification can be replayed for a few seconds without asking
- *     the provider again. Failures are never cached (a receipt that does not
- *     exist yet may exist in a moment).
- *
- * Keys are scoped per workspace, so one tenant can never read another tenant's
- * verification result. Mounted after auth + quota, before the verify routers.
+/** Canonical provider-result cache, independent of HTTP route/envelope.
+ * Call only after fresh authentication, authorization, throttling and charging.
+ * No auth, membership or balance data is cached. No cross-workspace sharing.
  */
+import { createHash } from 'crypto';
+import type { SmartVerifyResult, VerificationPlan } from '../services/verifyUniversal';
 
-import { Request, Response, NextFunction } from 'express';
-import { getWorkspaceContext } from '../utils/workspaceContext';
-import logger from '../utils/logger';
-
-const CACHE_TTL_MS = Number(process.env.VERIFY_CACHE_TTL_MS ?? 60_000);
-const MAX_ENTRIES = Number(process.env.VERIFY_CACHE_MAX_ENTRIES ?? 5_000);
-
-// Single-reference verification endpoints. /verify-batch (array of results),
-// /verify-image (file upload) and /verify/public (browser throttle + no quota)
-// are deliberately excluded.
-const CACHEABLE_PATHS = new Set<string>([
-  '/verify',
-  '/verify-cbe',
-  '/verify-telebirr',
-  '/verify-dashen',
-  '/verify-abyssinia',
-  '/verify-cbebirr',
-  '/verify-mpesa',
-  '/verify-awash',
-  '/verify-zemen',
-]);
-
-interface CachedResponse {
-  statusCode: number;
-  body: unknown;
-  expiresAt: number;
+function setting(value: string | undefined, fallback: number): number {
+  const n = Number(value ?? fallback);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
-
-type Outcome = { statusCode: number; body: unknown } | null;
-
-const cache = new Map<string, CachedResponse>();
-const inflight = new Map<string, Promise<Outcome>>();
-
-const stats = { hits: 0, coalesced: 0, stored: 0, skipped: 0 };
-
-export function verifyCacheStats(): {
-  enabled: boolean;
-  ttlMs: number;
-  entries: number;
-  inFlight: number;
-  hits: number;
-  coalesced: number;
-  stored: number;
-} {
+export type VerifyCacheOutcome = 'hit' | 'miss' | 'coalesced' | 'bypass';
+export function createVerificationCache(options: { ttlMs?: number; maxEntries?: number; maxInFlight?: number; now?: () => number } = {}) {
+  const ttlMs = options.ttlMs ?? setting(process.env.VERIFY_CACHE_TTL_MS, 60_000);
+  const maxEntries = options.maxEntries ?? setting(process.env.VERIFY_CACHE_MAX_ENTRIES, 5_000);
+  const maxInFlight = options.maxInFlight ?? setting(process.env.VERIFY_CACHE_MAX_INFLIGHT, 128);
+  const now = options.now ?? Date.now;
+  const cache = new Map<string, { expiresAt: number; result: SmartVerifyResult }>();
+  const inflight = new Map<string, Promise<SmartVerifyResult>>();
+  let hits = 0, coalesced = 0, stored = 0;
+  const clone = (r: SmartVerifyResult): SmartVerifyResult => structuredClone(r);
+  function prune(): void {
+    for (const [key, value] of cache) if (value.expiresAt <= now()) cache.delete(key);
+  }
   return {
-    enabled: CACHE_TTL_MS > 0,
-    ttlMs: CACHE_TTL_MS,
-    entries: cache.size,
-    inFlight: inflight.size,
-    hits: stats.hits,
-    coalesced: stats.coalesced,
-    stored: stats.stored,
-  };
-}
-
-/** Exposed for tests. */
-export function clearVerifyCache(): void {
-  cache.clear();
-  inflight.clear();
-  stats.hits = 0;
-  stats.coalesced = 0;
-  stats.stored = 0;
-  stats.skipped = 0;
-}
-
-function normalizeReference(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().toUpperCase();
-}
-
-/**
- * Mounted with `app.use('/verify-telebirr', …)`, so `req.path` is relative to
- * the mount point ('/'). Always key on the absolute path or two different
- * endpoints would share cache entries.
- */
-function mountedPath(req: Request): string {
-  // baseUrl + path, with the trailing slash removed so '/verify-telebirr' and
-  // '/verify-telebirr/' share one cache key.
-  const full = `${req.baseUrl || ''}${req.path || ''}`;
-  return full.length > 1 && full.endsWith('/') ? full.slice(0, -1) : full;
-}
-
-function buildCacheKey(req: Request): string {
-  const context = getWorkspaceContext(req);
-  const tenant = context?.workspace.id ?? 'anonymous';
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  return [
-    req.method,
-    mountedPath(req),
-    tenant,
-    normalizeReference(body.reference ?? body.receiptNumber ?? req.query.reference),
-    String(body.suffix ?? req.query.suffix ?? ''),
-    String(body.accountSuffix ?? '').trim(),
-    String(body.phoneNumber ?? req.query.phoneNumber ?? '').trim(),
-  ].join('|');
-}
-
-/** Only real, successful verification payloads are replayable. */
-function isCacheableBody(body: unknown): boolean {
-  if (body === null || typeof body !== 'object') return false;
-  const success = (body as Record<string, unknown>).success;
-  return success !== false;
-}
-
-function prune(now: number): void {
-  if (cache.size < MAX_ENTRIES) return;
-  for (const [key, entry] of cache) {
-    if (entry.expiresAt <= now) cache.delete(key);
-  }
-  // Still full: drop the oldest insertions (Map preserves insertion order).
-  while (cache.size >= MAX_ENTRIES) {
-    const oldest = cache.keys().next();
-    if (oldest.done) break;
-    cache.delete(oldest.value);
-  }
-}
-
-export function verifyResultCache(req: Request, res: Response, next: NextFunction): void {
-  if (CACHE_TTL_MS <= 0 || !CACHEABLE_PATHS.has(mountedPath(req))) {
-    stats.skipped += 1;
-    next();
-    return;
-  }
-
-  const key = buildCacheKey(req);
-  const now = Date.now();
-
-  const cached = cache.get(key);
-  if (cached) {
-    if (cached.expiresAt > now) {
-      stats.hits += 1;
-      res.setHeader('x-verify-cache', 'hit');
-      res.status(cached.statusCode).json(cached.body);
-      return;
-    }
-    cache.delete(key);
-  }
-
-  const pending = inflight.get(key);
-  if (pending) {
-    // Coalesce: reuse the in-flight upstream call instead of starting another.
-    stats.coalesced += 1;
-    void pending
-      .then((outcome) => {
-        if (!outcome) {
-          // The leader aborted before producing a result — fall through and run
-          // this request normally rather than answering with nothing.
-          next();
-          return;
+    stats: () => {
+      prune();
+      return { enabled: ttlMs > 0 && maxEntries > 0, ttlMs, entries: cache.size, inFlight: inflight.size, hits, coalesced, stored };
+    },
+    clear: () => { cache.clear(); hits = 0; coalesced = 0; stored = 0; },
+    async run(workspaceId: string | undefined, plan: VerificationPlan, execute: () => Promise<SmartVerifyResult>): Promise<{ result: SmartVerifyResult; cache: VerifyCacheOutcome }> {
+      if (!workspaceId || ttlMs <= 0 || maxEntries <= 0) return { result: await execute(), cache: 'bypass' };
+      // JSON tuples avoid delimiter collisions. Never uppercase opaque tokens.
+      const key = createHash('sha256').update(JSON.stringify([
+        workspaceId, plan.provider, plan.reference, plan.suffix ?? '', plan.phoneNumber ?? '',
+      ])).digest('hex');
+      const previous = cache.get(key);
+      if (previous && previous.expiresAt > now()) {
+        hits++;
+        return { result: clone(previous.result), cache: 'hit' };
+      }
+      if (previous) cache.delete(key);
+      const pending = inflight.get(key);
+      if (pending) {
+        coalesced++;
+        return { result: clone(await pending), cache: 'coalesced' };
+      }
+      if (inflight.size >= maxInFlight) {
+        return { result: { success: false, httpStatus: 503, error: 'Verification capacity reached. Retry shortly.' }, cache: 'bypass' };
+      }
+      const task = Promise.resolve().then(execute);
+      inflight.set(key, task);
+      try {
+        const result = await task;
+        // Negative/domain/transport results are never replayed after completion.
+        const data = result.data as { transactionStatus?: unknown; success?: boolean } | undefined;
+        const transactionStatus = data?.transactionStatus;
+        const finalStatus = transactionStatus === undefined || /^(completed|success|successful|paid|settled)$/i.test(String(transactionStatus).trim());
+        if (result.success === true && result.httpStatus >= 200 && result.httpStatus < 300 && data?.success !== false && finalStatus) {
+          prune();
+          while (cache.size >= maxEntries) cache.delete(cache.keys().next().value!);
+          cache.set(key, { result: clone(result), expiresAt: now() + ttlMs });
+          stored++;
         }
-        res.setHeader('x-verify-cache', 'coalesced');
-        res.status(outcome.statusCode).json(outcome.body);
-      })
-      .catch((error) => {
-        logger.warn(`verify result coalescing failed: ${error instanceof Error ? error.message : String(error)}`);
-        next();
-      });
-    return;
-  }
-
-  let settle: (outcome: Outcome) => void = () => undefined;
-  const leaderResult = new Promise<Outcome>((resolve) => {
-    settle = resolve;
-  });
-  inflight.set(key, leaderResult);
-
-  let settled = false;
-  const finish = (outcome: Outcome): void => {
-    if (settled) return;
-    settled = true;
-    inflight.delete(key);
-    settle(outcome);
+        return { result: clone(result), cache: 'miss' };
+      } finally {
+        inflight.delete(key); // A thrown provider error cannot strand followers.
+      }
+    },
   };
-
-  const originalJson = res.json.bind(res);
-  res.json = (body: unknown): Response => {
-    const response = originalJson(body);
-    if (res.statusCode >= 200 && res.statusCode < 300 && isCacheableBody(body)) {
-      cache.set(key, { statusCode: res.statusCode, body, expiresAt: Date.now() + CACHE_TTL_MS });
-      stats.stored += 1;
-      prune(Date.now());
-    }
-    finish({ statusCode: res.statusCode, body });
-    return response;
-  };
-
-  // A client that disconnects mid-verification must not strand the coalesced
-  // followers: release them so they can run their own request.
-  res.on('close', () => {
-    if (!res.writableEnded) finish(null);
-  });
-  res.on('finish', () => finish(null));
-
-  next();
 }
+export const verificationResultCache = createVerificationCache();
+export const verifyCacheStats = verificationResultCache.stats;
+export const clearVerifyCache = verificationResultCache.clear;
