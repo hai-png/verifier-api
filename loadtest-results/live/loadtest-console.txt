@@ -1,11 +1,28 @@
+stage: 1 concurrent × 15s …
+  105 requests, 7.0 rps, p95 251.7 ms, problems 0
+stage: 5 concurrent × 15s …
+  482 requests, 31.8 rps, p95 259.8 ms, problems 0
+stage: 10 concurrent × 20s …
+  1249 requests, 60.4 rps, p95 259.0 ms, problems 0
+stage: 25 concurrent × 20s …
+  2919 requests, 144.5 rps, p95 383.0 ms, problems 0
+stage: 50 concurrent × 20s …
+  3212 requests, 157.6 rps, p95 593.5 ms, problems 0
+stage: 100 concurrent × 20s …
+  3179 requests, 149.6 rps, p95 1202.6 ms, problems 0
 
 target        https://verify.noveld.com.et
 resolved      216.24.57.18 (4), 216.24.57.16 (4)  cname=verifier-api-selfhosted.onrender.com
-profile       latency
-connections   created=1 reused=300
+profile       load
+connections   created=100 reused=11046
 
 stage                reqs     rps      p50      p95      p99       max   err
-sequential ×40        280     0.8     99.2    554.3    726.8     874.7     0
+c=1                   105     7.0     91.1    251.7    303.9     393.0     0
+c=5                   482    31.8     89.3    259.8    698.7    2382.9     0
+c=10                 1249    60.4     88.7    259.0    931.0    3162.7     0
+c=25                 2919   144.5    106.5    383.0    756.6    2038.4     0
+c=50                 3212   157.6    298.5    593.5    909.0    1300.6     0
+c=100                3179   149.6    703.7   1202.6   1499.2    1700.1     0
 
-report  loadtest-results/live-latency-2026-09-27T02-23-15-334Z.md
-json    loadtest-results/live-latency-2026-09-27T02-23-15-334Z.json
+report  loadtest-results/live-load-2026-09-27T02-25-46-242Z.md
+json    loadtest-results/live-load-2026-09-27T02-25-46-242Z.json
