@@ -8,7 +8,7 @@
  * GET    /workspaces              — list current user's workspaces
  * POST   /workspaces              — create a new workspace (new app)
  * GET    /workspaces/:id          — get workspace details + stats
- * PATCH  /workspaces/:id          — update workspace name/settings
+ * PATCH  /workspaces/:id          — rename workspace (name only)
  * DELETE /workspaces/:id          — delete workspace (soft delete)
  * GET    /workspaces/:id/stats    — revenue + payment stats for this workspace
  * GET    /workspaces/:id/payments — recent payments (orders) for this workspace
@@ -289,15 +289,26 @@ router.get('/:id/payments', async (req: Request, res: Response): Promise<void> =
 
 // ─── Update workspace ────────────────────────────────────────────────────────
 
+// Only the display name is self-service. Plan tier, monthly allowances and credit
+// balances are settlement state: they may only be written by the paid billing
+// path or by /admin. Accepting them here let any workspace OWNER mint unlimited
+// verifications with one PATCH.
+const MAX_WORKSPACE_NAME_LENGTH = 120;
+
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
     const workspaceId = String(req.params.id);
-    const { name, tier, verificationCredits, imageCredits } = req.body as {
-        name?: string;
-        tier?: string;
-        verificationCredits?: number;
-        imageCredits?: number;
-    };
+    const { name } = req.body as { name?: unknown };
+
+    if (typeof name !== 'string' || name.trim().length < 2) {
+        res.status(400).json({ success: false, error: 'Workspace name is required (min 2 characters).' });
+        return;
+    }
+    const trimmedName = name.trim();
+    if (trimmedName.length > MAX_WORKSPACE_NAME_LENGTH) {
+        res.status(400).json({ success: false, error: `Workspace name must be at most ${MAX_WORKSPACE_NAME_LENGTH} characters.` });
+        return;
+    }
 
     try {
         const membership = await prisma.membership.findUnique({
@@ -308,16 +319,9 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
             return;
         }
 
-        // Build update data — only update fields that are provided
-        const updateData: any = {};
-        if (name) updateData.name = name.trim();
-        if (tier) updateData.tier = tier;
-        if (typeof verificationCredits === 'number') updateData.verificationCredits = verificationCredits;
-        if (typeof imageCredits === 'number') updateData.imageCredits = imageCredits;
-
         const updated = await prisma.workspace.update({
             where: { id: workspaceId },
-            data: updateData,
+            data: { name: trimmedName },
             select: { id: true, name: true, tier: true, verificationCredits: true, imageCredits: true },
         });
 
