@@ -4,41 +4,41 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 3562,
-    "mean": 712.4
+    "total": 3625,
+    "mean": 725
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 714.2
+      "totalMs": 714
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 711.3
+      "totalMs": 773.3
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 711.2
+      "totalMs": 711.6
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 711.1
+      "totalMs": 710.5
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 713.1
+      "totalMs": 714
     }
   ],
   "sqlStatements": 16,
   "sqlPerRequest": 3.2,
   "comCountersPerRequest": {
     "Com_insert": 0.6,
-    "Com_select": 1.8,
+    "Com_select": 2,
     "Com_stmt_execute": 3.6,
     "Com_stmt_prepare": 0.2,
     "Com_update": 1
