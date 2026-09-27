@@ -109,14 +109,20 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
   const requestId = Math.random().toString(36).substring(2, 15);
   const requestIp = getRequestIp(req);
 
-  // Log request details
-  logger.info(`[${requestId}] Incoming ${req.method} request to ${req.originalUrl}`, {
+  // Log request details.
+  // Never log the raw body or query: this middleware runs before /auth and
+  // apiKeyAuth, so a login body carried a plaintext password and a query string
+  // could carry ?adminKey= or ?apiKey=. Bodies are opt-in via
+  // LOG_REQUEST_BODIES for local debugging only.
+  const logBodies = (process.env.LOG_REQUEST_BODIES ?? 'false').toLowerCase() === 'true';
+  const url = req.originalUrl.split('?')[0];
+  logger.info(`[${requestId}] Incoming ${req.method} request to ${url}`, {
     method: req.method,
-    url: req.originalUrl,
+    url,
     ip: requestIp,
     userAgent: req.get('user-agent'),
-    body: req.method === 'POST' ? JSON.stringify(req.body) : undefined,
-    query: Object.keys(req.query).length ? req.query : undefined,
+    body: logBodies && req.method === 'POST' ? JSON.stringify(req.body) : undefined,
+    query: logBodies && Object.keys(req.query).length ? req.query : undefined,
     apiKeyWorkspaceId: (req as any).apiKeyData ? ((req as any).apiKeyData.workspaceId ?? (req as any).apiKeyData.workspace?.id ?? 'unknown') : 'none'
   });
 

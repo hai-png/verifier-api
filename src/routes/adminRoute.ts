@@ -21,11 +21,11 @@ const router = Router();
 // /admin/* reachable by anyone who can read the repository.
 const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
 
-// Middleware to check admin authentication
+// Middleware to check admin authentication.
+// Header only: the key used to be accepted as ?adminKey=, which put it in
+// access logs, Referer headers and browser history.
 const checkAdminAuth = (req: Request, res: Response, next: NextFunction) => {
-    const rawAdminKey = req.query.adminKey;
-    const normalizedQueryKey = Array.isArray(rawAdminKey) ? rawAdminKey[0] : rawAdminKey;
-    const adminKey = req.headers['x-admin-key'] || normalizedQueryKey;
+    const adminKey = req.headers['x-admin-key'];
 
     if (!safeSecretEquals(adminKey, ADMIN_SECRET)) {
         return res.status(403).json({ success: false, error: 'Unauthorized admin access' });

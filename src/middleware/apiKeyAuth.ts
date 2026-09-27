@@ -209,7 +209,9 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
   }
 
   // ── Standard API key auth ──────────────────────────────────────────────────
-  const apiKey = req.headers['x-api-key'] || (req.query.apiKey as string);
+  // Header only. Accepting the key in the query string exposed it to access
+  // logs, Referer headers and browser history.
+  const apiKey = req.headers['x-api-key'];
   if (!apiKey) {
     logger.warn(`API request without API key: ${req.method} ${req.path}`);
     return res.status(401).json({ success: false, error: 'API key is required' });
