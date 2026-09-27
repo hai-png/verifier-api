@@ -6,6 +6,7 @@ import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { getWorkspaceContext } from '../utils/workspaceContext';
 import { getBatchMaxReferences } from '../config/plans';
+import { getRequestIp } from '../utils/requestIp';
 
 const router = Router();
 
@@ -89,9 +90,7 @@ router.post('/', rateLimiter, permissionGate('verify-batch'), async (req, res, n
 
   // Log each reference as a separate UsageLog entry (fire-and-forget, non-blocking)
   const responseTime = Date.now() - startedAt;
-  const ip = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim()
-    ?? req.socket.remoteAddress
-    ?? 'unknown';
+  const ip = getRequestIp(req);
 
   void (async () => {
     try {

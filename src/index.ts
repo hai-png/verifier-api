@@ -208,12 +208,16 @@ async function initializeRuntime(): Promise<void> {
     }
 }
 
-// Render terminates TLS in front of the app (and Cloudflare usually sits in
-// front of Render), so X-Forwarded-* is the only source of client/protocol
-// information. `getRequestIp()` prefers CF-Connecting-IP and falls back to
-// X-Forwarded-For — see src/utils/requestIp.ts for the residual spoofing risk
-// when the *.onrender.com URL is called directly.
-app.set('trust proxy', true);
+// Render terminates TLS in front of the app and Cloudflare usually sits in
+// front of Render, so X-Forwarded-* is the only source of protocol information
+// (req.protocol, req.secure, req.hostname). Trust a single hop rather than
+// `true`: `true` makes Express treat every forwarded entry as trustworthy.
+//
+// Client *identity* does not come from req.ip at all. getRequestIp() resolves it
+// from CF-Connecting-IP or the rightmost X-Forwarded-For entry — the one the
+// nearest trusted proxy appended, which a caller cannot forge. See
+// src/utils/requestIp.ts.
+app.set('trust proxy', 1);
 
 app.use(cors({
     origin: true, // Allow all origins — the dashboard runs on a different domain

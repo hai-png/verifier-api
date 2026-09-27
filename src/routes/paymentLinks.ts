@@ -19,6 +19,7 @@ import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { emitWorkspaceEvent } from '../utils/workspaceEvents';
 import { extractLegacyCbeUrlData, isNewCbeReference } from '../utils/cbeReference';
+import { getRequestIp } from '../utils/requestIp';
 
 const router = Router();
 
@@ -1091,10 +1092,7 @@ router.post('/:id/confirm', async (req: Request, res: Response): Promise<void> =
     }
 
     if (paymentLink.createdByKeyId) {
-      const ip =
-        (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ??
-        req.socket.remoteAddress ??
-        'unknown';
+      const ip = getRequestIp(req);
 
       void prisma.usageLog.create({
         data: {
