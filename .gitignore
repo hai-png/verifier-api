@@ -14,3 +14,9 @@ dist/
 
 # TypeScript incremental compilation output
 *.tsbuildinfo
+
+# Customer receipt uploads (multer destination) and the transient
+# loadtest-results/ artefacts. loadtest/ci/publish-report.sh used `git add -f`,
+# so remove that force-add if these are ever re-added.
+uploads/
+loadtest-results/

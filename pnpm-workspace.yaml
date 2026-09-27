@@ -4,3 +4,22 @@ allowBuilds:
   msgpackr-extract: true
   prisma: true
   puppeteer: true
+
+# qs 6.15.3 (via express) has two moderate advisories: an array-limit bypass and
+# a DoS through a crafted isBuffer value. Both need the `extended: true` query
+# parser; this service uses express.json() only and Express 5 defaults to the
+# 'simple' parser, so the paths are not reachable today. Pin the patched
+# release anyway so a future urlencoded/query-parser change cannot expose them.
+overrides:
+  qs: ^6.16.0
+
+# `pnpm audit --prod` still reports three highs with no upgrade available, both
+# documented as accepted in DEPLOYMENT.md:
+#   extract-zip  (x2, via puppeteer) — PUPPETEER_SKIP_DOWNLOAD=true in the
+#     Dockerfile means the archive-extraction path never executes; Chromium is
+#     installed from Debian instead. No patched release exists.
+#   deepmerge-ts (via prisma -> @prisma/config) — only used by the Prisma CLI
+#     while parsing config files, never by the served API. Clears on a prisma bump.
+#
+# Note: pnpm's advisory database does not flag multer at all, so a green audit is
+# not evidence of safety there. multer is pinned to ^2.4.0 for that reason.

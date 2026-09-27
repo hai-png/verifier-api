@@ -1,6 +1,6 @@
 import { Mistral } from "@mistralai/mistralai";
 import fs from "fs";
-import { Request, Response } from "express";
+import { Request, Response, NextFunction } from "express";
 import multer from "multer";
 import logger from "../utils/logger";
 import { runSmartVerify } from "./verifyUniversal";
@@ -23,7 +23,30 @@ async function refundCredit(account: ResolvedAccount): Promise<void> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-const upload = multer({ dest: "uploads/" });
+// A receipt image is a few hundred KB. Without limits, express.json()'s 100 kB
+// cap does not apply to multipart/form-data, so multer streamed an arbitrarily
+// large body to disk and readFileSync then held it (plus its 1.33x base64
+// expansion) in memory — an instant OOM on the 512 MB instance, taking every
+// in-flight verification with it.
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+const upload = multer({
+    dest: "uploads/",
+    limits: {
+        fileSize: MAX_UPLOAD_BYTES,
+        files: 1,
+        fields: 8,
+        parts: 12,
+    },
+    fileFilter: (_req, file, cb) => {
+        if (!ALLOWED_IMAGE_TYPES.has(file.mimetype)) {
+            cb(new Error(`Unsupported image type. Allowed: ${[...ALLOWED_IMAGE_TYPES].join(', ')}.`));
+            return;
+        }
+        cb(null, true);
+    },
+});
 
 const client = new Mistral({
     apiKey: process.env.MISTRAL_API_KEY!,
@@ -31,6 +54,34 @@ const client = new Mistral({
 
 export const verifyImageHandler = [
     upload.single("file"),
+
+    // multer reports limit violations and rejected MIME types as errors. Without
+    // this they surface as a generic 500 from the global handler.
+    (err: unknown, _req: Request, res: Response, next: NextFunction): void => {
+        if (!err) {
+            next();
+            return;
+        }
+        const code = (err as { code?: string }).code;
+        const message = err instanceof Error ? err.message : 'Upload rejected.';
+        if (code === 'LIMIT_FILE_SIZE') {
+            res.status(413).json({ error: `Image is too large. Maximum size is ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.` });
+            return;
+        }
+        if (code === 'LIMIT_FILE_COUNT' || code === 'LIMIT_PART_COUNT' || code === 'LIMIT_FIELD_COUNT') {
+            res.status(400).json({ error: 'Too many files or form fields in the upload.' });
+            return;
+        }
+        if (code === 'LIMIT_UNEXPECTED_FILE') {
+            res.status(400).json({ error: 'Unexpected file field. Use the "file" field.' });
+            return;
+        }
+        if (/Unsupported image type/.test(message)) {
+            res.status(415).json({ error: message });
+            return;
+        }
+        next(err);
+    },
 
     async (req: Request, res: Response): Promise<void> => {
         // ── Resolve API key identity (set by apiKeyAuth) ──────────────────────
