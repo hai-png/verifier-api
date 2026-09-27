@@ -4,6 +4,135 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased] — repository hardening
+
+A security and correctness audit of the whole repository. Full detail, including
+every finding and its disposition, is in `REVIEW.md`. Version intentionally left
+unnumbered — this release contains breaking changes and should go out as a major
+bump whenever the maintainer cuts it.
+
+### ⚠️ BREAKING
+
+- **`POST /verify-image` no longer claims payments are verified.** The endpoint
+  returned `verified: true` on the strength of a vision-model read for 21 of its
+  23 provider types, including 15 banks with no upstream API to consult at all. A
+  receipt screenshot can be produced by anyone in any image editor, so that boolean
+  was false advertising and any integration issuing goods on it was accepting
+  forged receipts. `verified` is now `true` only when a provider API confirmed the
+  payment. OCR-only receipts return `verified: false` plus a `verification` block
+  (`method`, `authoritative`, `outcome`, `checks`, `requiresManualReview`).
+  Callers who need the old behaviour can opt in per request with `?trustOcr=true`
+  or per deployment with `OCR_TRUST_IMAGES=true`; every such call is logged.
+- **Session tokens are stored hashed** (SHA-256), matching how API keys are already
+  handled. A database read no longer yields bearer tokens that work against the
+  API, the dashboard and any webhook they were registered for. Existing sessions
+  cannot be migrated — **all logged-in dashboard users are signed out on deploy**.
+- **M-Pesa verification has no built-in relay URL.** The hardcoded third-party
+  default was removed, so `MPESA_FALLBACK_URL` is now required for the M-Pesa
+  fallback path; without it the provider API result stands on its own.
+- **Receipt naming now requires a reported account.** Matching a payment to a
+  product previously accepted a receipt whose account could not be determined,
+  which let a payment be attributed to the wrong order. Such receipts are refused
+  with `RECIPIENT_NOT_REPORTED`.
+- **`scripts/reset-db.js` defaults to a dry run.** It destroyed data on execution
+  before, with no confirmation and no way to see what it would do. Destructive
+  behaviour now requires an explicit flag.
+
+### 🚀 Added
+
+- **`verification` metadata on `/verify-image`**, including per-field `checks` that
+  distinguish "did not match" (`false`) from "you did not ask" (`null`), and
+  `outcome` values `confirmed` / `rejected` / `not_attempted` / `unverified` /
+  `matches_expectations` / `does_not_match_expectations`.
+- **Server-side expectation comparison** for OCR-only receipts: `expectedAmount`,
+  `expectedPayerName`, `expectedPayerPhone`, `expectedReceiverName`,
+  `expectedReceiverAccount`, `expectedReference` (form fields or query params).
+  Amounts tolerate sub-bir rounding, names ignore case/word order/punctuation/
+  company suffixes, phone numbers ignore the `0` vs `251` prefix convention.
+- **`forward_to` route hints** when a reference cannot be resolved from the image
+  alone (e.g. a `cbe-birr` receipt with no legible payer phone).
+- **Encrypted webhook secrets at rest** (`WEBHOOK_SECRET_KEY`, AES-256-GCM, `v2.`
+  prefix) with `migrateLegacyWebhookSecrets` for existing rows.
+- **Configurable client IP resolution** via `CLIENT_IP_SOURCE`
+  (`auto|cf-connecting-ip|x-forwarded-for|socket`), so rate limiting and admin IP
+  checks cannot be bypassed by spoofing a proxy header, and honour it when one
+  genuinely fronts the service. `CLOUDFLARE_INGRESS_SECRET` gates the admin
+  routes when Cloudflare is the ingress.
+- **`web/`: `NEXT_PUBLIC_API_URL` is now required.** See Fixed.
+- **CI coverage for `web/`** (typecheck, static build, and assertions that the API
+  origin is configured rather than defaulted and that the deployed CSP names only
+  that origin). The dashboard previously had none.
+- **`web/scripts/write-headers.mjs`**, run by `npm run build` after `next build`,
+  which pins the deployed `Content-Security-Policy` `connect-src` to the configured
+  API origin. See Fixed for the defect it replaces.
+- New env vars, all documented in `.env.example`: `WEBHOOK_SECRET_KEY`,
+  `SESSION_SWEEP_INTERVAL_MS`, `SESSION_SWEEP_BATCH`, `STATS_MAX_KEYS`,
+  `STATS_RESPONSE_LIMIT`, `LOG_REQUEST_BODIES`, `OCR_TRUST_IMAGES`,
+  `INSECURE_TLS_HOSTS`, `TLS_CA_BUNDLE_PATH`, `CLOUDFLARE_INGRESS_SECRET`,
+  `CLIENT_IP_SOURCE`, `MPESA_PROXY_DEBUG`, `MPESA_PROXY_CAINFO`.
+
+### 🐛 Fixed & improved
+
+- **Dashboard sent credentials to a third-party server.** Six files under `web/src/`
+  hardcoded `https://verifier-api-selfhosted.onrender.com` — a Render host this
+  repository does not control, on a branch whose entire purpose is self-hosting. A
+  fork that deployed without setting `NEXT_PUBLIC_API_URL` posted its users'
+  credentials there. All six now read a single `API_BASE` from `web/src/lib/config.ts`,
+  which defaults to same-origin rather than to someone else's deployment: an unset
+  variable should fail visibly against your own host, not silently succeed against
+  a stranger's. The build warns, and CI fails if a fallback is reintroduced.
+- **The deployed CSP permitted an entire third-party PaaS.** `web/public/_headers`
+  — which ships verbatim, since `output: "export"` has no `headers()` block — set
+  `connect-src 'self' https://verify.noveld.com.et https://*.onrender.com`. The
+  wildcard authorized the browser to send the dashboard's bearer token to *any*
+  Render app, so the policy meant to constrain exfiltration exempted a whole
+  platform; and it named no self-hoster origin, so a correctly configured fork had
+  its API calls blocked by its own security headers. `public/_headers` is now
+  `connect-src 'self'` only (fail-closed) and the build widens that one directive to
+  the configured origin, rejecting wildcards, reducing the value to
+  scheme+host+port, and re-reading its output to assert every directive survived.
+- **Dashboard docs examples pointed at another deployment too.** `API_HOST` in
+  `web/src/components/Docs.tsx` was a hardcoded production domain used in every
+  published curl example; it now follows the configured origin, falling back to an
+  obvious placeholder.
+- **`GET /` reported a hardcoded version.** `version: '3.0.3'` was a string literal
+  in `src/index.ts` that nothing kept in step with `package.json`; it is now read
+  from the manifest at startup, degrading to `'unknown'` rather than throwing.
+- **README was wrong about the API it documents.** The `GET /` response example
+  listed `message`, `health` and `documentation` keys the route never returned, at
+  version `2.1.0`, with 6 of the 14 endpoints. The clone instruction pointed at
+  `github.com/Vixen878/verifier-api` while this repository's remote is
+  `hai-png/verifier-api` — a self-hoster following it cloned the wrong tree.
+- **`AGENTS.md` described tooling that is not in this repository.** All twelve lines
+  instructed agents to query a `graphify` knowledge graph and run `graphify update .`
+  after edits; neither the binary nor `graphify-out/` exists, so every such command
+  failed, and the file told agents to prefer that graph over reading the source. It
+  now documents the real commands, the offline/sandbox gotchas, and the invariants
+  this release establishes.
+- **`/verify-image` docs were wrong about the request.** The published example —
+  in the README and on the dashboard's docs site — uploaded `image=@…`; the endpoint
+  accepts only the `file` field and rejects anything else with a 400, so the
+  documented call could not have worked. The response contract is now documented at
+  all, including which providers are confirmed against their own API and what each
+  `verification.outcome` and `checks` value means.
+- **Dead config export removed.** `web/src/lib/config.ts` exported `APP_URL`,
+  reading `NEXT_PUBLIC_APP_URL`, which nothing in the tree consumed and no
+  documentation mentioned — an exported binding for a variable no code reads invites
+  an operator to set it and wonder why nothing changed.
+- **Dashboard read its bearer token under two different keys** (`noveld_token` in
+  most places, a dead `nvd_token` in others), so code paths disagreed about whether
+  the user was signed in. Unified on `noveld_token` behind `getToken()`/`setToken()`
+  in `web/src/lib/api.ts`; the dead credential is cleared on read.
+- **`verify.php` followed redirects without constraint** and `mpesa.php` was
+  rewritten; both hardened.
+- Removed `cookie-parser` (unused) and the `cbe-receipt-fix.patch` stray file;
+  `Dockerfile` no longer copies `scripts/` into the runtime image.
+- `.env.example` expanded to cover every variable the code actually reads.
+- Prisma `Session` model: documented the token hash and indexed `expires` so the
+  credential sweep is not a table scan.
+
+---
+
 ## [3.0.3] - 2026-05-26
 
 ### 🚀 Added

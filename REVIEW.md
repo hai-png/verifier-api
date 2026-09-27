@@ -242,6 +242,11 @@ Dockerfile no longer copies `scripts/` at all.
 | Two session-token keys: pages used `noveld_token`, `lib/api.ts` used `nvd_token` | high | **fixed** |
 | `getToken()`/`setToken()` in `lib/api.ts` were dead code operating on a key nothing read | medium | **fixed** |
 | `web/README.md` and `DEPLOYMENT.md` documented a `deploy-web.yml` workflow that does not exist | medium | **fixed** |
+| Deployed CSP allowed `https://*.onrender.com` — any app on a third-party PaaS — and did *not* allow the self-hoster's own configured API origin | critical | **fixed** |
+| `API_HOST` in `components/Docs.tsx` hardcoded one production domain, used in every published curl example | medium | **fixed** |
+| Docs page for `/verify-image` uploaded the wrong form field (`image=`; the endpoint accepts only `file` and 400s otherwise) and never said that 15 of 23 providers are OCR reads with nothing confirmed | high | **fixed** |
+| `web/` had **no CI coverage at all** — no typecheck, no build, no assertion about where it points | high | **fixed** |
+| `APP_URL` exported from `lib/config.ts` read `NEXT_PUBLIC_APP_URL`, which nothing in the tree consumes | low | **removed** |
 | Session token in `localStorage` is XSS-exfiltratable | low | **open, by design** |
 
 **What changed.**
@@ -260,6 +265,38 @@ the single owner of the key — kept as `noveld_token`, because renaming it woul
 sign every user out on deploy — the pages use its helpers, and `getToken()`
 deletes any `nvd_token` it finds, since a credential under a key no logout path
 knows about is a credential that never gets removed.
+
+**The CSP was the second half of the same defect.** `web/public/_headers` — the
+file that actually ships, since `output: "export"` has no `headers()` block —
+listed `connect-src 'self' https://verify.noveld.com.et https://*.onrender.com`.
+The wildcard authorized the browser to send this dashboard's bearer token to *any*
+Render app, so the policy that was supposed to constrain exfiltration exempted an
+entire third-party platform; and it named no self-hoster origin, so a correctly
+configured fork had its API calls blocked by its own security headers. Too
+permissive and too restrictive at once.
+
+`connect-src` is now computed. `public/_headers` stays `connect-src 'self'`
+(fail-closed, and what deploys if the script is ever skipped) and `npm run build`
+runs `web/scripts/write-headers.mjs` after `next build` to widen that one directive
+to the configured origin. It rejects wildcard hosts, reduces the value to
+`URL.origin` so a path or query string cannot widen the policy, strips the
+template's comments from the deployed file, and re-reads its own output to assert
+every directive survived. That last part is not decoration: the first version of
+this script substituted `connect-src[^;]*` file-wide, `[^;]` matched across the
+newline into the real directive, and the build produced an `out/_headers` with **no
+CSP at all** while exiting 0. A security-headers script that can silently emit no
+security headers has to verify its own output.
+
+CI now has a `dashboard` job that typechecks, builds, and asserts all of it — that
+the variable is read in exactly one file, that no fallback or third-party origin
+exists in `src/`, that the checked-in CSP is wildcard-free and `'self'`-only, and
+that the *deployed* `out/_headers` names this build's origin and nobody else's.
+Each assertion was verified to fail against the defect it guards.
+
+The docs fixes matter as much as the code ones here: the `/verify-image` page told
+integrators to upload a field the endpoint rejects, and described 23 provider types
+as though reading a screenshot confirmed a payment. Documentation that overstates a
+guarantee produces the same outcome as code that does.
 
 The `localStorage` tradeoff stays. Moving to an httpOnly cookie would mean
 re-adding the cookie-authentication path this review removed from the API for good
@@ -280,6 +317,10 @@ is the CSRF shape, and an explicit `Authorization` header is not.
 | `mpesa.php` / `verify.php` at the repo root rather than in a deploy directory | low | **open** |
 | `loadtest-results/` — 176 files, 5.4 MB of generated reports, tracked | low | **open, by design** |
 | `prisma/migrations` history is broken; `db push` is used instead | medium | **documented** |
+| `GET /` reported `version: '3.0.3'` from a string literal in `src/index.ts` rather than from `package.json` | medium | **fixed** |
+| README's documented `GET /` response listed keys the route does not return (`message`, `health`, `documentation`) at version `2.1.0` | medium | **fixed** |
+| README's clone instruction pointed at `github.com/Vixen878/verifier-api`; this repo's remote is `hai-png/verifier-api` | medium | **fixed** |
+| `AGENTS.md` instructed agents to prefer a `graphify` knowledge graph and run `graphify query`/`graphify update .` — neither the tool nor `graphify-out/` exists here | medium | **rewritten** |
 
 `pnpm test` now runs `node --test dist/tests/*.test.js`. Six test files were being
 skipped by CI entirely — a test that does not run is worse than no test, because it
@@ -292,6 +333,21 @@ The only phone-shaped values are synthetic fixtures. The comment now says that,
 and says to re-run the sweep before committing new results, because a raw server
 log committed again is a credential leak into history that has to be rewritten to
 undo.
+
+`AGENTS.md` was twelve lines of instructions for tooling that is not part of this
+repository: no `graphify` binary, no `graphify-out/`, nothing tracked, only
+`.gitignore` entries for a directory nobody generates. Every command it told an
+agent to run failed, and it told agents to prefer that nonexistent graph over
+reading the source. It now documents the real build/test commands, the sandbox
+gotchas that cost the most time here (`PUPPETEER_SKIP_DOWNLOAD`, `prisma generate`
+needing network, `node --test` requiring a glob not a directory, and the
+never-settling-promise failure mode that reports `cancelled` with `fail 0`), and
+the invariants established by this review, so the next agent does not undo them.
+
+The version literal is the small version of a real failure mode: two sources of
+truth for one fact, with nothing forcing them to agree. `GET /` now reads
+`package.json` at startup and degrades to `'unknown'` rather than throwing, because
+self-description must never be able to take the service down.
 
 `pnpm install` cannot complete without `PUPPETEER_SKIP_DOWNLOAD=true` (the
 postinstall fetches Chrome from a host this sandbox cannot reach), and

@@ -1,6 +1,8 @@
 import express, { Request, Response, NextFunction, ErrorRequestHandler, RequestHandler } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -478,11 +480,38 @@ app.get('/ready', async (req: Request, res: Response) => {
     });
 });
 
+/**
+ * The version this service reports about itself.
+ *
+ * This was a string literal that had to be kept in step with package.json by hand,
+ * and there was nothing making anyone do it: the two drift apart the first time a
+ * release bumps one and not the other, after which the API misreports its own
+ * version forever and every operator reading `/` is misled. package.json is the
+ * single source of truth; read it once at startup.
+ *
+ * Resolved from `dist/`, so `../package.json` is the deployed manifest in the
+ * container layout and in a local build alike. A missing or unreadable manifest
+ * degrades to 'unknown' rather than throwing — self-description must never be able
+ * to take the service down.
+ */
+const serviceVersion: string = (() => {
+    try {
+        const manifest = JSON.parse(
+            fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'),
+        ) as { version?: unknown };
+        return typeof manifest.version === 'string' && manifest.version.trim()
+            ? manifest.version.trim()
+            : 'unknown';
+    } catch {
+        return 'unknown';
+    }
+})();
+
 // Root endpoint
 app.get('/', (req: Request, res: Response) => {
     res.json({
         name: 'Payment Verification API',
-        version: '3.0.3',
+        version: serviceVersion,
         endpoints: [
             '/verify-cbe',
             '/verify-telebirr',

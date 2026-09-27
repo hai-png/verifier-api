@@ -531,7 +531,9 @@ The OCR endpoint (`POST /verify-image`) accepts a receipt screenshot from ANY Et
 
 The `web/` directory is a static Next.js SPA (login, password reset,
 workspace overview, manual verification, API keys, payouts, payment links,
-webhooks). It calls the Render API with `Authorization: Bearer` tokens.
+webhooks). It calls the API with `Authorization: Bearer` tokens read from
+`localStorage` — which is why the origin it calls is a security property, not a
+convenience.
 
 - **Local:** `cd web && npm install && NEXT_PUBLIC_API_URL=http://localhost:3001 npm run dev`
 - **`NEXT_PUBLIC_API_URL` is required at build time.** It is inlined into the
@@ -547,6 +549,21 @@ webhooks). It calls the Render API with `Authorization: Bearer` tokens.
   build is whatever Cloudflare is configured to run. Set `NEXT_PUBLIC_API_URL` in
   the Pages project's build environment variables — a Pages build will not read
   `web/.env.example`, and `web/.env` is not committed.
+- **Security headers and CSP.** Static export has no `headers()` block, so they
+  live in `web/public/_headers`, which `next build` copies verbatim into
+  `web/out/`. The checked-in `connect-src` is `'self'` only — deliberately
+  fail-closed, because the origin that must be permitted is only known at build
+  time. `npm run build` therefore runs `scripts/write-headers.mjs` after
+  `next build`, which rewrites that one directive to
+  `connect-src 'self' <NEXT_PUBLIC_API_URL origin>` and asserts the result still
+  carries every other directive. It rejects wildcard hosts and reduces the value
+  to scheme+host+port. Do not add origins to `public/_headers` by hand: the file
+  previously listed a deployment's domain alongside `https://*.onrender.com`,
+  which authorized the dashboard to send its bearer token to any Render app while
+  blocking a self-hoster's own API. If your host runs a plain `next build` (no
+  `npm run build`), the deployed CSP is same-origin only and cross-origin API
+  calls will be blocked — set the Pages build command to `npm run build`.
+  CI verifies the deployed `out/_headers` matches the configured origin.
 - **Custom domain:** CNAME `dashboard.noveld.com.et` → `<project>.pages.dev`.
 - **Important:** the API's `VERITAS_APP_URL` must be the dashboard URL, so
   password-reset emails link to a real `/reset-password` page.

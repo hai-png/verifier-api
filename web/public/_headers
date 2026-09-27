@@ -2,14 +2,21 @@
 #
 # `web/next.config.ts` uses output: "export", and static export does not support
 # a `headers()` block, so these have to live here (or at the CDN) rather than in
-# the Next config. There were no CSP/HSTS/X-Frame-Options anywhere in the repo.
+# the Next config.
 #
-# The dashboard is a static SPA that calls the API cross-origin with a bearer
-# token from localStorage, so the policy has to allow that API origin explicitly
-# rather than 'self'.
+# `connect-src 'self'` below is the *default*, not the whole story. The dashboard
+# is a static SPA that calls the API cross-origin with a bearer token from
+# localStorage, so the policy has to name that API origin — and that origin is
+# only known at build time. `scripts/write-headers.mjs` runs after `next build`
+# and rewrites this directive to `connect-src 'self' <NEXT_PUBLIC_API_URL origin>`.
+#
+# Keep it as 'self' here and let the script widen it. Do not add origins by hand:
+# this file previously listed a deployment's domain plus `https://*.onrender.com`,
+# which authorized the dashboard to send its bearer token to any Render app while
+# blocking a self-hoster's own API. Fail closed by default.
 
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://verify.noveld.com.et https://*.onrender.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY

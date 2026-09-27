@@ -33,6 +33,20 @@ NEXT_PUBLIC_API_URL=https://your-verifier-api.example.com npm run build
 # static output in web/out/
 ```
 
+`npm run build` is `next build` followed by `scripts/write-headers.mjs`, which
+pins the deployed `Content-Security-Policy` to the same origin:
+
+```
+connect-src 'self' https://your-verifier-api.example.com
+```
+
+`web/public/_headers` is the template and stays `connect-src 'self'` — fail-closed,
+since the permitted origin is only known at build time. The script rejects wildcard
+hosts, reduces the value to scheme+host+port, strips the template's comments from
+the deployed file, and fails the build if any directive goes missing. Running a
+plain `next build` skips it: you get valid headers, but same-origin only, so a
+cross-origin API is blocked by the browser.
+
 ## Deploy
 
 Push to `selfhosted`, then build `web/out` and publish it to the

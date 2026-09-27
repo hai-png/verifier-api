@@ -127,7 +127,7 @@ This will skip the primary Telebirr receipt fetch entirely and go straight to th
 
 ```bash
 # Clone the repository
-git clone https://github.com/Vixen878/verifier-api
+git clone https://github.com/hai-png/verifier-api
 
 # Navigate to the project directory
 cd verifier-api
@@ -326,14 +326,66 @@ Verify a CBE Birr payment using receipt number and phone number.
 
 **Requires API Key**
 
-Verify a payment by uploading an image of the receipt. This endpoint supports both CBE and Telebirr screenshots.
+Reads a receipt screenshot from any of 23 Ethiopian provider types with a vision model. What the
+response means depends on the provider, so read this before acting on it.
 
 **Request Body:**
-Multipart form-data with an image file.
+Multipart form-data. The image must be in the **`file`** field — any other field name is rejected
+with a 400.
 
 - Optional Query Param: `?autoVerify=true`  
-  When enabled, the system detects the receipt type and routes it to the correct verification flow automatically.
+  Detects the receipt type and routes the reference to that provider's own verification flow.
 - **Note**: If the auto-detected receipt is a legacy CBE FT reference, the request **must** include the payer's `Suffix` (the last 8 digits after the CBE `1000` prefix).
+
+**`verified` means something authoritative confirmed the payment.** For the 8 providers with an API
+to ask — `telebirr`, `cbe`, `cbe-birr`, `dashen`, `abyssinia`, `awash`, `zemen`, `mpesa` — the
+reference read off the image is checked upstream and the provider's answer is final. For the other
+15 there is no endpoint to consult, the image read is all that happened, and `verified` is `false`.
+A picture of a receipt can be produced by anyone in any image editor; recognising the pixels is
+extraction, not proof of payment.
+
+Every response carries a `verification` block so the caller does not have to guess:
+
+```json
+{
+  "verified": false,
+  "type": "wegagen",
+  "reference": "1234567890",
+  "details": { "payerName": "…", "amount": 1299, "…": "…" },
+  "verification": {
+    "method": "ocr_only",
+    "authoritative": false,
+    "outcome": "unverified",
+    "expectationsProvided": false,
+    "satisfied": false,
+    "checks": {
+      "amount": null, "payerName": null, "payerPhone": null,
+      "receiverName": null, "receiverAccount": null, "reference": null
+    },
+    "extractedAmount": 1299,
+    "requiresManualReview": true
+  }
+}
+```
+
+`method` is `provider_api` or `ocr_only`; `outcome` is `confirmed`, `rejected`, `not_attempted`,
+`unverified`, `matches_expectations` or `does_not_match_expectations`; each check is `true`, `false`,
+or `null` for "you did not ask about this".
+
+**Send your expectations to have an OCR-only receipt compared server-side** — `expectedAmount`,
+`expectedPayerName`, `expectedPayerPhone`, `expectedReceiverName`, `expectedReceiverAccount`,
+`expectedReference`, as form fields or query params. Amounts tolerate sub-bir rounding, names ignore
+case/word order/punctuation/company suffixes, phone numbers ignore the `0` vs `251` convention.
+`satisfied: true` means the receipt says what your order expected — it still does not mean the
+payment happened, so `verified` stays `false`.
+
+**Legacy behaviour:** `?trustOcr=true` per request, or `OCR_TRUST_IMAGES=true` for the whole
+deployment, sets `verified` from the image read alone. Every such call is logged. It is opt-in
+because the opt-out default was the problem.
+
+**Credits:** one image credit per upload, refunded automatically when the failure is ours (vision
+model unreachable → 503, empty or unparseable response → 502, non-receipt JSON → 502). Not refunded
+when the read succeeded and the provider then rejected the reference.
 
 ---
 
@@ -442,20 +494,30 @@ Get information about the API and available endpoints.
 
 ```json
 {
-  "message": "Verifier API is running",
-  "version": "2.1.0",
+  "name": "Payment Verification API",
+  "version": "3.0.3",
   "endpoints": [
     "/verify-cbe",
     "/verify-telebirr",
     "/verify-dashen",
     "/verify-abyssinia",
     "/verify-cbebirr",
-    "/verify-image"
-  ],
-  "health": "/health",
-  "documentation": "https://github.com/Vixen878/verifier-api"
+    "/verify-mpesa",
+    "/verify-awash",
+    "/verify-zemen",
+    "/verify",
+    "/verify-image",
+    "/products",
+    "/orders",
+    "/payment-links",
+    "/notifications"
+  ]
 }
 ```
+
+`version` is read from `package.json` at startup rather than repeated here as a
+literal, so it cannot drift from the released version. Liveness is `GET /health`;
+readiness is `GET /ready`.
 
 ---
 
@@ -480,6 +542,14 @@ https://verifyapi.leulzenebe.pro/[endpoint]
 ```
 
 API Documentation: [https://verify.leul.et/docs](https://verify.leul.et/docs)
+
+> **Self-hosting?** That origin is the maintainer's hosted deployment, and every
+> cURL example below uses it. If you are running your own instance, substitute your
+> own origin — and note that an API key issued by one deployment is not valid
+> against another. The bundled dashboard needs its origin at build time:
+> `NEXT_PUBLIC_API_URL` in `web/` (see `web/.env.example`). It has no default on
+> purpose; an unset value fails against your own host instead of quietly sending
+> requests somewhere else.
 
 ---
 

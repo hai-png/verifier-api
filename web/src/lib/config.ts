@@ -26,8 +26,8 @@ const configured = (process.env.NEXT_PUBLIC_API_URL ?? "").trim();
 /** Absolute base URL of the verifier-api, without a trailing slash. */
 export const API_BASE: string = configured.replace(/\/+$/, "");
 
-/** True when the build did not pin an API origin. */
-export const API_BASE_IS_UNSET: boolean = configured === "";
+/** True when the build did not pin an API origin. Internal: only the warning below reads it. */
+const API_BASE_IS_UNSET: boolean = configured === "";
 
 if (API_BASE_IS_UNSET && typeof window !== "undefined") {
   // Same-origin requests. On a static export served from Cloudflare Pages (see
@@ -38,6 +38,3 @@ if (API_BASE_IS_UNSET && typeof window !== "undefined") {
       "origin. Rebuild with NEXT_PUBLIC_API_URL=https://your-api.example.com — see web/.env.example.",
   );
 }
-
-/** Where the API sends users in password-reset emails; must match VERITAS_APP_URL. */
-export const APP_URL: string = (process.env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/+$/, "");

@@ -85,3 +85,111 @@ jobs:
       - name: Logs
         if: failure()
         run: docker logs verifier-api-ci || true
+
+  # The dashboard had no CI coverage at all, which is how it came to ship a
+  # hardcoded third-party API origin in six files: nothing ever built it, so
+  # nothing ever had to say where it pointed.
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # web/ is its own npm project with its own lockfile; it is not part of the
+      # pnpm workspace at the root (pnpm-workspace.yaml declares no packages).
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: The API origin is configured, not defaulted to a third party
+        working-directory: web
+        run: |
+          # NEXT_PUBLIC_* is inlined into the client bundle at build time, so this
+          # is the last point at which anyone can notice where the dashboard will
+          # send login credentials, bearer tokens and API keys.
+          #
+          # It used to fall back, in six files, to a Render host this repository
+          # does not control. On the `selfhosted` branch that means a fork which
+          # forgot the variable posted its users' credentials to a stranger.
+          fail=0
+
+          # 1. No file may pair the variable with a fallback value.
+          if grep -rn "NEXT_PUBLIC_API_URL" src/ | grep -F '||'; then
+            echo "::error::NEXT_PUBLIC_API_URL must not have a hardcoded fallback"
+            fail=1
+          fi
+
+          # 2. No third-party origin anywhere in src/, outside explanatory comments.
+          # The exclusion is anchored to `:<line>:` followed by a comment marker,
+          # not to a bare `:` — the value being looked for is a URL, so a pattern
+          # like `:(\*|//)` is satisfied by the `://` inside the offending line
+          # itself and excludes exactly the line it exists to catch.
+          leftover="$(grep -rn "onrender\.com" src/ | grep -vE ':[0-9]+:[[:space:]]*(\*|//)' || true)"
+          if [ -n "$leftover" ]; then
+            echo "::error::the dashboard must not hardcode a third-party API origin:"
+            echo "$leftover"
+            fail=1
+          fi
+
+          # 3. The single definition must still be the one place that reads it.
+          if [ "$(grep -rl "NEXT_PUBLIC_API_URL" src/ | sort | tr '\n' ' ')" != "src/lib/config.ts " ]; then
+            echo "::error::NEXT_PUBLIC_API_URL must be read only in src/lib/config.ts, found: $(grep -rl "NEXT_PUBLIC_API_URL" src/ | tr '\n' ' ')"
+            fail=1
+          fi
+
+          # 4. The checked-in CSP must stay fail-closed. public/_headers is what
+          #    gets deployed if scripts/write-headers.mjs is ever skipped, so it
+          #    may not name any origin itself — and never a wildcard, which is how
+          #    it came to authorise every subdomain of a third-party PaaS.
+          if grep -nE "^\s*Content-Security-Policy:" public/_headers | grep -F "*"; then
+            echo "::error::public/_headers CSP must not contain a wildcard origin"
+            fail=1
+          fi
+          if ! grep -nE "^\s*Content-Security-Policy:" public/_headers | grep -qF "connect-src 'self';"; then
+            echo "::error::public/_headers CSP connect-src must default to exactly 'self'"
+            fail=1
+          fi
+
+          exit "$fail"
+
+      - name: Build the static export
+        working-directory: web
+        # A throwaway origin: the assertion above is what guarantees a real build
+        # pins its own, and an unset value here would only warn.
+        run: NEXT_PUBLIC_API_URL=https://ci.invalid npm run build
+
+      - name: The deployed CSP allows this build's origin and nobody else's
+        working-directory: web
+        run: |
+          # out/_headers is the artifact that actually ships. write-headers.mjs
+          # asserts its own post-conditions, so this only has to confirm the
+          # substitution happened and that no origin other than the configured one
+          # survived into the deployed file.
+          header="$(grep -E "^[[:space:]]*Content-Security-Policy:" out/_headers)"
+          if [ -z "$header" ]; then
+            echo "::error::out/_headers has no Content-Security-Policy directive"
+            exit 1
+          fi
+          if ! printf '%s' "$header" | grep -qF "connect-src 'self' https://ci.invalid;"; then
+            echo "::error::connect-src was not pinned to the configured origin:"
+            printf '%s\n' "$header"
+            exit 1
+          fi
+          if printf '%s' "$header" | grep -F '*'; then
+            echo "::error::deployed CSP contains a wildcard origin"
+            exit 1
+          fi
+          if grep -rln "onrender\.com" out/; then
+            echo "::error::the build output names a third-party host"
+            exit 1
+          fi
+          echo "connect-src is pinned to the configured origin, with no wildcard."

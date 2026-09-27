@@ -1,6 +1,18 @@
 import type { ReactNode } from "react";
+import { API_BASE } from "@/lib/config";
 
-export const API_HOST = "https://verify.noveld.com.et";
+/**
+ * The origin every curl example on the docs site is written against.
+ *
+ * This was a hardcoded literal for one deployment. On the `selfhosted` branch
+ * that meant a fork's own documentation told its readers to send their API key to
+ * somebody else's server — the same defect as the dashboard's build-time default,
+ * in a place nobody would think to look. It now follows the configured origin, and
+ * falls back to an obvious placeholder rather than to a real host: an example that
+ * reads `https://your-api.example.com` gets corrected, whereas one that reads a
+ * working domain gets run.
+ */
+export const API_HOST = API_BASE || "https://your-api.example.com";
 
 export function DocH({ children }: { children: ReactNode }) {
   return <h1 className="text-3xl font-bold mb-3">{children}</h1>;
