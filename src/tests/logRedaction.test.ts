@@ -70,6 +70,8 @@ test('the shared pipeline redacts credential-shaped metadata on every transport'
   try {
     logger.info('login attempt', {
       body: { email: 'victim@example.com', password: 'hunter2-correct-horse' },
+      // Synthetic and deliberately not key-shaped: GitHub push protection blocks
+      // any commit containing a string that matches a live credential prefix.
       query: { apiKey: 'sk_live_not-a-real-key-used-only-in-tests' },
       url: '/auth/login',
     });
@@ -82,7 +84,7 @@ test('the shared pipeline redacts credential-shaped metadata on every transport'
 
   const output = chunks.join('\n');
   assert.ok(!output.includes('hunter2-correct-horse'), `password leaked: ${output}`);
-  assert.ok(!output.includes('sk_live_0123456789abcdef'), `api key leaked: ${output}`);
+  assert.ok(!output.includes('sk_live_not-a-real-key'), `api key leaked: ${output}`);
   assert.ok(!output.includes('nvd_sess_user-1'), `session token leaked: ${output}`);
   assert.ok(output.includes('[redacted]'), 'expected redaction markers');
 });
