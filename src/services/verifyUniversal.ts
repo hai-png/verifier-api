@@ -1,14 +1,6 @@
-/**
- * verifyUniversal.ts
- *
- * Shared smart-router logic. Called by both:
- *   - POST /verify        (verifyUniversalRoute.ts)
- *   - POST /verify-batch  (verifyBatch.ts)
- *
- * Returns a plain result object instead of writing to a response, so it can be
- * reused in any context (HTTP handler, batch loop, payment link confirm, etc.).
+/** One validation/planning and provider-dispatch engine for every entry point.
+ * HTTP authentication/billing and commerce settlement remain outside this layer.
  */
-
 import { verifyCBE } from './verifyCBE';
 import { verifyTelebirr } from './verifyTelebirr';
 import { verifyDashen } from './verifyDashen';
@@ -17,355 +9,145 @@ import { verifyCBEBirr } from './verifyCBEBirr';
 import { verifyAwash } from './verifyAwash';
 import { verifyZemen } from './verifyZemen';
 import { verifyMpesa } from './verifyMpesa';
+import { extractLegacyCbeUrlData, extractNewCbeToken, isLegacyCbeReference } from '../utils/cbeReference';
 import logger from '../utils/logger';
-import { extractLegacyCbeUrlData, isNewCbeReference } from '../utils/cbeReference';
 
 export interface SmartVerifyInput {
   reference: string;
   suffix?: string;
   phoneNumber?: string;
-  /** Optional explicit provider for authenticated dashboard verification. */
   provider?: string;
-  /** Retained for caller compatibility; provider services do not receive it. */
+  /** Compatibility only; credentials are never sent to provider services. */
   apiKey?: string;
 }
-
-export type SmartVerifyProvider =
-  | 'CBE'
-  | 'CBE_BIRR'
-  | 'TELEBIRR'
-  | 'DASHEN'
-  | 'ABYSSINIA'
-  | 'MPESA'
-  | 'AWASH'
-  | 'ZEMEN'
-  | 'IMAGE';
-
+export type SmartVerifyProvider = 'CBE' | 'CBE_BIRR' | 'TELEBIRR' | 'DASHEN' | 'ABYSSINIA' | 'MPESA' | 'AWASH' | 'ZEMEN' | 'IMAGE';
 export interface SmartVerifyResult {
   success: boolean;
-  /** Present when success is true. Shape varies by provider. */
   data?: unknown;
-  /** Present when success is false. */
   error?: string;
   details?: unknown;
-  /**
-   * Detected provider that handled (or attempted) this reference. Always set
-   * when a provider is identified — including the new CBE token/URL form.
-   * Undefined only for the very first "invalid reference length" rejection.
-   */
   provider?: SmartVerifyProvider;
-  /** Suggested HTTP status code for the caller to forward (default 200 on success). */
   httpStatus: number;
 }
+export interface VerificationPlan {
+  provider: Exclude<SmartVerifyProvider, 'IMAGE'> | 'AWASH_ZEMEN';
+  reference: string;
+  suffix?: string;
+  phoneNumber?: string;
+}
+export type VerificationPreparation = { ok: true; plan: VerificationPlan } | { ok: false; result: SmartVerifyResult };
+const providers: Record<string, VerificationPlan['provider']> = {
+  cbe: 'CBE', cbebirr: 'CBE_BIRR', 'cbe-birr': 'CBE_BIRR', cbe_birr: 'CBE_BIRR',
+  telebirr: 'TELEBIRR', dashen: 'DASHEN', abyssinia: 'ABYSSINIA', mpesa: 'MPESA',
+  'm-pesa': 'MPESA', awash: 'AWASH', zemen: 'ZEMEN',
+};
 
-function toFailedProviderResult(
-  provider: SmartVerifyProvider,
-  result: unknown,
-): SmartVerifyResult | null {
-  if (!result || typeof result !== 'object') return null;
-
-  const maybeFailure = result as { success?: boolean; error?: string; statusCode?: number };
-  if (maybeFailure.success !== false) return null;
-
-  return {
-    success: false,
-    error: maybeFailure.error ?? 'Verification failed.',
-    httpStatus: maybeFailure.statusCode ?? 422,
-    provider,
+/** Pure: rejects malformed data before any quota mutation or provider I/O. */
+export function prepareVerification(input: unknown): VerificationPreparation {
+  const bad = (error: string): VerificationPreparation => ({ ok: false, result: { success: false, error, httpStatus: 400 } });
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return bad('Verification input must be an object.');
+  const body = input as Record<string, unknown>;
+  // Legacy aliases converge here, including GET query parameters. Reject
+  // conflicting aliases rather than billing/caching a different receipt.
+  const read = (key: string, alias?: string): string | undefined => {
+    const values = [body[key], ...(alias ? [body[alias]] : [])].filter((v) => v !== undefined);
+    if (values.some((v) => typeof v !== 'string')) throw new Error(`${key} must be a string.`);
+    const strings = (values as string[]).map((v) => v.trim());
+    if (strings.some((v) => v !== strings[0])) throw new Error(`Conflicting ${key} aliases.`);
+    return strings[0] || undefined;
   };
-}
-
-function normaliseRequestedProvider(value?: string): SmartVerifyProvider | null {
-  switch (value?.trim().toLowerCase()) {
-    case 'cbe': return 'CBE';
-    case 'cbe-birr':
-    case 'cbebirr':
-    case 'cbe_birr': return 'CBE_BIRR';
-    case 'telebirr': return 'TELEBIRR';
-    case 'dashen': return 'DASHEN';
-    case 'abyssinia': return 'ABYSSINIA';
-    case 'mpesa':
-    case 'm-pesa': return 'MPESA';
-    case 'awash': return 'AWASH';
-    case 'zemen': return 'ZEMEN';
-    case undefined:
-    case '': return null;
-    default: return null;
-  }
-}
-
-async function verifyRequestedProvider(
-  provider: SmartVerifyProvider,
-  reference: string,
-  suffix?: string,
-  phoneNumber?: string,
-): Promise<SmartVerifyResult> {
-  switch (provider) {
-    case 'CBE': {
-      if (!suffix?.trim() || !/^\d{8}$/.test(suffix.trim())) {
-        return { success: false, error: 'CBE verification requires the payer account suffix: exactly 8 digits.', httpStatus: 400, provider };
-      }
-      const result = await verifyCBE(reference, suffix.trim());
-      const failure = toFailedProviderResult(provider, result);
-      return failure ?? { success: true, data: result, httpStatus: 200, provider };
-    }
-    case 'CBE_BIRR': {
-      const trimmedPhone = phoneNumber?.trim() ?? '';
-      if (!/^251\d{9,10}$/.test(trimmedPhone)) {
-        return { success: false, error: 'CBE Birr verification requires a phone number starting with 251.', httpStatus: 400, provider };
-      }
-      const result = await verifyCBEBirr(reference, trimmedPhone);
-      const failure = toFailedProviderResult(provider, result);
-      return failure ?? { success: true, data: result, httpStatus: 200, provider };
-    }
-    case 'TELEBIRR': {
-      const result = await verifyTelebirr(reference);
-      return result
-        ? { success: true, data: result, httpStatus: 200, provider }
-        : { success: false, error: 'Receipt not found or could not be processed.', httpStatus: 404, provider };
-    }
-    case 'DASHEN': {
-      const result = await verifyDashen(reference);
-      const failure = toFailedProviderResult(provider, result);
-      return failure ?? { success: true, data: result, httpStatus: 200, provider };
-    }
-    case 'ABYSSINIA': {
-      if (!suffix?.trim() || !/^\d{5}$/.test(suffix.trim())) {
-        return { success: false, error: 'Abyssinia verification requires exactly 5 account-suffix digits.', httpStatus: 400, provider };
-      }
-      const result = await verifyAbyssinia(reference, suffix.trim());
-      const failure = toFailedProviderResult(provider, result);
-      return failure ?? { success: true, data: result, httpStatus: 200, provider };
-    }
-    case 'MPESA': {
-      const result = await verifyMpesa(reference);
-      const failure = toFailedProviderResult(provider, result);
-      return failure ?? { success: true, data: result, httpStatus: 200, provider };
-    }
-    case 'AWASH': {
-      const result = await verifyAwash(reference);
-      const failure = toFailedProviderResult(provider, result);
-      return failure ?? { success: true, data: result, httpStatus: 200, provider };
-    }
-    case 'ZEMEN': {
-      const result = await verifyZemen(reference);
-      const failure = toFailedProviderResult(provider, result);
-      return failure ?? { success: true, data: result, httpStatus: 200, provider };
-    }
-    default:
-      return { success: false, error: 'Unsupported verification provider.', httpStatus: 400, provider };
-  }
-}
-
-export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVerifyResult> {
-  const { suffix, phoneNumber } = input;
-  const trimmedRef = input.reference.trim();
-  const len = trimmedRef.length;
-  const isNewCBE = isNewCbeReference(trimmedRef);
-  const legacyCbeLink = extractLegacyCbeUrlData(trimmedRef);
-  const requestedProvider = normaliseRequestedProvider(input.provider);
-
-  if (input.provider?.trim() && !requestedProvider) {
-    return {
-      success: false,
-      error: 'Unsupported verification provider.',
-      httpStatus: 400,
-    };
-  }
-
   try {
-    // Authenticated dashboard checks may select a provider explicitly. This is
-    // important for providers with overlapping reference formats, such as
-    // Telebirr and M-Pesa transaction IDs.
-    if (requestedProvider) {
-      return await verifyRequestedProvider(
-        requestedProvider,
-        trimmedRef,
-        suffix,
-        phoneNumber,
-      );
+    let reference = read('reference', 'receiptNumber');
+    let suffix = read('suffix', 'accountSuffix');
+    const phoneNumber = read('phoneNumber');
+    const requested = read('provider')?.toLowerCase();
+    if (!reference || reference.length > 2048) return bad('Missing or invalid reference.');
+    if ((suffix?.length ?? 0) > 8 || (phoneNumber?.length ?? 0) > 12) return bad('Invalid suffix or phone number.');
+    const explicit = requested && Object.prototype.hasOwnProperty.call(providers, requested) ? providers[requested] : undefined;
+    if (requested && requested !== 'auto' && !explicit) return bad('Unsupported verification provider.');
+    const legacyLink = extractLegacyCbeUrlData(reference);
+    const newCbe = extractNewCbeToken(reference);
+    let provider = explicit;
+    if (!provider) {
+      if (reference.length === 16 && /^\d{3}/.test(reference)) provider = 'DASHEN';
+      else if (legacyLink) provider = 'CBE';
+      else if (reference.length === 12 && reference.toUpperCase().startsWith('FT')) {
+        if (suffix?.length === 8) provider = 'CBE';
+        else if (suffix?.length === 5) provider = 'ABYSSINIA';
+        else return bad('FT references require an 8-digit CBE or 5-digit Abyssinia suffix.');
+      } else if (newCbe) provider = 'CBE';
+      else if (/^[A-Za-z0-9]{10}$/.test(reference)) provider = phoneNumber ? 'CBE_BIRR' : 'TELEBIRR';
+      else if (reference.length >= 10 && !suffix && !phoneNumber) provider = 'AWASH_ZEMEN';
+      else return bad('The provided reference does not match a recognised provider format.');
     }
+    if (provider === 'CBE') {
+      if (phoneNumber) return bad('CBE verification does not use phoneNumber.');
+      if (legacyLink) {
+        if (suffix && suffix !== legacyLink.suffix) return bad('Suffix conflicts with the CBE receipt URL.');
+        reference = legacyLink.reference;
+        suffix = legacyLink.suffix;
+      } else if (newCbe) {
+        if (suffix) return bad('New CBE receipt verification does not use a suffix.');
+        reference = newCbe; // Preserve case: new tokens can be case-sensitive.
+      } else if (!isLegacyCbeReference(reference)) return bad('Invalid CBE reference format.');
+      if (!newCbe) reference = reference.toUpperCase();
+      if (!newCbe && !/^\d{8}$/.test(suffix ?? '')) return bad('Legacy CBE verification requires exactly 8 suffix digits.');
+    } else if (provider === 'ABYSSINIA') {
+      if (!/^\d{5}$/.test(suffix ?? '') || phoneNumber) return bad('Abyssinia requires a 5-digit suffix and no phoneNumber.');
+    } else if (provider === 'CBE_BIRR') {
+      if (!/^251\d{9}$/.test(phoneNumber ?? '') || suffix) return bad('CBE Birr requires a 12-digit phone number starting with 251 and no suffix.');
+    } else if (suffix || phoneNumber) return bad(`${provider} verification expects only a reference.`);
+    return { ok: true, plan: { provider, reference, suffix, phoneNumber } };
+  } catch (error) {
+    return bad(error instanceof Error ? error.message : 'Invalid verification input.');
+  }
+}
 
-    // ── Basic length check ────────────────────────────────────────────────────
-  // Allow known lengths (10, 12, 16) + longer references (Awash/Zemen URLs use
-  // variable-length references). Reject obviously invalid short references.
-  if (!isNewCBE && !legacyCbeLink && len < 10) {
+export const providerVerifiers = {
+  CBE: (p: VerificationPlan) => verifyCBE(p.reference, p.suffix),
+  CBE_BIRR: (p: VerificationPlan) => verifyCBEBirr(p.reference, p.phoneNumber!),
+  TELEBIRR: (p: VerificationPlan) => verifyTelebirr(p.reference),
+  DASHEN: (p: VerificationPlan) => verifyDashen(p.reference),
+  ABYSSINIA: (p: VerificationPlan) => verifyAbyssinia(p.reference, p.suffix!),
+  MPESA: (p: VerificationPlan) => verifyMpesa(p.reference),
+  AWASH: (p: VerificationPlan) => verifyAwash(p.reference),
+  ZEMEN: (p: VerificationPlan) => verifyZemen(p.reference),
+};
+export type ProviderVerifiers = Record<keyof typeof providerVerifiers, (plan: VerificationPlan) => Promise<unknown>>;
+
+export async function executeVerification(plan: VerificationPlan, verifiers: ProviderVerifiers = providerVerifiers): Promise<SmartVerifyResult> {
+  if (plan.provider === 'AWASH_ZEMEN') {
+    // Preserve automatic fallback, but explicit selections never fan out.
+    const awash = await executeVerification({ ...plan, provider: 'AWASH' }, verifiers);
+    if (awash.success) return awash;
+    const zemen = await executeVerification({ ...plan, provider: 'ZEMEN' }, verifiers);
+    if (zemen.success) return zemen;
+    return { success: false, error: 'Receipt not found by the automatic fallback providers.', httpStatus: 404 };
+  }
+  const provider = plan.provider;
+  try {
+    const data = await verifiers[provider](plan);
+    if (!data) return { success: false, error: 'Receipt not found or could not be processed.', httpStatus: 404, provider };
+    const result = data as { success?: boolean; error?: string; statusCode?: number };
+    if (result.success === false) return {
+      success: false, data, error: result.error ?? 'Verification failed.',
+      httpStatus: result.statusCode ?? 422, provider,
+    };
+    return { success: true, data, httpStatus: 200, provider };
+  } catch (error) {
+    logger.error('Provider verification failed', { provider, error: error instanceof Error ? error.message : 'Unknown error' });
+    const e = error as { name?: string; message?: string; details?: unknown };
     return {
-      success: false,
-      error: 'Invalid reference length for automatic sorting.',
-      httpStatus: 400,
+      success: false, provider, httpStatus: e?.name === 'TelebirrVerificationError' ? 502 : 500,
+      error: e?.message ?? 'Provider verification failed.', details: e?.details,
     };
   }
+}
 
-    // ── Dashen Bank (16 chars, starts with 3 digits) ───────────────────────────
-    if (len === 16 && /^\d{3}/.test(trimmedRef)) {
-      if (suffix || phoneNumber) {
-        return {
-          success: false,
-          error: 'Dashen bank verification expects only a reference number. Exclude suffix and phoneNumber.',
-          httpStatus: 400,
-          provider: 'DASHEN',
-        };
-      }
-      const result = await verifyDashen(trimmedRef);
-      const failure = toFailedProviderResult('DASHEN', result);
-      if (failure) return failure;
-      return { success: true, data: result, httpStatus: 200, provider: 'DASHEN' };
-    }
-
-    // ── Legacy CBE receipt URL (contains FT reference + embedded suffix) ─────
-    if (legacyCbeLink) {
-      if (phoneNumber) {
-        return {
-          success: false,
-          error: 'Legacy CBE receipt links do not use phoneNumber.',
-          httpStatus: 400,
-          provider: 'CBE',
-        };
-      }
-
-      if (suffix && suffix.trim().length !== 8) {
-        return {
-          success: false,
-          error: 'CBE suffix must be exactly 8 digits when provided.',
-          httpStatus: 400,
-          provider: 'CBE',
-        };
-      }
-
-      const result = await verifyCBE(trimmedRef, suffix?.trim());
-      const failure = toFailedProviderResult('CBE', result);
-      if (failure) return failure;
-      return { success: true, data: result, httpStatus: 200, provider: 'CBE' };
-    }
-
-    // ── CBE & Abyssinia (12 chars, starts with "FT") ───────────────────────────
-    if (len === 12 && trimmedRef.toUpperCase().startsWith('FT')) {
-      if (!suffix) {
-        return {
-          success: false,
-          error: 'Transactions starting with "FT" require a suffix (8 digits for CBE, 5 digits for Abyssinia).',
-          httpStatus: 400,
-        };
-      }
-      const trimmedSuffix = suffix.trim();
-      if (trimmedSuffix.length === 8) {
-        const result = await verifyCBE(trimmedRef, trimmedSuffix);
-        const failure = toFailedProviderResult('CBE', result);
-        if (failure) return failure;
-        return { success: true, data: result, httpStatus: 200, provider: 'CBE' };
-      } else if (trimmedSuffix.length === 5) {
-        const result = await verifyAbyssinia(trimmedRef, trimmedSuffix);
-        const failure = toFailedProviderResult('ABYSSINIA', result);
-        if (failure) return failure;
-        return { success: true, data: result, httpStatus: 200, provider: 'ABYSSINIA' };
-      } else {
-        return {
-          success: false,
-          error: 'Suffix must be exactly 8 digits (CBE) or 5 digits (Abyssinia).',
-          httpStatus: 400,
-        };
-      }
-    }
-
-    // ── New CBE token / URL ───────────────────────────────────────────────────
-    if (isNewCBE) {
-      if (suffix || phoneNumber) {
-        return {
-          success: false,
-          error: 'New CBE receipt verification expects only the token or receipt URL.',
-          httpStatus: 400,
-          provider: 'CBE',
-        };
-      }
-      const result = await verifyCBE(trimmedRef);
-      const failure = toFailedProviderResult('CBE', result);
-      if (failure) return failure;
-      return { success: true, data: result, httpStatus: 200, provider: 'CBE' };
-    }
-
-    // ── CBE Birr & Telebirr (10 alphanumeric chars) ───────────────────────────
-    if (len === 10) {
-      if (!/^[A-Za-z0-9]{10}$/.test(trimmedRef)) {
-        return {
-          success: false,
-          error: '10-character reference must be alphanumeric.',
-          httpStatus: 400,
-        };
-      }
-      if (suffix) {
-        return {
-          success: false,
-          error: 'Suffix is not expected for 10-character transactions.',
-          httpStatus: 400,
-        };
-      }
-
-      if (phoneNumber) {
-        const trimmedPhone = phoneNumber.trim();
-        if (!trimmedPhone.startsWith('251') || trimmedPhone.length > 12 || trimmedPhone.length < 10) {
-          return {
-            success: false,
-            error: 'Invalid phone number format. Must start with 251 and be 12 digits long.',
-            httpStatus: 400,
-            provider: 'CBE_BIRR',
-          };
-        }
-        const result = await verifyCBEBirr(trimmedRef, trimmedPhone);
-        const failure = toFailedProviderResult('CBE_BIRR', result);
-        if (failure) return failure;
-        return { success: true, data: result, httpStatus: 200, provider: 'CBE_BIRR' };
-      } else {
-        // Telebirr
-        const result = await verifyTelebirr(trimmedRef);
-        if (!result) {
-          return {
-            success: false,
-            error: 'Receipt not found or could not be processed.',
-            httpStatus: 404,
-            provider: 'TELEBIRR',
-          };
-        }
-        return { success: true, data: result, httpStatus: 200, provider: 'TELEBIRR' };
-      }
-    }
-
-    // ── Awash Bank (reference doesn't match known formats — try as fallback) ───
-    // Awash Bank references are variable-length and don't follow a specific
-    // pattern. Try the Awash receipt URL as a fallback before giving up.
-    if (!suffix && !phoneNumber) {
-      const awashResult = await verifyAwash(trimmedRef);
-      if (awashResult.success) {
-        return { success: true, data: awashResult, httpStatus: 200, provider: 'AWASH' };
-      }
-
-      // ── Zemen Bank (same fallback approach) ─────────────────────────────────
-      const zemenResult = await verifyZemen(trimmedRef);
-      if (zemenResult.success) {
-        return { success: true, data: zemenResult, httpStatus: 200, provider: 'ZEMEN' };
-      }
-    }
-
-    return {
-      success: false,
-      error: 'The provided reference does not match any recognised provider format.',
-      httpStatus: 400,
-    };
-  } catch (err: any) {
-    logger.error('💥 runSmartVerify failed:', err);
-    if (err.name === 'TelebirrVerificationError') {
-      return {
-        success: false,
-        error: err.message,
-        details: err.details,
-        httpStatus: 502,
-        provider: 'TELEBIRR',
-      };
-    }
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Unknown error during verification.',
-      httpStatus: 500,
-    };
-  }
+/** Batch, public, OCR and commerce callers reuse the same validation/dispatch.
+ * They intentionally do not inherit another product's billing or cache policy.
+ */
+export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVerifyResult> {
+  const prepared = prepareVerification(input);
+  return prepared.ok ? executeVerification(prepared.plan) : prepared.result;
 }

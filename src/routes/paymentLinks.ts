@@ -965,6 +965,7 @@ router.post('/:id/confirm', async (req: Request, res: Response): Promise<void> =
 
   const verifyResult = await runSmartVerify({
     ...verificationInput,
+    provider: trimmedProvider,
   });
 
   if (!verifyResult.success) {

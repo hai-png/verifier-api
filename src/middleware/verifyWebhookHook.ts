@@ -53,13 +53,14 @@ function providerFromPath(path: string): string | undefined {
 
 export function verifyWebhookHook(req: Request, res: Response, next: NextFunction): void {
   if (
-    !SINGLE_VERIFY_PATHS.has(req.path)
+    (!res.locals.verificationRequest && !SINGLE_VERIFY_PATHS.has(req.path))
     || isTrustedBillingPaymentVerification(req)
   ) {
     next();
     return;
   }
 
+  const endpoint = `${req.baseUrl || ''}${req.path}`.replace(/\/$/, '');
   const originalJson = res.json.bind(res);
   res.json = function patchedJson(body: unknown): Response {
     // Send the response first; webhook fire is fire-and-forget after that.
@@ -74,15 +75,16 @@ export function verifyWebhookHook(req: Request, res: Response, next: NextFunctio
       if (!context?.workspace.id) return;
 
       const b = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
-      const success = b.success === true || (b.success === undefined && res.statusCode === 200);
+      const result = res.locals.verificationResult;
+      const success = result ? result.success : b.success === true || (b.success === undefined && res.statusCode === 200);
       const data = (b.data ?? b) as Record<string, unknown>;
 
       void notifyVerificationWebhooks({
         workspaceId: context.workspace.id,
         success,
-        provider: providerFromPath(req.path) ?? pickString(b.provider, data.provider),
+        provider: result?.provider ?? providerFromPath(endpoint) ?? pickString(b.provider, data.provider),
         reference: pickString(req.body?.reference, req.query?.reference, data.reference),
-        endpoint: req.path,
+        endpoint,
         data,
         error: pickString(b.error),
       });

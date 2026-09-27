@@ -31,14 +31,12 @@ import { verifyImageHandler } from "./services/verifyImage";
 import { requestLogger, initializeStatsCache, flushUsageLogs } from './middleware/requestLogger';
 import { recordHttpRequest } from './utils/dbMetrics';
 import { apiKeyAuth, flushKeyUsageCounters } from './middleware/apiKeyAuth';
-import { verifyResultCache } from './middleware/verifyResultCache';
 import { quotaRefundHook } from './utils/quotaCharge';
 import { invalidateWorkspaceDeliveryCache } from './utils/workspaceEvents';
 import { getWorkspaceId } from './utils/workspaceContext';
 import { singleFlight } from './utils/singleFlight';
-import { validateCbeRequest } from './middleware/validateCbeRequest';
 import { rateLimiter } from './middleware/rateLimiter';
-import { verifyImageGate, permissionGate, verifyQuotaGate } from './middleware/tierGate';
+import { verifyImageGate, permissionGate } from './middleware/tierGate';
 import { verifyWebhookHook } from './middleware/verifyWebhookHook';
 import { getWebhookQueueHealth, startWebhookQueueWorker, stopWebhookQueueWorker } from './queues/webhookQueue';
 import { getNotificationQueueHealth, startNotificationQueueWorker, stopNotificationQueueWorker } from './queues/notificationQueue';
@@ -196,6 +194,8 @@ app.use(cors({
     // never with cookies, so reflecting credentials to every origin is not
     // needed. Set CORS_CREDENTIALS=true only if you introduce cookie auth.
     credentials: (process.env.CORS_CREDENTIALS ?? 'false').toLowerCase() === 'true',
+    maxAge: 600, // Cache successful preflight, never receipt responses.
+    exposedHeaders: ['Server-Timing', 'X-Verify-Cache', 'Retry-After'],
 }));
 app.use(express.json());
 app.use(cookieParser());
@@ -231,40 +231,10 @@ app.use('/status', publicStatusRouter);
 // Add API key authentication middleware (will not affect admin routes)
 app.use(apiKeyAuth as express.RequestHandler);
 
-// Capture verify-endpoint responses so we can fire registered webhooks
-// after the response is sent. No-op on non-verify paths.
-app.use(verifyWebhookHook);
-
-// Rate limiting on all verify routes (applied after auth so apiKeyData is available)
-app.use('/verify-batch', rateLimiter);
-app.use('/verify', rateLimiter);
-app.use('/verify-cbe', rateLimiter);
-app.use('/verify-telebirr', rateLimiter);
-app.use('/verify-dashen', rateLimiter);
-app.use('/verify-abyssinia', rateLimiter);
-app.use('/verify-cbebirr', rateLimiter);
-app.use('/verify-mpesa', rateLimiter);
-app.use('/verify-awash', rateLimiter);
-app.use('/verify-zemen', rateLimiter);
+// Single-receipt routers (including dashboard) own the shared pipeline.
+// Batch and OCR retain their product-specific entitlement/credit gates.
+app.use((req, res, next) => req.path === '/verify-image' ? verifyWebhookHook(req, res, next) : next());
 app.use('/verify-image', rateLimiter);
-
-// Reject malformed CBE input without reserving/refunding credits. Auth and
-// throttling still run first; valid requests retain all quota checks.
-app.use('/verify-cbe', validateCbeRequest);
-
-// Monthly verification quotas (separate from per-minute rate limits)
-// Validate batch entitlement/permissions before any quota is deducted.
-app.use('/verify-batch', permissionGate('verify-batch'));
-app.use('/verify-batch', verifyQuotaGate);
-app.use('/verify', verifyQuotaGate);
-app.use('/verify-cbe', verifyQuotaGate);
-app.use('/verify-telebirr', verifyQuotaGate);
-app.use('/verify-dashen', verifyQuotaGate);
-app.use('/verify-abyssinia', verifyQuotaGate);
-app.use('/verify-cbebirr', verifyQuotaGate);
-app.use('/verify-mpesa', verifyQuotaGate);
-app.use('/verify-awash', verifyQuotaGate);
-app.use('/verify-zemen', verifyQuotaGate);
 
 // Error handling for JSON parsing - properly typed as an error handler
 const jsonErrorHandler: ErrorRequestHandler = async (err, req, res, next): Promise<void> => {
@@ -277,13 +247,6 @@ const jsonErrorHandler: ErrorRequestHandler = async (err, req, res, next): Promi
 };
 
 app.use(jsonErrorHandler);
-
-// Coalesce concurrent identical verifications + replay recent successful ones.
-// Mounted after auth/rate-limit/quota gates so every request is still
-// authenticated, throttled and billed exactly as before.
-for (const path of ['/verify', '/verify-cbe', '/verify-telebirr', '/verify-dashen', '/verify-abyssinia', '/verify-cbebirr', '/verify-mpesa', '/verify-awash', '/verify-zemen']) {
-    app.use(path, verifyResultCache);
-}
 
 // ✅ Attach routers to paths
 app.use('/verify-cbe', CBERouter);

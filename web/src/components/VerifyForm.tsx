@@ -43,6 +43,7 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
   const [result, setResult] = useState<VerifyResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [measurement, setMeasurement] = useState<{ seconds: string; cache: string | null; timing: string | null } | null>(null)
 
   const selectedProvider = VERIFICATION_PROVIDERS.find(item => item.id === provider)
   const showSuffix = provider === "auto" || provider === "cbe" || provider === "abyssinia"
@@ -53,6 +54,8 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
     setError(null)
     setResult(null)
     setBusy(true)
+    setMeasurement(null)
+    const startedAt = performance.now()
 
     try {
       const response = await fetch(`${API_BASE}/dashboard/${workspaceId}/verify`, {
@@ -64,11 +67,16 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
         body: JSON.stringify({
           reference: reference.trim(),
           provider: provider === "auto" ? undefined : provider,
-          suffix: suffix.trim() || undefined,
-          phoneNumber: phoneNumber.trim() || undefined,
+          suffix: showSuffix ? suffix.trim() || undefined : undefined,
+          phoneNumber: showPhone ? phoneNumber.trim() || undefined : undefined,
         }),
       })
       const body = (await response.json()) as VerifyResult
+      setMeasurement({
+        seconds: ((performance.now() - startedAt) / 1000).toFixed(2),
+        cache: response.headers.get("x-verify-cache"),
+        timing: response.headers.get("server-timing"),
+      })
       setResult(body)
       if (!response.ok && !body.error) setError(`Verification request failed (${response.status}).`)
     } catch (requestError) {
@@ -146,7 +154,7 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
                   id="verify-phone"
                   value={phoneNumber}
                   onChange={event => setPhoneNumber(event.target.value)}
-                  placeholder="251… or 09…"
+                  placeholder="251911123456"
                 />
               </div>
             )}
@@ -178,6 +186,19 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
                 ) : "FAILED"}
               </Badge>
             </CardTitle>
+            {measurement && (
+              <div className="text-sm text-muted-foreground" aria-live="polite">
+                Completed in {measurement.seconds}s
+                {measurement.cache === "hit" ? " · Recent successful result (short-lived cache)" : null}
+                {measurement.cache === "coalesced" ? " · Shared in-flight verification" : null}
+                {measurement.timing && (
+                  <details className="mt-2 text-xs">
+                    <summary>Server timing (milliseconds)</summary>
+                    <code className="break-words">{measurement.timing}</code>
+                  </details>
+                )}
+              </div>
+            )}
             {!result.success && result.error && <CardDescription>{result.error}</CardDescription>}
           </CardHeader>
           <CardContent>

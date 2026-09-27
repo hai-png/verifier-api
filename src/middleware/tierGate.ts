@@ -199,7 +199,7 @@ async function syncWorkspacePlanState(
   return billingConfig;
 }
 
-async function getSyncedPlanState(req: Request): Promise<{
+export async function getSyncedPlanState(req: Request): Promise<{
   account: ReturnType<typeof resolveAccount>;
   billingConfig: BillingConfig;
 }> {
@@ -218,6 +218,8 @@ async function getSyncedPlanState(req: Request): Promise<{
 
 function getVerificationUnits(req: Request): number | null {
   const routeBase = req.baseUrl;
+  // Prepared single-verification input covers POST, GET and receiptNumber aliases.
+  if ((req as any).verificationPlan) return 1;
 
   if (routeBase === '/verify-batch') {
     const references = req.body?.references;

@@ -2,8 +2,8 @@
  * quotaCharge.ts
  *
  * Monthly verification credits are deducted in `verifyQuotaGate` — before the
- * request is validated, because that is the only point where the workspace row
- * can be decremented atomically. That ordering meant a malformed request (400),
+ * provider is called. Single-receipt inputs are now validated first in the
+ * shared pipeline. Previously a malformed request (400),
  * a permission rejection (403) or an internal error (500) still consumed the
  * customer's credit even though nothing was ever asked of the provider.
  *

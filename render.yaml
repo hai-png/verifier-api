@@ -3,11 +3,11 @@ services:
     name: verifier-api-selfhosted
     env: docker
     plan: free  # 512MB RAM / shared CPU, spins down after 15 min inactivity (cold start ~30s)
-    # REGION MATTERS. This service runs in us-west (Oregon) — see the CNAME
-    # target *.origin.onrender.com in DNS. The database must live in the same
-    # region: a TiDB Serverless cluster in us-east-1 adds ~150 ms to every query,
-    # and a verification issues several queries. Use us-west-2 (Oregon) for
-    # TiDB, or move this service to us-east (Ohio/Virginia).
+    # REGION MATTERS: live origin DNS identified Oregon; the owner confirmed
+    # TiDB is in Frankfurt (2026-09-26). Co-locate API + DB to avoid paying a
+    # transatlantic RTT per query. Existing Render services cannot be moved by
+    # changing a comment: create a Frankfurt replacement and perform a tested
+    # cutover. Do NOT recreate/delete the existing database. See DEPLOYMENT.md.
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /

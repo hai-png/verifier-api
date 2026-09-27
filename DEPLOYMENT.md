@@ -41,7 +41,7 @@ Mobile App → Cloudflare Worker → verifier-api (Render free) → bank/telecom
 ## Step 1: Set up the database (TiDB Cloud Serverless — free)
 
 1. Go to https://tidbcloud.com → Sign up → Create a **Serverless** cluster (free tier: 5GB storage)
-2. Choose region: AWS us-east-1 (closest to Render's free tier)
+2. Choose the **same region as your API**. For this deployment the owner confirmed TiDB is in Frankfurt; place the replacement API in Frankfurt too. Do not assume the free-tier API is in us-east-1.
 3. Set a root password — save it
 4. Once created, click **Connect** → **Connect with** Prisma → copy the connection string
 5. It looks like: `mysql://<prefix>:<password>@gateway01.us-east-1.prod.aws.tidbcloud.com:4000/test?sslaccept=accept_invalid_certs`
@@ -260,27 +260,28 @@ Measured on the live deployment (see `loadtest/README.md` and
 
 ### 1. The database region must match the Render region
 
-`verify.noveld.com.et` resolves through Cloudflare to
-`verifier-api-selfhosted.onrender.com`, i.e. a Render instance in **US West
-(Oregon)**. A TiDB Serverless cluster created in **us-east-1** (as Step 1
-suggests) puts a ~150 ms round trip between the app and its database:
+**Deployment-specific confirmation (26 September 2026):** the API origin DNS
+points to `gcp-us-west1-1.origin.onrender.com` (Oregon), while the owner confirmed
+TiDB is in **Frankfurt**. The old `us-east-1` instructions were an example, not
+an observation of the deployed database. Dashboard assets are served through
+Cloudflare; proxy.noveld.com.et resolves to an Ethiopia-registered Ethio Telecom
+network. Moving only the static dashboard does not shorten backend DB queries.
 
-| Endpoint | Database round trips | Warm p50 |
-|---|---|---|
-| `GET /health` (no database) | 0 | 37 ms |
-| `GET /status/summary` (no database) | 0 | 39 ms |
-| `GET /ready` (`SELECT 1`) | 1 | **194 ms** |
-| `POST /verify-cbe` with an unknown key | 1 | **199 ms** |
+Prefer creating a **replacement Render API in Frankfurt**, using the existing
+TiDB cluster, over migrating the database. Confirm region availability in the
+hosting console. Preserve all secrets, proxy configuration, Chromium support,
+custom-domain/CORS settings, and the deployed application revision. Do not
+reset/recreate the database. Apply schema changes once through the normal
+migration process, not concurrently from two instances. Validate readiness and
+a dedicated workspace's verification, then cut over the API hostname (and
+rebuild the static dashboard if `NEXT_PUBLIC_API_URL` changes). Keep the old
+service available for rollback until the new instance is verified.
 
-A single verification issues several sequential queries, so this is the
-difference between a ~200 ms and a ~1 s verification.
-
-**Fix (pick one):**
-
-- Recreate the TiDB Serverless cluster in **us-west-2 (Oregon)** and paste the
-  new `DATABASE_URL` into Render (fastest, no code change), or
-- Move the Render service to **us-east** (Ohio/Virginia) — Render's free plan
-  offers us-east too.
+The shared pipeline below saves provider calls and removes the separate
+membership lookup, but every authorized charged request still reads workspace
+state and atomically reserves credit. Those calls remain latency-sensitive.
+Measure `Server-Timing` and browser TTFB before/after the region change; do not
+promise a sub-second first-time bank verification based on a cache-hit test.
 
 ### 2. Cold starts
 
@@ -539,3 +540,83 @@ webhooks). It calls the Render API with `Authorization: Bearer` tokens.
 - **Custom domain:** CNAME `dashboard.noveld.com.et` → `<project>.pages.dev`.
 - **Important:** the API's `VERITAS_APP_URL` must be the dashboard URL, so
   password-reset emails link to a real `/reset-password` page.
+
+## Unified verification pipeline (local follow-up implementation)
+
+`POST /dashboard/:workspaceId/verify`, `POST /verify`, and GET/POST
+`/verify-{provider}` now use **one** single-receipt HTTP pipeline:
+
+1. Authenticate via the existing session/API-key/trusted-server entry point.
+2. Resolve authorized workspace state (dashboard: one `Workspace` query with a
+   membership predicate, no cached authorization).
+3. Apply the shared rate limit, normalize/validate aliases and resolve provider.
+4. Enforce the API key’s `verify` permission, shared plan rollover/expiry, and
+   atomic verification-credit reservation.
+5. Replay a short-lived final-success result, coalesce concurrent identical
+   work, or call the shared provider dispatcher.
+6. Format the response for the existing client contract and emit outcome events
+   asynchronously. Shared refund handling covers infrastructure/validation errors.
+
+Cache keys are canonical `(workspace, provider, reference, suffix, phone)` tuples,
+not HTTP paths or response envelopes. A dashboard result can therefore satisfy
+an equivalent API request **only after that request passes its own gates**.
+Opaque reference/token case is preserved. Failures and non-final transaction
+statuses are not replayed. The default result TTL is 60 seconds; use
+`VERIFY_CACHE_TTL_MS=0` to disable both replay and coalescing. Completed entries
+and outstanding leaders have bounded counts. Capacity rejection returns 503 and
+`Retry-After: 1`; the existing refund hook returns any reserved credit.
+
+**Billing remains per accepted request**, including hits and coalesced followers.
+This is not idempotent billing. Do not use response caching as payment-settlement
+idempotency: commerce's amount/account matching, transaction reuse checks and
+order settlement still run separately and use fresh verification.
+
+Legacy success envelopes remain compatible. Historical legacy provider-domain
+failures that returned HTTP 200 still do so; the engine records `success:false`
+and never caches them. Dashboard/universal callers receive meaningful failure
+statuses. Strict malformed-input validation now consistently returns 400 before
+charging. Dashboard requests now obey the same plan expiry, monthly rollover,
+rate-limit and outcome-event rules as direct API requests; communicate these
+intentional changes to dashboard users (notably FREE-tier 429s).
+
+The public route retains its explicit IP throttle and is quota/webhook/cache-free.
+Batch and commerce callers reuse the same validation/dispatch engine, while
+retaining bulk billing and settlement policies. OCR bank rechecks also use that
+engine, with image-credit policy kept separate. Signed status probes deliberately
+call provider services directly: they must test actual upstream health, not the
+customer cache. These policy boundaries are intentional, not duplicate provider
+implementations.
+
+### Timing and browser verification
+
+Responses expose `Server-Timing` phases (`access` for dashboard workspace lookup,
+`rate_limit`, `validate`, `policy`, `quota`, `provider`, `verify_total`) and `X-Verify-Cache`
+(`miss`, `hit`, `coalesced`, `bypass`). `provider` measures the cache/provider stage,
+so a hit has almost no provider time and a coalesced request includes its wait.
+API-key authentication occurs before the pipeline and is not included in
+`verify_total`; browser total also includes network/preflight/body parsing.
+The dashboard displays browser duration and the returned timing/cache metadata.
+Receipt responses are `Cache-Control: no-store`. CORS preflight can be cached for
+600 seconds, and these diagnostic headers are exposed to the frontend.
+
+For the reported repeated Dashen/Telebirr case: verify a successful reference,
+then repeat within 60 seconds in the same workspace. Expect `miss` then `hit`,
+with fresh quota deductions and no second upstream fetch. Repeat across the
+matching legacy API URL to check canonical cache reuse. A failure/pending receipt,
+expired TTL, disabled cache, different workspace/arguments, or another API
+instance correctly produces fresh work. Cache/rate counters are process-local;
+multiple replicas need separate evaluation rather than assuming shared state.
+
+Dashen's old five 30-second retries with 2-second sleeps have been replaced by
+at most two attempts under a default 15-second overall deadline, with 250 ms
+transient backoff and no retries on permanent 4xx responses.
+
+### Validation and rollout status
+
+This follow-up is **local and not deployed/pushed**: the original coding session
+is closed. Start a new coding session to review and ship it. Local tests exercise
+production Express routers, auth, membership predicates, rate/quota middleware,
+canonical cache and provider dispatch with database/provider I/O stubbed. They
+are not production latency measurements or a real-MySQL concurrency benchmark.
+Before rollout, run the suite against real MySQL, then use a dedicated workspace
+on the Frankfurt replacement to compare miss/hit timings and quota behavior.
