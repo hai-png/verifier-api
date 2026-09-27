@@ -11,7 +11,7 @@
  */
 
 import { Prisma } from '@prisma/client';
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { runSmartVerify } from '../services/verifyUniversal';
 import { accountMatches, cbeAccountMatches, extractPaymentDetails, maskCbeAccount } from '../utils/paymentMatch';
 import { sendBuyerPurchaseEmail } from '../utils/purchaseEmail';
@@ -20,6 +20,7 @@ import logger from '../utils/logger';
 import { emitWorkspaceEvent } from '../utils/workspaceEvents';
 import { extractLegacyCbeUrlData, isNewCbeReference } from '../utils/cbeReference';
 import { getRequestIp } from '../utils/requestIp';
+import { MemoryWindowCounter } from '../utils/expiringStore';
 
 const router = Router();
 
@@ -717,6 +718,16 @@ router.get('/:id/public', async (req: Request, res: Response): Promise<void> => 
 });
 
 router.get('/:id/recent-order', async (req: Request, res: Response): Promise<void> => {
+  // This route previously took no auth context and derived the tenant from the
+  // client-supplied link id, so any authenticated workspace could read another
+  // tenant's order (buyer name, email, phone, reference, amount) by passing a
+  // foreign link id. Scope it exactly like GET /payment-links/:id.
+  const auth = getAuthContext(req);
+  if (!auth) {
+    res.status(401).json({ success: false, error: 'Authentication required.' });
+    return;
+  }
+
   const orderId = typeof req.query.orderId === 'string' ? req.query.orderId.trim() : '';
   if (!orderId) {
     res.status(400).json({ success: false, error: 'orderId is required.' });
@@ -725,8 +736,8 @@ router.get('/:id/recent-order', async (req: Request, res: Response): Promise<voi
 
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const paymentLink = await prisma.paymentLink.findUnique({
-      where: { id },
+    const paymentLink = await prisma.paymentLink.findFirst({
+      where: { id, workspaceId: auth.workspaceId },
       select: {
         id: true,
         workspaceId: true,
@@ -782,7 +793,34 @@ router.get('/:id/recent-order', async (req: Request, res: Response): Promise<voi
   }
 });
 
-router.post('/:id/confirm', async (req: Request, res: Response): Promise<void> => {
+// Confirming a payment link is deliberately unauthenticated — a buyer has no
+// key — but the handler calls the provider directly, so without a limit it is an
+// unmetered way to drive real Telebirr/CBE/M-Pesa traffic through the paid
+// relays, and a way to flood a merchant's webhook endpoints. Throttle per link
+// and per client before any provider work happens.
+const confirmThrottle = new MemoryWindowCounter();
+const CONFIRM_WINDOW_MS = 60 * 60 * 1000;
+const CONFIRM_MAX_PER_LINK = 20;
+const CONFIRM_MAX_PER_IP = 60;
+
+function confirmThrottleMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const linkId = (Array.isArray(req.params.id) ? req.params.id[0] : req.params.id) || 'unknown';
+  const ip = getRequestIp(req);
+
+  const perLink = confirmThrottle.increment(`link:${linkId}`, CONFIRM_WINDOW_MS);
+  if (perLink.count > CONFIRM_MAX_PER_LINK) {
+    res.status(429).json({ success: false, error: 'Too many payment attempts for this link. Try again later.' });
+    return;
+  }
+  const perIp = confirmThrottle.increment(`ip:${ip}`, CONFIRM_WINDOW_MS);
+  if (perIp.count > CONFIRM_MAX_PER_IP) {
+    res.status(429).json({ success: false, error: 'Too many payment attempts. Try again later.' });
+    return;
+  }
+  next();
+}
+
+router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res: Response): Promise<void> => {
   const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const {
     reference,
