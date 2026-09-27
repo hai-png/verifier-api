@@ -1,13 +1,13 @@
 {
   "_comment": "Parameters for push-triggered loadtest-live runs. workflow_dispatch inputs override these when the workflow is started manually from the Actions tab.",
   "base_url": "https://verify.noveld.com.et",
-  "profile": "latency",
-  "scenarios": "health,root,status_summary,ready,auth_missing_401,auth_invalid_403,verify_validate_400",
+  "profile": "load",
+  "scenarios": "health,root,status_summary,ready,auth_missing_401,auth_invalid_403",
   "concurrency": "10",
   "duration": "20",
   "iterations": "40",
   "auth_pace_rps": "0.12",
-  "stages": "1:15,5:15,10:20,25:25,50:30",
+  "stages": "1:15,5:15,10:20,25:20,50:20,100:20",
   "coldstart_sleep": "0",
   "allow_external": false,
   "_notes": [
