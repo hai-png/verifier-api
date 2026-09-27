@@ -1,27 +1,27 @@
 stage: 1 concurrent × 10s …
-  53 requests, 5.2 rps, p95 713.9 ms, problems 0
+  53 requests, 5.2 rps, p95 712.3 ms, problems 0
 stage: 5 concurrent × 10s …
-  254 requests, 23.8 rps, p95 775.1 ms, problems 0
+  255 requests, 24.0 rps, p95 755.2 ms, problems 0
 stage: 10 concurrent × 15s …
-  636 requests, 40.9 rps, p95 856.3 ms, problems 0
+  629 requests, 39.9 rps, p95 857.7 ms, problems 0
 stage: 20 concurrent × 15s …
-  657 requests, 40.3 rps, p95 1455.0 ms, problems 0
+  647 requests, 39.4 rps, p95 1467.1 ms, problems 0
 stage: 40 concurrent × 15s …
-  649 requests, 37.5 rps, p95 2811.6 ms, problems 0
+  642 requests, 36.6 rps, p95 2827.2 ms, problems 0
 
 target        http://127.0.0.1:3001
 resolved      127.0.0.1 (4)
 profile       all
-connections   created=40 reused=2464
-cold start    first TTFB 68.7 ms (sleep 0s)
+connections   created=40 reused=2441
+cold start    first TTFB 68.8 ms (sleep 0s)
 
 stage                reqs     rps      p50      p95      p99       max   err
-sequential ×25        225     5.0     63.3    717.5    772.7     777.7     0
-c=1                    53     5.2     64.5    713.9    741.7     770.4     0
-c=5                   254    23.8     65.0    775.1    837.2     897.0     0
-c=10                  636    40.9    122.6    856.3    918.6    1020.9     0
-c=20                  657    40.3    365.9   1455.0   1601.9    1693.3     0
-c=40                  649    37.5    885.3   2811.6   3051.1    3232.5     0
+sequential ×25        225     4.9     63.4    715.9    773.6     778.2     0
+c=1                    53     5.2     63.1    712.3    713.5     713.8     0
+c=5                   255    24.0     66.2    755.2    796.7     839.8     0
+c=10                  629    39.9    123.0    857.7    944.0    1011.7     0
+c=20                  647    39.4    364.1   1467.1   1692.6    1780.9     0
+c=40                  642    36.6    916.1   2827.2   3153.7    3355.0     0
 
-report  loadtest-results/lab-all-2026-09-27T01-09-14-357Z.md
-json    loadtest-results/lab-all-2026-09-27T01-09-14-357Z.json
+report  loadtest-results/lab-all-2026-09-27T02-29-29-154Z.md
+json    loadtest-results/lab-all-2026-09-27T02-29-29-154Z.json
