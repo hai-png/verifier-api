@@ -104,19 +104,39 @@ export const initializeStatsCache = async () => {
   }
 };
 
+// Stats maps are keyed by raw path and client IP, both attacker-controlled
+// (random 404 paths, CDN edge IPs). Bound them so a load spike or scan cannot
+// grow the heap of a 512 MB instance without limit.
+const STATS_MAX_KEYS = Number(process.env.REQUEST_STATS_MAX_KEYS ?? 5_000);
+function capMap(map: Map<string, unknown>): void {
+  while (map.size >= STATS_MAX_KEYS) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
+const SECRET_QUERY_PARAMS = /([?&](?:apiKey|api_key|key|token|secret)=)[^&#]*/gi;
+export function redactUrl(url: string): string {
+  return url.replace(SECRET_QUERY_PARAMS, '$1[redacted]');
+}
+
+const PROBE_PATHS = new Set(['/', '/health', '/ready']);
+
 export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
   const requestId = Math.random().toString(36).substring(2, 15);
   const requestIp = getRequestIp(req);
 
-  // Log request details
-  logger.info(`[${requestId}] Incoming ${req.method} request to ${req.originalUrl}`, {
+  // Log request metadata only. Request bodies carry receipt references, phone
+  // numbers and account suffixes, and `?apiKey=` query strings carry secrets —
+  // neither belongs in logs. Body *size* is enough for diagnostics.
+  logger.debug(`[${requestId}] Incoming ${req.method} request to ${redactUrl(req.originalUrl)}`, {
     method: req.method,
-    url: req.originalUrl,
+    url: redactUrl(req.originalUrl),
     ip: requestIp,
     userAgent: req.get('user-agent'),
-    body: req.method === 'POST' ? JSON.stringify(req.body) : undefined,
-    query: Object.keys(req.query).length ? req.query : undefined,
+    bodyBytes: req.method === 'POST' ? Number(req.get('content-length') ?? 0) || undefined : undefined,
     apiKeyWorkspaceId: (req as any).apiKeyData ? ((req as any).apiKeyData.workspaceId ?? (req as any).apiKeyData.workspace?.id ?? 'unknown') : 'none'
   });
 
@@ -126,6 +146,7 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
   // Track by endpoint
   const endpoint = `${req.method} ${req.originalUrl.split('?')[0]}`;
   if (!statsCache.endpointStats.has(endpoint)) {
+    capMap(statsCache.endpointStats);
     statsCache.endpointStats.set(endpoint, {
       count: 0,
       successCount: 0,
@@ -138,21 +159,22 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
 
   // Track by IP address
   const ipCount = statsCache.ipStats.get(requestIp) || 0;
+  if (ipCount === 0) capMap(statsCache.ipStats);
   statsCache.ipStats.set(requestIp, ipCount + 1);
 
   // Use the 'finish' event to capture response completion
   res.on('finish', async () => {
     const responseTime = Date.now() - start;
-    const endpointStat = statsCache.endpointStats.get(endpoint)!;
-
-    if (res.statusCode < 400) {
-      endpointStat.successCount++;
-    } else {
-      endpointStat.failureCount++;
+    const endpointStat = statsCache.endpointStats.get(endpoint);
+    if (endpointStat) { // may have been evicted by capMap while in flight
+      if (res.statusCode < 400) {
+        endpointStat.successCount++;
+      } else {
+        endpointStat.failureCount++;
+      }
+      endpointStat.avgResponseTime =
+        (endpointStat.avgResponseTime * (endpointStat.count - 1) + responseTime) / endpointStat.count;
     }
-
-    endpointStat.avgResponseTime =
-      (endpointStat.avgResponseTime * (endpointStat.count - 1) + responseTime) / endpointStat.count;
 
     // Get auth context for logging
     const context = getWorkspaceContext(req);
@@ -163,7 +185,12 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
     const keyDetails = (req as any).apiKeyData;
     const safeKeyLog = keyDetails ? (keyDetails.prefix || (keyDetails.key ? keyDetails.key.substring(0, 8) : 'unknown')) : 'none';
 
-    logger.info(`[${requestId}] Response sent in ${responseTime}ms with status ${res.statusCode}`, {
+    // One info line per request (it carries method + path), and health/ready
+    // probes — Render's health check and the keep-alive pinger — only at debug.
+    // Console logging was two colorized lines per request, a measurable share
+    // of CPU on a shared instance that saturated at ~155 RPS in the live ramp.
+    const level = res.statusCode >= 500 ? 'warn' : PROBE_PATHS.has(req.path) && res.statusCode < 400 ? 'debug' : 'info';
+    logger.log(level, `[${requestId}] ${req.method} ${redactUrl(req.originalUrl)} -> ${res.statusCode} in ${responseTime}ms`, {
       statusCode: res.statusCode,
       responseTime,
       contentLength: res.get('Content-Length') || 'unknown',
@@ -172,9 +199,6 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
       workspaceId
     });
 
-    if (res.statusCode >= 400) {
-      logger.warn(`[${requestId}] Error occurred with status ${res.statusCode}`);
-    }
 
     // Store usage log for API key auth only (not dashboard auth) — dashboard
     // requests are internal management calls, not billable API consumption.

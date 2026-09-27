@@ -1,4 +1,5 @@
 import { prisma } from '../utils/prisma';
+import logger from '../utils/logger';
 
 export interface BillingConfig {
   proPriceMonthlyETB: number;
@@ -151,13 +152,15 @@ export function validateBillingConfigUpdate(input: unknown): Partial<BillingConf
 // rarely, so cache it briefly and invalidate on write.
 const BILLING_CONFIG_CACHE_TTL_MS = Number(process.env.BILLING_CONFIG_CACHE_TTL_MS ?? 30_000);
 
-let cachedBillingConfig: { value: BillingConfig; expiresAt: number } | null = null;
+let cachedBillingConfig: { value: BillingConfig; expiresAt: number; loadedAt: number } | null = null;
+let cacheGeneration = 0;
 let inflightBillingConfig: Promise<BillingConfig> | null = null;
 
 /** Drop the cached pricing row (called after an admin update). */
 export function invalidateBillingConfigCache(): void {
   cachedBillingConfig = null;
   inflightBillingConfig = null;
+  cacheGeneration += 1;
 }
 
 export function billingConfigCacheState(): { cached: boolean; expiresInMs: number | null; ttlMs: number } {
@@ -168,19 +171,15 @@ export function billingConfigCacheState(): { cached: boolean; expiresInMs: numbe
   };
 }
 
-export async function getBillingConfig(): Promise<BillingConfig> {
-  const now = Date.now();
-  if (BILLING_CONFIG_CACHE_TTL_MS > 0 && cachedBillingConfig && cachedBillingConfig.expiresAt > now) {
-    return cachedBillingConfig.value;
-  }
-  // Coalesce concurrent misses (a burst of requests must not fan out into the
-  // same query on every worker).
-  if (BILLING_CONFIG_CACHE_TTL_MS > 0 && inflightBillingConfig) {
-    return inflightBillingConfig;
-  }
+// Stale-while-revalidate: once a value is cached, an expired entry is still
+// served immediately while ONE background refresh runs. Only a cold cache (or
+// one older than the max-stale bound) makes a request wait on the database.
+// Admin updates on this instance invalidate synchronously; other instances pick
+// the change up within TTL + one refresh round trip.
+const BILLING_CONFIG_MAX_STALE_MS = Number(process.env.BILLING_CONFIG_MAX_STALE_MS ?? 5 * 60_000);
 
-  const load = async (): Promise<BillingConfig> => {
-    const record = await prisma.planPricingConfig.findUnique({
+async function loadBillingConfig(): Promise<BillingConfig> {
+  const record = await prisma.planPricingConfig.findUnique({
     where: { id: 'default' },
     select: {
       proPriceMonthlyETB: true,
@@ -210,24 +209,44 @@ export async function getBillingConfig(): Promise<BillingConfig> {
       businessUnlimitedVerifications: true,
     },
   });
+  return record ?? DEFAULT_BILLING_CONFIG;
+}
 
-    return record ?? DEFAULT_BILLING_CONFIG;
-  };
-
-  if (BILLING_CONFIG_CACHE_TTL_MS <= 0) {
-    return load();
-  }
-
-  inflightBillingConfig = load()
+function refreshBillingConfig(): Promise<BillingConfig> {
+  if (inflightBillingConfig) return inflightBillingConfig;
+  const generation = cacheGeneration;
+  const pending: Promise<BillingConfig> = loadBillingConfig()
     .then((value) => {
-      cachedBillingConfig = { value, expiresAt: Date.now() + BILLING_CONFIG_CACHE_TTL_MS };
+      // An invalidation during the load means this value may predate an admin
+      // write; do not let it overwrite the cache.
+      if (generation === cacheGeneration) {
+        cachedBillingConfig = { value, expiresAt: Date.now() + BILLING_CONFIG_CACHE_TTL_MS, loadedAt: Date.now() };
+      }
       return value;
     })
     .finally(() => {
-      inflightBillingConfig = null;
+      if (inflightBillingConfig === pending) inflightBillingConfig = null;
     });
+  inflightBillingConfig = pending;
+  return pending;
+}
 
-  return inflightBillingConfig;
+export async function getBillingConfig(): Promise<BillingConfig> {
+  if (BILLING_CONFIG_CACHE_TTL_MS <= 0) return loadBillingConfig();
+
+  const now = Date.now();
+  const cached = cachedBillingConfig;
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  if (cached && now - cached.loadedAt < BILLING_CONFIG_MAX_STALE_MS) {
+    refreshBillingConfig().catch((error) => {
+      logger.warn('Background billing config refresh failed; serving cached value.', { error: (error as Error)?.message });
+    });
+    return cached.value;
+  }
+
+  // Cold (or too stale): wait, coalescing concurrent misses into one query.
+  return refreshBillingConfig();
 }
 
 export async function updateBillingConfig(input: unknown): Promise<BillingConfig> {

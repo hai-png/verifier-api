@@ -40,7 +40,7 @@ import { verifyImageGate, permissionGate } from './middleware/tierGate';
 import { verifyWebhookHook } from './middleware/verifyWebhookHook';
 import { getWebhookQueueHealth, startWebhookQueueWorker, stopWebhookQueueWorker } from './queues/webhookQueue';
 import { getNotificationQueueHealth, startNotificationQueueWorker, stopNotificationQueueWorker } from './queues/notificationQueue';
-import { prisma, disconnectPrisma } from './utils/prisma';
+import { prisma, disconnectPrisma, warmConnectionPool } from './utils/prisma';
 
 // Dashboard-facing routes (session-authenticated, not API-key-authenticated)
 import authRouter from './routes/auth';
@@ -156,7 +156,12 @@ async function initializeRuntime(): Promise<void> {
         // to block behind those heavy queries on cold start. Kick it off in the
         // background instead — it self-heals on error and the admin usage-stats
         // endpoint re-queries the DB directly anyway.
-        void initializeStatsCache();
+        // Open the pool before the heavy stats aggregation so it cannot hog the
+        // first connections, and so early traffic doesn't pay TLS handshakes.
+        void warmConnectionPool()
+            .then((opened) => logger.info(`Database pool warmed: ${opened} connection(s)`))
+            .catch(() => undefined)
+            .finally(() => { void initializeStatsCache(); });
 
         // BullMQ queue workers require Redis. When REDIS_URL is unset (e.g. on
         // Render free tier without a Redis instance), skip the workers gracefully

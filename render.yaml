@@ -39,6 +39,10 @@ services:
       # Set this in the Render dashboard → Environment → Add DATABASE_URL
       - key: DATABASE_URL
         sync: false
+      # Pool size vs a ~155 ms cross-region RTT: 5 connections cap DB-backed
+      # traffic near 32 queries/s (see DEPLOYMENT.md §3). Overrides the URL.
+      - key: DB_CONNECTION_LIMIT
+        value: "10"
       # Admin + dashboard secrets (generate with: openssl rand -hex 32)
       - key: ADMIN_SECRET
         sync: false

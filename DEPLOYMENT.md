@@ -329,13 +329,28 @@ never fires. Merge `.github/workflows/keep-alive.yml` into `main` (or make
 
 ### 3. Connection pool sizing
 
-Prisma sizes its pool from the CPU count it can see, which inside a container
-can be the *host's* core count. On a 0.1-CPU free instance that over-provisions
-connections, and TiDB Serverless caps connections per cluster. Pin it in the
-connection string:
+Size the pool from latency, not CPU (Little's law: connections ≈ queries/s ×
+round-trip time). With the API in Oregon and TiDB in Frankfurt (~155 ms RTT),
+one connection serves ~6 queries/s, so `connection_limit=5` caps database-backed
+traffic near **32 queries/s**. The 2026-09-27 live ramp (run 36288386311) hit
+exactly that: `/ready` and unknown-key p95 reached 650–770 ms at 10–25 workers
+while database-free paths stayed under 160 ms.
+
+The API now applies the pool size itself:
+
+- `DB_CONNECTION_LIMIT` (set to `10` in `render.yaml`) overrides whatever the URL says;
+- otherwise a URL **without** `connection_limit` gets 10;
+- an explicit `connection_limit` in the URL is kept when the env var is unset.
+
+The whole pool is opened at boot (`Database pool warmed: N connection(s)` in the
+log), so traffic after a deploy or a burst doesn't pay a fresh TLS handshake to
+Frankfurt per new connection. TiDB Serverless allows far more than 10
+connections per cluster; if you run several instances, keep
+`instances × DB_CONNECTION_LIMIT` under the cluster limit. Once API and DB are
+co-located (RTT of a few ms) 5 connections are plenty again.
 
 ```
-mysql://user:pass@host:4000/db?sslaccept=accept_invalid_certs&connection_limit=5&pool_timeout=20
+mysql://user:pass@host:4000/db?sslaccept=accept_invalid_certs&pool_timeout=20
 ```
 
 `GET /status/summary` now reports the CPU count the process sees
