@@ -1,12 +1,12 @@
-[2026-09-27 21:13:12] [32MINFO[39M: Starting server in production mode
-[2026-09-27 21:13:12] [32MINFO[39M: Node version: v24.21.0
-[2026-09-27 21:13:12] [32MINFO[39M: Platform: linux
-[2026-09-27 21:13:12] [32MINFO[39M: Server listening on port 3001 (runtime initializing in background)
-[2026-09-27 21:13:12] [32MINFO[39M: 🔍 Found Chrome/Chromium at: /usr/bin/google-chrome
-[2026-09-27 21:13:12] [32MINFO[39M: ✅ Chrome/Chromium available for CBE fallback: /usr/bin/google-chrome
-[2026-09-27 21:13:12] [32MINFO[39M: Telebirr verification config: primary disabled, fallback relays 1
-[2026-09-27 21:13:12] [33MWARN[39M: ⚠️ Telebirr has only one relay configured; hedging and failover are inert. Add a second relay URL to FALLBACK_PROXIES.
-[2026-09-27 21:13:12] [32MINFO[39M: [pprbmo48qie] Incoming GET request to /ready
+[2026-09-28 04:33:28] [32MINFO[39M: Starting server in production mode
+[2026-09-28 04:33:28] [32MINFO[39M: Node version: v24.21.0
+[2026-09-28 04:33:28] [32MINFO[39M: Platform: linux
+[2026-09-28 04:33:28] [32MINFO[39M: Server listening on port 3001 (runtime initializing in background)
+[2026-09-28 04:33:28] [32MINFO[39M: 🔍 Found Chrome/Chromium at: /usr/bin/google-chrome
+[2026-09-28 04:33:28] [32MINFO[39M: ✅ Chrome/Chromium available for CBE fallback: /usr/bin/google-chrome
+[2026-09-28 04:33:28] [32MINFO[39M: Telebirr verification config: primary disabled, fallback relays 1
+[2026-09-28 04:33:28] [33MWARN[39M: ⚠️ Telebirr has only one relay configured; hedging and failover are inert. Add a second relay URL to FALLBACK_PROXIES.
+[2026-09-28 04:33:28] [32MINFO[39M: [4xo45bapic] Incoming GET request to /ready
 📦 Metadata:
    › {
    ›   "method": "GET",
@@ -15,9 +15,20 @@
    ›   "userAgent": "curl/8.5.0",
    ›   "apiKeyWorkspaceId": "[redacted]"
    › }
-[2026-09-27 21:13:12] [32MINFO[39M: Connected to database successfully
-[2026-09-27 21:13:12] [33MWARN[39M: REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.
-[2026-09-27 21:13:12] [32MINFO[39M: [8pj5pkp6gsp] Incoming GET request to /ready
+[2026-09-28 04:33:29] [32MINFO[39M: [4xo45bapic] Response sent in 346ms with status 503
+📦 Metadata:
+   › {
+   ›   "statusCode": 503,
+   ›   "responseTime": 346,
+   ›   "contentLength": "429",
+   ›   "apiKey": "[redacted]",
+   ›   "source": "unknown",
+   ›   "workspaceId": "none"
+   › }
+[2026-09-28 04:33:29] [33MWARN[39M: [4xo45bapic] Error occurred with status 503
+[2026-09-28 04:33:29] [32MINFO[39M: Connected to database successfully
+[2026-09-28 04:33:29] [33MWARN[39M: REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.
+[2026-09-28 04:33:29] [32MINFO[39M: [9gdy9iosswt] Incoming GET request to /ready
 📦 Metadata:
    › {
    ›   "method": "GET",
@@ -26,40 +37,7 @@
    ›   "userAgent": "node",
    ›   "apiKeyWorkspaceId": "[redacted]"
    › }
-[2026-09-27 21:13:12] [32MINFO[39M: [pprbmo48qie] Response sent in 367ms with status 503
-📦 Metadata:
-   › {
-   ›   "statusCode": 503,
-   ›   "responseTime": 367,
-   ›   "contentLength": "429",
-   ›   "apiKey": "[redacted]",
-   ›   "source": "unknown",
-   ›   "workspaceId": "none"
-   › }
-[2026-09-27 21:13:12] [33MWARN[39M: [pprbmo48qie] Error occurred with status 503
-[2026-09-27 21:13:12] [32MINFO[39M: [8pj5pkp6gsp] Response sent in 351ms with status 200
-📦 Metadata:
-   › {
-   ›   "statusCode": 200,
-   ›   "responseTime": 351,
-   ›   "contentLength": "450",
-   ›   "apiKey": "[redacted]",
-   ›   "source": "unknown",
-   ›   "workspaceId": "none"
-   › }
-[2026-09-27 21:13:12] [32MINFO[39M: Keep-alive ping OK in 362ms
-[2026-09-27 21:13:12] [32MINFO[39M: Stats cache initialized from database
-[2026-09-27 21:13:13] [32MINFO[39M: 🌐 Chrome/Chromium version: Google Chrome 153.0.8010.52
-[2026-09-27 21:13:13] [32MINFO[39M: [819ek6ddzkm] Incoming GET request to /ready
-📦 Metadata:
-   › {
-   ›   "method": "GET",
-   ›   "url": "/ready",
-   ›   "ip": "::ffff:127.0.0.1",
-   ›   "userAgent": "curl/8.5.0",
-   ›   "apiKeyWorkspaceId": "[redacted]"
-   › }
-[2026-09-27 21:13:14] [32MINFO[39M: [819ek6ddzkm] Response sent in 62ms with status 200
+[2026-09-28 04:33:29] [32MINFO[39M: [9gdy9iosswt] Response sent in 62ms with status 200
 📦 Metadata:
    › {
    ›   "statusCode": 200,
@@ -69,7 +47,9 @@
    ›   "source": "unknown",
    ›   "workspaceId": "none"
    › }
-[2026-09-27 21:13:14] [32MINFO[39M: [a8w0h40p20v] Incoming GET request to /ready
+[2026-09-28 04:33:29] [32MINFO[39M: Keep-alive ping OK in 81ms
+[2026-09-28 04:33:29] [32MINFO[39M: Stats cache initialized from database
+[2026-09-28 04:33:30] [32MINFO[39M: [q4gr9wtv87b] Incoming GET request to /ready
 📦 Metadata:
    › {
    ›   "method": "GET",
@@ -78,7 +58,7 @@
    ›   "userAgent": "curl/8.5.0",
    ›   "apiKeyWorkspaceId": "[redacted]"
    › }
-[2026-09-27 21:13:14] [32MINFO[39M: [a8w0h40p20v] Response sent in 62ms with status 200
+[2026-09-28 04:33:30] [32MINFO[39M: [q4gr9wtv87b] Response sent in 62ms with status 200
 📦 Metadata:
    › {
    ›   "statusCode": 200,
@@ -88,6 +68,25 @@
    ›   "source": "unknown",
    ›   "workspaceId": "none"
    › }
-[2026-09-27 21:13:14] [32MINFO[39M: Shutting down server...
-[2026-09-27 21:13:14] [32MINFO[39M: HTTP server closed
-[2026-09-27 21:13:14] [32MINFO[39M: Disconnected from database
+[2026-09-28 04:33:30] [32MINFO[39M: [ad0az6fhuv] Incoming GET request to /ready
+📦 Metadata:
+   › {
+   ›   "method": "GET",
+   ›   "url": "/ready",
+   ›   "ip": "::ffff:127.0.0.1",
+   ›   "userAgent": "curl/8.5.0",
+   ›   "apiKeyWorkspaceId": "[redacted]"
+   › }
+[2026-09-28 04:33:30] [32MINFO[39M: [ad0az6fhuv] Response sent in 62ms with status 200
+📦 Metadata:
+   › {
+   ›   "statusCode": 200,
+   ›   "responseTime": 62,
+   ›   "contentLength": "450",
+   ›   "apiKey": "[redacted]",
+   ›   "source": "unknown",
+   ›   "workspaceId": "none"
+   › }
+[2026-09-28 04:33:30] [32MINFO[39M: Shutting down server...
+[2026-09-28 04:33:30] [32MINFO[39M: HTTP server closed
+[2026-09-28 04:33:30] [32MINFO[39M: Disconnected from database

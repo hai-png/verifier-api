@@ -4,10 +4,15 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 618,
-    "mean": 123.6
+    "total": 622,
+    "mean": 124.4
   },
   "responses": [
+    {
+      "status": 400,
+      "class": "client_error_4xx",
+      "totalMs": 126.2
+    },
     {
       "status": 400,
       "class": "client_error_4xx",
@@ -16,22 +21,17 @@
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 123.2
+      "totalMs": 123.7
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 124
+      "totalMs": 123.3
     },
     {
       "status": 400,
       "class": "client_error_4xx",
-      "totalMs": 123.2
-    },
-    {
-      "status": 400,
-      "class": "client_error_4xx",
-      "totalMs": 122.6
+      "totalMs": 123.1
     }
   ],
   "sqlStatements": 2,
@@ -40,7 +40,7 @@
     "Com_insert": 0.2,
     "Com_select": 2,
     "Com_stmt_execute": 2.2,
-    "Com_stmt_prepare": 0.8
+    "Com_stmt_prepare": 0.2
   },
   "controlNoise": {
     "statements": 5,
