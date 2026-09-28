@@ -1,51 +1,72 @@
 <?php
 /**
- * Telebirr upstream TLS sample — DIAGNOSTIC, DELETE AFTER USE.
+ * Telebirr upstream path probe — DIAGNOSTIC, DELETE AFTER USE.
  *
- * One question only: does PHP's own TLS succeed where cURL fails?
+ * One question: is the dead-handshake fault specific to the provider's TLS
+ * endpoint, specific to the route to the provider, or a property of this host?
  *
- * Both go through OpenSSL but share nothing below it — cURL has its own
- * connection handling — so if they disagree, the fault is libcurl on this host
- * and verify.php can use streams instead. If they agree, the fault is this
- * host's path to the provider and no code change will help.
+ * Established already, do not re-measure: from this host TCP connects to
+ * 196.188.116.120 in <1ms, and the TLS handshake then either completes in ~30ms
+ * or never gets a byte back, roughly half of the time per connection. The
+ * ~1.0s and ~3.0-3.3s "slow successes" are TCP retransmission backoff, so the
+ * outcome is decided per flow. That is why verify.php now hedges fresh
+ * connections instead of waiting on one.
  *
- * Everything else about this relay is already established: the provider answers
- * other networks in ~40ms, TCP connects here in 0ms, the TLS handshake fails
- * roughly half the time, spacing requests does not help, and the page is 26KB
- * so extraction is irrelevant. Do not re-measure any of that.
+ * What is NOT known is where the flows die, and that decides the real fix:
  *
- * BUDGET: this host has max_execution_time=30, and a script killed at the limit
- * emits nothing at all. An earlier version of this probe ran 9 cURL rows plus
- * two sample sets and could need over 100s, so it produced a silent hang rather
- * than an answer. Everything below is sized to finish inside 30s even when
- * every single attempt fails:
+ *   A. provider:443 flaky, provider:80 clean, other TLS hosts clean
+ *        -> the provider's TLS endpoint (a bad backend behind its balancer, or
+ *           its edge throttling this shared address). Fix: a relay on a
+ *           different address, and/or a report to Ethio Telecom with this output.
+ *   B. provider:443 AND provider:80 flaky, other hosts clean
+ *        -> the route from this host to 196.188.116.120. Fix: hosting-provider
+ *           ticket (path/ECMP/MTU), or a relay on a different network.
+ *   C. everything flaky
+ *        -> this host's uplink/NIC/firewall. Fix: move the relay.
+ *   D. everything clean in this run
+ *        -> proves nothing; the fault is intermittent. Run it again, and
+ *           compare with verify.php's `flows` field in the API logs.
  *
- *   4 cURL attempts x 3s  = 12s
- *   3 streams x 4s        = 12s
- *   overhead              ~1s
+ * Every target is addressed by IP literal with SNI carried separately, because
+ * this host's resolver blocks for 28-56s and any hostname in a socket URL would
+ * turn the probe into a hang. libcurl's connect timeout covers the TLS
+ * handshake, so a target that connects but never completes TLS shows up as
+ * errno=28 at the deadline, with tls=0.
  *
- * SECURITY: prints this host's TLS capabilities to whoever can reach it, so it
+ * BUDGET: max_execution_time is 30s here and a script killed at the limit emits
+ * nothing. All targets are sampled together in one curl_multi round, so a round
+ * costs at most FLOW_TOTAL_MS regardless of how many die:
+ *   ROUNDS x FLOW_TOTAL_MS = 8 x 2.5s = 20s worst case, ~1s typical.
+ * Output is flushed per round so a partial run still tells you something.
+ *
+ * SECURITY: prints this host's reachability to whoever can call it, so it
  * refuses to run without the relay key. Upload only long enough to read the
  * output, then delete it.
  */
 
 header('Content-Type: text/plain; charset=utf-8');
 
-// Identify the build on every path, including the fast 401, so a deployed copy
-// can be identified with one sub-second request instead of a full run. This file
-// is uploaded by hand and `git pull` does not update it, so "which version is on
-// the host" is a real question -- and a script that dies at max_execution_time
-// returns 0 bytes, which is indistinguishable from a hang and from no file at
-// all. That ambiguity already cost a wasted cycle.
-const PROBE_VERSION = '2026-09-28.streams-vs-curl';
+const PROBE_VERSION = '2026-09-28.path-vs-provider';
 header('X-Probe-Version: ' . PROBE_VERSION);
 
 const PROBE_KEY = 'PASTE_YOUR_KEY_HERE';
-const HOST = 'transactioninfo.ethiotelecom.et';
-const CURL_SAMPLES = 4;
-const CURL_TIMEOUT_S = 3;
-const STREAM_SAMPLES = 3;
-const STREAM_TIMEOUT_S = 4;
+const ROUNDS = 8;
+const HANDSHAKE_DEADLINE_MS = 2000;
+const FLOW_TOTAL_MS = 2500;
+
+// Targets. Addresses are literals on purpose; if one of the controls has moved,
+// its row will say so (errno=7 on every round) and the other controls still
+// answer the question.
+$TARGETS = [
+    // The subject.
+    'provider:443' => ['url' => 'https://transactioninfo.ethiotelecom.et/', 'host' => 'transactioninfo.ethiotelecom.et', 'port' => 443, 'ip' => null, 'tls' => true],
+    // Same address, no TLS. Separates "the TLS endpoint" from "the route".
+    'provider:80'  => ['url' => 'http://transactioninfo.ethiotelecom.et/',  'host' => 'transactioninfo.ethiotelecom.et', 'port' => 80,  'ip' => null, 'tls' => false],
+    // Another TLS host inside Ethio Telecom's network, different address.
+    'ethiotelecom.et:443' => ['url' => 'https://www.ethiotelecom.et/', 'host' => 'www.ethiotelecom.et', 'port' => 443, 'ip' => '196.189.90.58', 'tls' => true],
+    // A TLS host outside Ethiopia on a stable anycast address.
+    'cloudflare:443' => ['url' => 'https://one.one.one.one/cdn-cgi/trace', 'host' => 'one.one.one.one', 'port' => 443, 'ip' => '1.1.1.1', 'tls' => true],
+];
 
 echo "probe build " . PROBE_VERSION . "\n";
 @ob_flush();
@@ -58,118 +79,155 @@ if (PROBE_KEY === 'PASTE_YOUR_KEY_HERE') {
 }
 if (!isset($_GET['key']) || !hash_equals(PROBE_KEY, (string) $_GET['key'])) {
     http_response_code(401);
-    echo "Unauthorized.\n";
+    echo "unauthorized\n";
     exit;
 }
 
-echo "=== host ===\n";
-echo 'php              ' . PHP_VERSION . "\n";
-echo 'curl             ' . (function_exists('curl_version') ? curl_version()['version'] : 'n/a') . "\n";
-echo 'curl ssl backend ' . (function_exists('curl_version')
-    ? (curl_version()['ssl_version'] ?? 'n/a')
-    : 'n/a') . "\n";
-echo 'openssl          ' . (defined('OPENSSL_VERSION_TEXT') ? OPENSSL_VERSION_TEXT : 'n/a') . "\n";
-echo 'max_execution_time ' . ini_get('max_execution_time') . "\n\n";
-
-/**
- * One cURL attempt, matching verify.php's settings so the sample reflects what
- * verify.php actually does rather than some idealised configuration.
- */
-function curlAttempt($ip) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, 'https://' . HOST . '/receipt/');
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, CURL_TIMEOUT_S);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, CURL_TIMEOUT_S);
-    curl_setopt($ch, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-    if ($ip !== null && $ip !== '') {
-        curl_setopt($ch, CURLOPT_RESOLVE, [HOST . ':443:' . $ip]);
-    }
-    $startedAt = microtime(true);
-    curl_exec($ch);
-    $errno = curl_errno($ch);
-    $ms = round((microtime(true) - $startedAt) * 1000);
-    curl_close($ch);
-    return ['ok' => $errno === 0, 'ms' => $ms, 'errno' => $errno];
+// Use the same address verify.php uses, so the sample matches production.
+$providerIp = '196.188.116.120';
+$cached = @file_get_contents(__DIR__ . '/../.telebirr-upstream-ip');
+if (!is_string($cached)) {
+    $cached = @file_get_contents(__DIR__ . '/.telebirr-upstream-ip');
 }
-
-// Same address verify.php would use, so this is comparable to production.
-$ip = '196.188.116.120';
-$cached = @file_get_contents(__DIR__ . '/.telebirr-upstream-ip');
 if (is_string($cached) && preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', trim($cached))) {
-    $ip = trim($cached);
+    $providerIp = trim($cached);
 }
+$TARGETS['provider:443']['ip'] = $providerIp;
+$TARGETS['provider:80']['ip'] = $providerIp;
 
-echo "=== cURL, " . CURL_SAMPLES . " attempts, " . CURL_TIMEOUT_S . "s each (ip $ip) ===\n";
-$curlOk = 0;
-for ($i = 1; $i <= CURL_SAMPLES; $i++) {
-    $r = curlAttempt($ip);
-    if ($r['ok']) {
-        $curlOk++;
+$v = curl_version();
+printf("host: php=%s curl=%s ssl=%s max_execution_time=%s\n",
+    PHP_VERSION, $v['version'], $v['ssl_version'], (string) ini_get('max_execution_time'));
+printf("provider address: %s\n", $providerIp);
+printf("plan: %d rounds, all %d targets per round, handshake deadline %dms, flow cap %dms\n\n",
+    ROUNDS, count($TARGETS), HANDSHAKE_DEADLINE_MS, FLOW_TOTAL_MS);
+@ob_flush();
+@flush();
+
+function makeHandle(array $t) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $t['url']);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_NOBODY, false);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT_MS, HANDSHAKE_DEADLINE_MS);
+    curl_setopt($ch, CURLOPT_TIMEOUT_MS, FLOW_TOTAL_MS);
+    curl_setopt($ch, CURLOPT_FRESH_CONNECT, true);
+    curl_setopt($ch, CURLOPT_FORBID_REUSE, true);
+    curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_setopt($ch, CURLOPT_MAXFILESIZE, 1048576);
+    curl_setopt($ch, CURLOPT_USERAGENT, 'telebirr-path-probe/' . PROBE_VERSION);
+    curl_setopt($ch, CURLOPT_RESOLVE, [$t['host'] . ':' . $t['port'] . ':' . $t['ip']]);
+    if ($t['tls']) {
+        // Mirror verify.php for the provider: TLS 1.2 pinned, verification on.
+        if ($t['host'] === 'transactioninfo.ethiotelecom.et') {
+            curl_setopt($ch, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+            curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=1');
+        }
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
     }
-    printf("  #%d %-4s %4dms%s\n", $i, $r['ok'] ? 'OK' : 'FAIL', $r['ms'],
-        $r['ok'] ? '' : ' errno=' . $r['errno']);
-    @ob_flush();
-    @flush();
+    return $ch;
 }
-printf("  curl: %d/%d\n\n", $curlOk, CURL_SAMPLES);
 
-// default_socket_timeout bounds socket operations, but NOT name resolution, and
-// PHP's resolver on this host has been measured blocking for 28-50s. So the
-// stream connects to the address literal and carries the hostname in the TLS
-// layer instead: peer_name and SNI_enabled keep certificate validation and
-// SNI correct, and no resolver is ever called. This is the same reason
-// verify.php uses CURLOPT_RESOLVE, and getting it wrong here is what made the
-// previous version of this file return nothing.
-ini_set('default_socket_timeout', (string) STREAM_TIMEOUT_S);
+$stats = [];
+foreach ($TARGETS as $name => $t) {
+    $stats[$name] = ['ok' => 0, 'fail' => 0, 'tlsMs' => [], 'errnos' => []];
+}
 
-echo "=== PHP streams, " . STREAM_SAMPLES . " attempts ===\n";
-$streamOk = 0;
-for ($i = 1; $i <= STREAM_SAMPLES; $i++) {
+for ($round = 1; $round <= ROUNDS; $round++) {
+    $mh = curl_multi_init();
+    $handles = [];
+    foreach ($TARGETS as $name => $t) {
+        $ch = makeHandle($t);
+        curl_multi_add_handle($mh, $ch);
+        // Plain list: handles are resources on PHP 7, objects on PHP 8.
+        $handles[] = [$name, $ch];
+    }
     $startedAt = microtime(true);
-    $errno = 0;
-    $errstr = '';
-    $fp = @stream_socket_client(
-        'ssl://' . $ip . ':443',
-        $errno,
-        $errstr,
-        STREAM_TIMEOUT_S,
-        STREAM_CLIENT_CONNECT,
-        stream_context_create([
-            'ssl' => [
-                // peer_name is what the certificate is validated against;
-                // without it PHP would check the cert against the IP address.
-                'peer_name' => HOST,
-                'verify_peer' => true,
-                'verify_peer_name' => true,
-                'SNI_enabled' => true,
-            ],
-        ])
-    );
-    $ms = round((microtime(true) - $startedAt) * 1000);
-    if ($fp !== false) {
-        $streamOk++;
-        fclose($fp);
+    $running = 0;
+    $rows = [];
+    do {
+        // Drive all transfers. On very old libcurl this can ask to be called
+        // again immediately; falling through to info_read and select is
+        // correct in that case too, so the return value is not inspected.
+        curl_multi_exec($mh, $running);
+        while (($info = curl_multi_info_read($mh)) !== false) {
+            $ch = $info['handle'];
+            $name = '?';
+            foreach ($handles as $pair) {
+                if ($pair[1] === $ch) { $name = $pair[0]; break; }
+            }
+            $errno = (int) $info['result'];
+            $connectMs = (int) round(curl_getinfo($ch, CURLINFO_CONNECT_TIME) * 1000);
+            $tlsMs = (int) round(curl_getinfo($ch, CURLINFO_APPCONNECT_TIME) * 1000);
+            $totalMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if ($errno === CURLE_OK) {
+                $stats[$name]['ok']++;
+                $stats[$name]['tlsMs'][] = $tlsMs;
+                $rows[$name] = sprintf('ok   http=%d connect=%dms tls=%dms total=%dms', $code, $connectMs, $tlsMs, $totalMs);
+            } else {
+                $stats[$name]['fail']++;
+                $stats[$name]['errnos'][$errno] = ($stats[$name]['errnos'][$errno] ?? 0) + 1;
+                $rows[$name] = sprintf('FAIL errno=%d connect=%dms tls=%dms total=%dms %s', $errno, $connectMs, $tlsMs, $totalMs, curl_error($ch));
+            }
+        }
+        if ($running > 0 && curl_multi_select($mh, 0.05) === -1) {
+            usleep(10000);
+        }
+    } while ($running > 0);
+    foreach ($handles as $pair) {
+        curl_multi_remove_handle($mh, $pair[1]);
+        curl_close($pair[1]);
     }
-    printf("  #%d %-4s %4dms%s\n", $i, $fp !== false ? 'OK' : 'FAIL', $ms,
-        $fp !== false ? '' : ' errno=' . $errno . ' ' . $errstr);
+    curl_multi_close($mh);
+
+    echo "round {$round}\n";
+    foreach ($TARGETS as $name => $t) {
+        printf("  %-22s %s\n", $name, $rows[$name] ?? 'no result');
+    }
     @ob_flush();
     @flush();
 }
-printf("  streams: %d/%d\n\n", $streamOk, STREAM_SAMPLES);
 
-echo "=== answer ===\n";
-if ($streamOk === STREAM_SAMPLES && $curlOk < CURL_SAMPLES) {
-    echo "PHP streams succeed where cURL fails. The fault is libcurl on this host,\n";
-    echo "not the network. verify.php should use streams. This is fixable in code.\n";
-} elseif ($streamOk < STREAM_SAMPLES && $curlOk < CURL_SAMPLES) {
-    echo "Both fail. The fault is this host's path to the provider, not cURL and\n";
-    echo "not PHP. No code change will help. A second relay host on a different\n";
-    echo "network is the fix.\n";
-} else {
-    echo "Inconclusive or both healthy right now. The failure is intermittent, so a\n";
-    echo "clean run proves nothing. Re-run a few times and compare the two rates:\n";
-    echo "if streams consistently beats cURL, switch verify.php to streams.\n";
+echo "\nsummary (" . ROUNDS . " fresh connections per target)\n";
+$rate = [];
+foreach ($stats as $name => $s) {
+    $n = $s['ok'] + $s['fail'];
+    $rate[$name] = $n > 0 ? $s['ok'] / $n : 0;
+    $tls = $s['tlsMs'];
+    sort($tls);
+    $errnos = [];
+    foreach ($s['errnos'] as $e => $c) {
+        $errnos[] = "errno{$e}x{$c}";
+    }
+    printf("  %-22s ok=%d/%d  tls(ms)=[%s]  %s\n",
+        $name, $s['ok'], $n, implode(',', $tls), $errnos ? implode(' ', $errnos) : '');
 }
-echo "\nDelete this file once you have the answer.\n";
+
+$flaky = function ($name) use ($rate) { return $rate[$name] < 0.9; };
+echo "\nreading\n";
+if (!$flaky('provider:443') && !$flaky('provider:80') && !$flaky('ethiotelecom.et:443') && !$flaky('cloudflare:443')) {
+    echo "  D. Everything was clean this run. That proves nothing about an intermittent fault;\n";
+    echo "     run it again a few times, at different times of day, and compare with the\n";
+    echo "     `flows` field verify.php now reports on every success.\n";
+} elseif ($flaky('provider:443') && $flaky('provider:80') && $flaky('ethiotelecom.et:443') && $flaky('cloudflare:443')) {
+    echo "  C. Every target loses flows from this host. This host's uplink/NIC/firewall is\n";
+    echo "     dropping packets on established connections. Nothing in verify.php can fix\n";
+    echo "     that; move the relay to another host, and send this output to the hosting provider.\n";
+} elseif ($flaky('provider:443') && $flaky('provider:80')) {
+    echo "  B. Both ports to the provider lose flows while other hosts are clean: the route\n";
+    echo "     from this host to {$providerIp} is at fault (ECMP member, MTU, or a middlebox\n";
+    echo "     on that path). Hosting-provider ticket with this output, or a relay on a\n";
+    echo "     different network. verify.php's hedging is the right mitigation meanwhile.\n";
+} elseif ($flaky('provider:443')) {
+    echo "  A. Only the provider's TLS endpoint loses flows; plain HTTP to the same address\n";
+    echo "     and other TLS hosts are clean. This is on the provider's side: a bad backend\n";
+    echo "     behind its balancer, or its edge throttling this shared address. A relay on a\n";
+    echo "     different address is the test that separates those two, and the fix for the\n";
+    echo "     second. Report it to Ethio Telecom with this output either way.\n";
+} else {
+    echo "  Mixed result that does not match a pattern above; read the rows. A control that\n";
+    echo "  fails with errno=7 on every round has simply moved address and can be ignored.\n";
+}
+echo "\nDelete this file when done.\n";

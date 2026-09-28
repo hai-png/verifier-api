@@ -97,28 +97,36 @@ on a **subdomain routed directly to Plesk**. In Cloudflare → **DNS**, add:
 > A successful receipt response also carries `relayTiming`, which reports the
 > total, the page size, and whether the DOM fallback was needed or skipped.
 
-#### If the relay reports "Resolving timed out" or errno 28
+#### If Telebirr verifications are slow or fail with "did not complete a TLS handshake"
 
-`verify.php` keeps DNS off the request path by handing cURL the provider's
-address directly, so this should not be reachable in normal operation. When it
-does appear, the relay host's resolver is at fault, not the provider and not
-`verify.php`. Two things help:
+Read `docs/telebirr-root-cause.md` first. In short: from the relay host, every
+TCP connection to the provider either completes its TLS handshake in ~30ms or
+never gets a byte back, about half of the time per connection. `verify.php`
+handles that by opening two fresh connections at once and abandoning any that
+has not finished its handshake in 900ms, for up to four rounds. What it cannot
+do is fix the cause, which is outside this codebase. To locate it:
 
-1. **Make the host resolver fail fast.** In `/etc/resolv.conf`, add
-   `options timeout:1 attempts:1` so a dead nameserver is abandoned in a second
-   instead of blocking. Note that `CURLOPT_TIMEOUT` does not reliably cover name
-   resolution on every cURL build, so an unbounded resolver can overrun any
-   timeout set in PHP — which is why the relay resolves ahead of the request.
-2. **Confirm the address the relay is using** by uploading
-   `tools/telebirr-tls-probe.php` beside `verify.php` and calling it with the
-   relay key. Its repeat sample reports the handshake success rate, which
-   distinguishes an intermittent handshake (retry inside a budget, which
-   `verify.php` now does) from a deterministic configuration fault. **Delete the
-   probe afterwards** — it discloses the host's TLS capabilities.
-
-   The relay also caches the provider's last known-good address in
-   `.telebirr-upstream-ip` next to `verify.php`, and git-ignores it. Delete that
-   file by hand to force a fresh lookup.
+1. **Read the `flows` field** that every successful relay response now carries
+   (surfaced in the API logs as `relayTiming.flows`). `r1.1 ok 41ms` means the
+   first connection was live; `r1.1 errno=28 900ms r1.2 errno=28 900ms r2.1 ok
+   38ms` means the first two flows were dead and the third was live. If it
+   trends towards every flow dying, the fault is getting worse.
+2. **Run the path probe.** Upload `tools/telebirr-tls-probe.php` beside
+   `verify.php`, set its key, and call it with the relay key. It samples the
+   provider on 443 and 80, another Ethio Telecom TLS host, and an outside TLS
+   host, eight fresh connections each, and prints which of the four patterns
+   the host matches (provider TLS endpoint / route to the provider / this host
+   / clean run). That reading decides whether the fix is a relay on a different
+   address, a hosting-provider ticket, or a report to Ethio Telecom. **Delete
+   the probe afterwards** — it discloses the host's reachability.
+3. **Do not put a hostname in any socket URL on this host.** Its resolver
+   blocks for 28–56s, and `CURLOPT_TIMEOUT` does not bound name resolution.
+   `verify.php` addresses the provider by literal (`UPSTREAM_SEED_IP`, or the
+   cached `.telebirr-upstream-ip` next to it, which is git-ignored). To move
+   to a new provider address, change the seed and delete the cache file.
+   Optionally make the host resolver fail fast with `options timeout:1
+   attempts:1` in `/etc/resolv.conf` — that helps everything else on the box,
+   but the relay no longer depends on it.
 
 ### 2c: Upload mpesa.php (M-Pesa proxy)
 

@@ -745,7 +745,7 @@ function positiveInteger(value: string | undefined, fallback: number): number {
  * roughly the moment the relay gives up on its own budget and is about to
  * explain which stage stalled. Keep the two in step when either side changes.
  */
-const RELAY_BUDGET_MS = 13_500;
+const RELAY_BUDGET_MS = 9_000;
 
 /**
  * Budget for the direct provider hop that runs before the relay pool.
@@ -944,7 +944,7 @@ async function verifyWithTelebirrProxyPool(
 ): Promise<TelebirrReceipt | null> {
     const configuredProxyTimeoutMs = positiveInteger(
         env.TELEBIRR_PROXY_TIMEOUT_MS,
-        16_000
+        12_000
     );
     const hedgeDelayMs = positiveInteger(
         env.TELEBIRR_HEDGE_DELAY_MS,
@@ -966,14 +966,14 @@ async function verifyWithTelebirrProxyPool(
     // fall back to. The attempt then held the connection for 18s and reported a
     // bare ECONNABORTED, even when the relay was about to answer.
     //
-    // The default of 16s is what actually fixes that, and it is deliberately
-    // above RELAY_BUDGET_MS (13.5s) in verify.php so the relay's own staged
-    // diagnosis arrives instead of this side hanging up on an empty body. The
-    // relay needs the headroom: the provider's TLS handshake is bimodal, and
-    // attempts that succeed do so at up to ~3.3s, so it retries three times at
-    // 4s each. The clamp below only enforces the invariant that keeps the pool
-    // deadline reachable; it deliberately does not try to second-guess an
-    // operator who deliberately configured short timeouts.
+    // The default of 12s is deliberately above RELAY_BUDGET_MS (9s) in
+    // verify.php so the relay's own staged diagnosis arrives instead of this
+    // side hanging up on an empty body. The relay's fetch stage is now hedged
+    // fresh connections with a 900ms handshake deadline (worst case ~5.7s), so
+    // 12s is generous headroom rather than a wait budget. The clamp below only
+    // enforces the invariant that keeps the pool deadline reachable; it
+    // deliberately does not try to second-guess an operator who deliberately
+    // configured short timeouts.
     const proxyTimeoutMs = Math.min(
         configuredProxyTimeoutMs,
         Math.max(1, totalTimeoutMs - 1)
