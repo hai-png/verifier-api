@@ -115,9 +115,13 @@ for ($i = 1; $i <= CURL_SAMPLES; $i++) {
 }
 printf("  curl: %d/%d\n\n", $curlOk, CURL_SAMPLES);
 
-// default_socket_timeout bounds the TLS handshake, which stream_socket_client's
-// own connect timeout does not. Without this a stalled handshake waits far past
-// the script's execution limit and the whole probe returns nothing.
+// default_socket_timeout bounds socket operations, but NOT name resolution, and
+// PHP's resolver on this host has been measured blocking for 28-50s. So the
+// stream connects to the address literal and carries the hostname in the TLS
+// layer instead: peer_name and SNI_enabled keep certificate validation and
+// SNI correct, and no resolver is ever called. This is the same reason
+// verify.php uses CURLOPT_RESOLVE, and getting it wrong here is what made the
+// previous version of this file return nothing.
 ini_set('default_socket_timeout', (string) STREAM_TIMEOUT_S);
 
 echo "=== PHP streams, " . STREAM_SAMPLES . " attempts ===\n";
@@ -127,13 +131,15 @@ for ($i = 1; $i <= STREAM_SAMPLES; $i++) {
     $errno = 0;
     $errstr = '';
     $fp = @stream_socket_client(
-        'ssl://' . HOST . ':443',
+        'ssl://' . $ip . ':443',
         $errno,
         $errstr,
         STREAM_TIMEOUT_S,
         STREAM_CLIENT_CONNECT,
         stream_context_create([
             'ssl' => [
+                // peer_name is what the certificate is validated against;
+                // without it PHP would check the cert against the IP address.
                 'peer_name' => HOST,
                 'verify_peer' => true,
                 'verify_peer_name' => true,
