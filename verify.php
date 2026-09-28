@@ -12,25 +12,25 @@ header("Content-Type: application/json");
 // Every exit path therefore goes through respond(), and a shutdown handler emits
 // a valid document naming the stalled stage if the script dies unexpectedly.
 //
-// An empty body is only a *worse* version of a late body, so the whole script is
-// budgeted to finish inside RELAY_BUDGET_MS: 2s reachability pre-check + 8s fetch
-// leaves ~2s for parse and extract inside the API's 12s. The previous build spent
-// up to 14s in those first two stages and then ran DOMDocument::loadHTML plus 14
-// XPath queries eagerly and unbounded, so a slow page pushed the response past the
-// API's deadline and the caller saw no bytes at all — indistinguishable from a
-// dead relay, which is the failure this budget exists to prevent.
+// Budget arithmetic for this build (see the fetch section for why it is shaped
+// this way): up to 4 rounds of hedged connections, each round abandoned after a
+// 900ms handshake deadline, the winning flow allowed 3s in total. Worst case
+// 3 x 0.9s + 3s = 5.7s, leaving the rest of RELAY_BUDGET_MS for parse/extract,
+// and the whole thing inside the API's 12s per-attempt timeout with room for the
+// relay's own diagnosis to arrive instead of a bare timeout.
 //
 // Bump when the response contract or timeout behaviour changes. The 401 path
 // below is the cheapest place to read it, because it never touches the upstream
 // provider — useful for confirming which build is actually deployed.
 // Declared before the shutdown handler that reports it.
-const RELAY_VERSION = '2026-09-27.dns-retry';
+const RELAY_VERSION = '2026-09-28.hedged-flows';
 
 // Wall-clock ceiling for the whole script, in ms, and the slice of it reserved for
 // the DOM/XPath fallback. The fallback is the only stage that cannot be bounded by
 // a socket option, so it is the one that gets skipped when the budget is spent.
-const RELAY_BUDGET_MS = 13500;
-const RELAY_DOM_RESERVE_MS = 3000;
+// Mirrored as RELAY_BUDGET_MS in src/services/verifyTelebirr.ts; keep in step.
+const RELAY_BUDGET_MS = 9000;
+const RELAY_DOM_RESERVE_MS = 2000;
 
 // Hard cap on the provider page size. A receipt page is a few tens of KB; a
 // megabyte is far past anything legitimate and is the input that makes loadHTML
@@ -127,68 +127,75 @@ if ($reference === '') {
 
 $url = "https://transactioninfo.ethiotelecom.et/receipt/" . urlencode($reference);
 
+
 const UPSTREAM_HOST = 'transactioninfo.ethiotelecom.et';
 const UPSTREAM_PORT = 443;
-// Per-attempt fetch budget. Four seconds, because the handshake to this provider
-// is bimodal and attempts that succeed do so at up to ~3.3s, so anything tighter
-// discards attempts that were about to work. Three of these plus the 1s pre-check
-// fit inside RELAY_BUDGET_MS with room to spare, and the API allows 16s per
-// attempt, so the relay can finish and be diagnosed well before the API gives up.
-const FETCH_ATTEMPT_TIMEOUT_MS = 4000;
-const FETCH_MAX_ATTEMPTS = 3;
-// Last known address, used when there is no cache file yet. It is a floor, not
-// a pin: if a request to it fails, the address is re-resolved and the new one
-// cached, so a provider IP change is picked up rather than locked out.
-// gethostbyname() cannot be interrupted from PHP and on this host it has been
-// observed blocking past 50s, which is the entire failure this script is fixing,
-// so the common path must not depend on it at all.
+
+// ── How the provider fails from this host, and what that dictates ───────────
+//
+// Measured on this host (213.55.96.150, Ethio Telecom AS24757, same network as
+// the provider at 196.188.116.120), every connection to the provider is one of:
+//
+//   * good: TCP connects in <1ms and the TLS handshake completes in ~30ms;
+//   * dead: TCP connects in <1ms, the ClientHello goes out, and nothing ever
+//     comes back — not an alert, not a RST, nothing;
+//   * recovered: as dead, then it suddenly completes at ~1.0s or ~3.0-3.3s.
+//
+// The recovered timings are TCP retransmission backoff (200ms, +400, +800,
+// +1600 => 0.2, 0.6, 1.4, 3.0s), which means the outcome is decided per
+// connection: whichever path or backend a flow lands on either works or drops
+// its handshake packets, and waiting on a dead flow only buys the occasional
+// retransmit rescue three seconds later. Roughly half of flows are dead.
+//
+// That makes the previous strategy — one connection at a time, 4s each, three
+// in a row — the worst possible shape: it spent up to 12s waiting on flows that
+// were dead after the first 100ms, and with p(dead)=0.5 it still failed 12.5%
+// of requests outright. Every earlier attempt at this fault (page size, TLS
+// version, security level, DNS, connect-timeout width) tuned how long to wait
+// on that single flow. None of them changed how many flows were tried.
+//
+// This build does the opposite: open a few connections at once, take the first
+// whose handshake completes, and give a flow only HANDSHAKE_DEADLINE_MS to prove
+// it is alive before abandoning it for a fresh one. A fresh connection means a
+// fresh source port, which means a fresh path/backend selection — that is the
+// property being exploited. With p(dead)=0.5, HEDGE_WIDTH=2 and MAX_ROUNDS=4,
+// the chance every flow is dead is 0.5^8 = 0.4%, and the common case costs one
+// handshake (~30ms) instead of a coin flip on a 4s timer.
+//
+// This is a mitigation, not the fix. The fix is either on the provider's side
+// (a bad backend behind its load balancer, or its edge throttling this shared
+// address) or on the path between the two, and tools/telebirr-tls-probe.php is
+// written to tell those apart. Until that is settled, this is what the relay
+// can do about it, and it is a lot.
+
+// A good handshake completes in ~30ms on this host. Anything still handshaking
+// at this deadline is almost certainly a dead flow, and a fresh connection has a
+// better expected time than waiting for the 3s retransmit rescue. libcurl's
+// connect timeout covers TCP connect *and* the TLS handshake, which is exactly
+// the phase that fails, so this is the option that implements the deadline.
+const HANDSHAKE_DEADLINE_MS = 900;
+// Once the handshake is done the page (26KB, same network) arrives in tens of
+// milliseconds; this is a generous ceiling for a live flow, not a wait budget.
+const FLOW_TOTAL_MS = 3000;
+// Connections opened simultaneously per round. Two is the sweet spot: it takes
+// a round from 50% to 75% success at the cost of one extra handshake, and it
+// keeps the load on the provider modest in case its edge *is* throttling this
+// address (the probe will say). Raise to 3 only if the probe rules that out.
+const HEDGE_WIDTH = 2;
+// Rounds of fresh connections before giving up. Worst case is
+// (MAX_ROUNDS - 1) * HANDSHAKE_DEADLINE_MS + FLOW_TOTAL_MS = 5.7s.
+const MAX_ROUNDS = 4;
+
+// Last known address, used when there is no cache file yet. gethostbyname()
+// cannot be interrupted from PHP and on this host it has been measured blocking
+// past 50s (the resolver is a second, unrelated fault on this host), so no
+// request path may ever put a hostname in a socket URL. The address comes from
+// the cache file or this constant, and nothing else. To move to a new address,
+// update this and delete .telebirr-upstream-ip.
 const UPSTREAM_SEED_IP = '196.188.116.120';
 
 /**
- * Resolve the provider once and remember the answer.
- *
- * Why this exists
- * ---------------
- * The relay host's resolver is unreliable for this provider. Two probe runs
- * produced opposite results for identical cURL options, and the failures were:
- *
- *     errno=28 "Resolving timed out after 4000 milliseconds"
- *     errno=28 "Operation timed out ... with 0 out of 0 bytes received"
- *
- * The second is not a dropped packet: the connection never opened, because the
- * name never resolved. That also explains why nothing downstream could bound
- * it. This host runs cURL 7.61.1, and CURLOPT_TIMEOUT does not reliably cover
- * name resolution on this build -- a request that set CURLOPT_TIMEOUT=6 ran for
- * 56 seconds. So the "0 out of 0 bytes" stalls cost the whole budget, the
- * response overran the API's deadline, and the API reported a bare timeout
- * against a relay that was perfectly reachable.
- *
- * Once an address is known it goes into CURLOPT_RESOLVE, which makes libcurl
- * skip the resolver entirely, and CURLOPT_TIMEOUT then actually bounds the
- * request. The address is re-resolved whenever the cached one stops working, so
- * a provider IP change is picked up rather than pinned.
- *
- * The cache is best-effort: if it is not writable the relay still works, it just
- * pays for a lookup on every request.
- */
-/**
  * The provider address, without ever calling the system resolver.
- *
- * Why there is no resolver call here
- * ----------------------------------
- * gethostbyname() cannot be interrupted from PHP, and on this host it has been
- * measured blocking for 28s and 50s. That unbounded call is the entire failure
- * this script exists to prevent, so it must not appear on a request path --
- * including a retry path. An earlier version of this function re-resolved after a
- * failed attempt and reintroduced exactly the stall it was written to avoid,
- * turning a 6s request into a 34s one.
- *
- * So the address comes from a cache file or the seed constant, and nothing else.
- * The seed is maintained by hand: it is verified correct as of this writing, and
- * if the provider ever changes address the response reports `ipSource=seed` plus
- * the address it used, which makes a stale seed obvious in the logs rather than
- * something to diagnose blind. To move to a new address, update
- * UPSTREAM_SEED_IP and delete .telebirr-upstream-ip.
  */
 function resolveUpstreamAddress(): array {
     $cached = @file_get_contents(__DIR__ . '/.telebirr-upstream-ip');
@@ -215,62 +222,25 @@ function rememberUpstreamAddress($ip): void {
 }
 
 /**
- * Measure TCP reachability without touching TLS.
- *
- * Deliberately plain TCP: fsockopen('ssl://...') does not send SNI, and many
- * hosts reject or mishandle a SNI-less handshake, so a TLS probe here reports a
- * false "unreachable" for a server that cURL reaches fine. errno=0 with an empty
- * message after a few seconds is that signature.
- *
- * Also advisory only. A failure is recorded as a diagnostic and cURL is still
- * attempted, because cURL's own error is more trustworthy than this probe.
- *
- * Given a resolved address, connects to the literal. fsockopen resolves the name
- * itself, so passing the host here would reintroduce exactly the hang this
- * script exists to avoid.
+ * One cURL handle configured for a single fresh flow to the provider.
  */
-function measureUpstreamReachability(string $host, int $port, int $timeoutSeconds, $ip = null) {
-    $errno = 0;
-    $errstr = '';
-    $target = ($ip !== null && $ip !== '') ? $ip : $host;
-    $startedAt = microtime(true);
-    $socket = @fsockopen("tcp://{$target}:{$port}", $timeoutSeconds, $errno, $errstr, STREAM_CLIENT_CONNECT);
-    $elapsedMs = round((microtime(true) - $startedAt) * 1000);
-    if ($socket === false) {
-        return [
-            'ok' => false,
-            'elapsedMs' => $elapsedMs,
-            'error' => "tcp connect to {$target}:{$port} failed after {$elapsedMs}ms (errno={$errno} {$errstr})"
-        ];
-    }
-    fclose($socket);
-    return ['ok' => true, 'elapsedMs' => $elapsedMs, 'error' => ''];
-}
-
-/**
- * One cURL attempt against the provider.
- *
- * @return array{ok:bool, body:string, errno:int, error:string, ms:int, fromCache:bool}
- */
-function attemptFetch($url, $ip, $timeoutMs) {
+function makeFlowHandle($url, $ip) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    // Equal to the per-attempt timeout, not lower. The handshake to this provider
-    // is bimodal: probes on the relay host succeeded at 26-38ms, 1064ms, 3081ms
-    // and 3319ms, and failed past 4000ms. A connect timeout below ~3.5s therefore
-    // kills handshakes that were about to succeed, which is how a 2s connect
-    // timeout produced three consecutive errno=28 on a host whose TCP connect to
-    // the same address completed in 0ms.
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, (int) ceil($timeoutMs / 1000));
-    curl_setopt($ch, CURLOPT_TIMEOUT, (int) ceil($timeoutMs / 1000));
-    // Abort a connection that stalls mid-body instead of burning the full
-    // timeout waiting for more data that never arrives.
-    curl_setopt($ch, CURLOPT_LOW_SPEED_LIMIT, 512);
-    curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, 2);
-    // Bound the response body as well as its rate. LOW_SPEED_* only caps a stall,
-    // not size, and an oversized page is what makes the extract stage run long.
+    curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
+    // The deadline that matters. Covers TCP connect plus the TLS handshake.
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT_MS, HANDSHAKE_DEADLINE_MS);
+    curl_setopt($ch, CURLOPT_TIMEOUT_MS, FLOW_TOTAL_MS);
+    // Every handle must be its own TCP connection with its own source port.
+    // Reusing a connection would defeat the point of the retry.
+    curl_setopt($ch, CURLOPT_FRESH_CONNECT, true);
+    curl_setopt($ch, CURLOPT_FORBID_REUSE, true);
+    curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    // Bound the response body. An oversized page is what makes the extract
+    // stage run long, and CURLOPT_MAXFILESIZE only sees Content-Length, so the
+    // explicit check after the fetch covers chunked responses.
     curl_setopt($ch, CURLOPT_MAXFILESIZE, MAX_HTML_BYTES);
     curl_setopt($ch, CURLOPT_ENCODING, '');
     curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
@@ -279,113 +249,157 @@ function attemptFetch($url, $ip, $timeoutMs) {
         "Accept-Language: am-ET,am;q=0.9,en-US;q=0.8,en;q=0.7"
     ]);
 
-    // ── TLS pinning ───────────────────────────────────────────────────────────
-    // transactioninfo.ethiotelecom.et is TLS 1.2 only. This one is deterministic
-    // and worth keeping: a probe on the relay host got
-    //   errno=35 "tlsv1 alert protocol version"
-    // for a TLS 1.3 ClientHello, in 16ms, every time. Pinning 1.2 avoids paying
-    // a rejected handshake before every real request.
+    // The provider is TLS 1.2 only; a TLS 1.3 ClientHello gets a protocol-version
+    // alert in 16ms, deterministically. Pinning avoids paying that before every
+    // real handshake. SECLEVEL=1 is already the default on this host's OpenSSL
+    // 1.1.1k and is kept for a future OpenSSL 3.x host. Verification is never
+    // disabled: the probe showed it buys nothing against this fault.
     curl_setopt($ch, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
-    // Not needed on this host, which runs OpenSSL 1.1.1k where level 1 is already
-    // the default. Kept so a host that later gains OpenSSL 3.x, where the default
-    // is stricter, does not start rejecting this provider's older chain.
     curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=1');
-    // Never disabled. See the probe: disabling verification does not make this
-    // provider reachable, so it would buy nothing and cost the guarantee.
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 
-    // Hand libcurl the address so it never calls the resolver, which on this host
-    // can block far past CURLOPT_TIMEOUT.
+    // Hand libcurl the address so it never calls the resolver.
     if ($ip !== null && $ip !== '') {
         curl_setopt($ch, CURLOPT_RESOLVE, [UPSTREAM_HOST . ':' . UPSTREAM_PORT . ':' . $ip]);
     }
+    return $ch;
+}
+
+/**
+ * One round: HEDGE_WIDTH fresh flows opened together; the first to complete
+ * the transfer wins and the rest are torn down immediately.
+ *
+ * @return array{ok:bool, body:string, errno:int, error:string, ms:int, flows:string[], winnerMs:int}
+ */
+function fetchRound($url, $ip, $width, $round) {
+    $mh = curl_multi_init();
+    $handles = [];
+    for ($i = 0; $i < $width; $i++) {
+        $ch = makeFlowHandle($url, $ip);
+        curl_multi_add_handle($mh, $ch);
+        // A plain list: cURL handles are resources on PHP 7 and objects on
+        // PHP 8, so they must not be used as array keys.
+        $handles[] = $ch;
+    }
 
     $startedAt = microtime(true);
-    $body = curl_exec($ch);
-    $errno = curl_errno($ch);
-    $error = curl_error($ch);
-    $ms = round((microtime(true) - $startedAt) * 1000);
-    curl_close($ch);
+    $flows = [];
+    $winner = null;
+    $lastErrno = 0;
+    $lastError = '';
+    $running = 0;
+
+    do {
+        // Drive all transfers. On very old libcurl this can ask to be called
+        // again immediately; falling through to info_read and select is
+        // correct in that case too, so the return value is not inspected.
+        curl_multi_exec($mh, $running);
+        while (($info = curl_multi_info_read($mh)) !== false) {
+            $ch = $info['handle'];
+            $errno = (int) $info['result'];
+            $ms = (int) round((microtime(true) - $startedAt) * 1000);
+            $label = sprintf('r%d.%d', $round, count($flows) + 1);
+            if ($errno === CURLE_OK) {
+                $flows[] = sprintf('%s ok %dms tls=%dms', $label, $ms,
+                    (int) round(curl_getinfo($ch, CURLINFO_APPCONNECT_TIME) * 1000));
+                if ($winner === null) {
+                    $winner = [
+                        'body' => (string) curl_multi_getcontent($ch),
+                        'ms' => $ms,
+                    ];
+                }
+            } else {
+                $flows[] = sprintf('%s errno=%d %dms', $label, $errno, $ms);
+                $lastErrno = $errno;
+                $lastError = curl_error($ch);
+            }
+        }
+        if ($winner !== null) {
+            break;
+        }
+        if ($running > 0) {
+            // A negative return here means "nothing to wait on yet" on older
+            // libcurl builds; back off briefly rather than spin.
+            if (curl_multi_select($mh, 0.05) === -1) {
+                usleep(10000);
+            }
+        }
+    } while ($running > 0);
+
+    // Tear down everything, including flows still in flight after a win. Removing
+    // a handle from the multi aborts its transfer, which closes the socket.
+    foreach ($handles as $ch) {
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+    }
+    curl_multi_close($mh);
 
     return [
-        'ok' => $errno === 0,
-        'body' => is_string($body) ? $body : '',
-        'errno' => $errno,
-        'error' => $error,
-        'ms' => $ms,
-        'fromCache' => $ip !== null && $ip !== '',
+        'ok' => $winner !== null,
+        'body' => $winner !== null ? $winner['body'] : '',
+        'errno' => $winner !== null ? 0 : $lastErrno,
+        'error' => $winner !== null ? '' : $lastError,
+        'ms' => (int) round((microtime(true) - $startedAt) * 1000),
+        'flows' => $flows,
+        'winnerMs' => $winner !== null ? $winner['ms'] : 0,
     ];
 }
 
 function fetchReceipt($url) {
-    global $__stage;
+    global $__stage, $__startedAt;
 
     $__stage = 'dns-resolve';
     $resolution = resolveUpstreamAddress();
     $ip = $resolution['ip'];
 
-    $__stage = 'dns-precheck';
-    $precheck = measureUpstreamReachability(UPSTREAM_HOST, UPSTREAM_PORT, 1, $ip);
+    // No TCP pre-check any more. It answered a question that is no longer open
+    // (TCP always connects here), cost up to 1s of budget, and opened a
+    // connection that sent no data before closing — a pattern that some edges
+    // count against a source address. The flows below are the reachability test.
 
     $__stage = 'provider-fetch';
-    $attempts = [];
+    $allFlows = [];
     $body = '';
+    $ok = false;
     $lastErrno = 0;
     $lastError = '';
+    $rounds = 0;
 
-    for ($i = 1; $i <= FETCH_MAX_ATTEMPTS; $i++) {
-        $attempt = attemptFetch($url, $ip, FETCH_ATTEMPT_TIMEOUT_MS);
-        $attempts[] = sprintf('#%d %dms errno=%d', $i, $attempt['ms'], $attempt['errno']);
-
-        if ($attempt['ok']) {
-            $body = $attempt['body'];
-            $lastErrno = $attempt['errno'];
-            $lastError = $attempt['error'];
-            // Promote whatever worked, so a later request starts from a verified
-            // address instead of the seed.
+    for ($round = 1; $round <= MAX_ROUNDS; $round++) {
+        $elapsedMs = (microtime(true) - $__startedAt) * 1000;
+        // Never start a round the budget cannot absorb; an explicit failure
+        // inside the budget beats a truthful one after the API has hung up.
+        if ($round > 1 && $elapsedMs + FLOW_TOTAL_MS > RELAY_BUDGET_MS - RELAY_DOM_RESERVE_MS) {
+            break;
+        }
+        $rounds = $round;
+        $result = fetchRound($url, $ip, HEDGE_WIDTH, $round);
+        $allFlows = array_merge($allFlows, $result['flows']);
+        if ($result['ok']) {
+            $ok = true;
+            $body = $result['body'];
             if ($ip !== null && $ip !== '' && $resolution['source'] !== 'cache') {
                 rememberUpstreamAddress($ip);
             }
             break;
         }
-
-        $lastErrno = $attempt['errno'];
-        $lastError = $attempt['error'];
-
-        // Deliberately no re-resolve here. An earlier version did, and because
-        // the seed counted as a cached address it fired on the very first failed
-        // attempt, putting the unbounded gethostbyname() call straight back on
-        // the request path: three 2s attempts turned into a 34s request that the
-        // API had already given up on. The address is now pinned for the whole
-        // request and the remaining attempts simply retry against it, which is
-        // what the intermittency actually calls for.
-        //
-        // The address is reported as `ipSource=` and in the precheck line, so a
-        // stale seed is visible in the logs rather than something to infer.
+        $lastErrno = $result['errno'];
+        $lastError = $result['error'];
     }
 
     $probe = sprintf(
-        'ipSource=%s tcpProbe=%s tcpProbeMs=%d attempts=%d [%s] curlErrno=%d',
+        'ipSource=%s ip=%s rounds=%d width=%d handshakeDeadlineMs=%d flows=[%s] curlErrno=%d',
         $resolution['source'],
-        $precheck['ok'] ? 'ok' : 'failed',
-        $precheck['elapsedMs'],
-        count($attempts),
-        implode(' ', $attempts),
+        (string) $ip,
+        $rounds,
+        HEDGE_WIDTH,
+        HANDSHAKE_DEADLINE_MS,
+        implode(' ', $allFlows),
         $lastErrno
     );
 
-    $error_no = $lastErrno;
-    $error_msg = $lastError;
-    $response = $body;
-    $curlMs = 0;
-    foreach ($attempts as $entry) {
-        if (preg_match('/^#\d+ (\d+)ms/', $entry, $m)) {
-            $curlMs += (int) $m[1];
-        }
-    }
-
-    if ($error_no === 0) {
-        $htmlBytes = is_string($response) ? strlen($response) : 0;
+    if ($ok) {
+        $htmlBytes = strlen($body);
         if ($htmlBytes > MAX_HTML_BYTES) {
             // Do not truncate: a cut-off page parses into plausible-looking but
             // wrong field values, which is worse than an explicit failure.
@@ -395,8 +409,11 @@ function fetchReceipt($url) {
                 'details' => "{$probe} | the receipt page exceeded the parse budget; do not truncate it, because a partial page yields wrong field values"
             ];
         }
-        return ['success' => true, 'html' => $response];
+        return ['success' => true, 'html' => $body, 'probe' => $probe];
     }
+
+    $error_no = $lastErrno;
+    $error_msg = $lastError;
 
     // Group specific cURL errors
     $is_ssl_error = in_array($error_no, [35, 51, 58, 59, 60, 64, 66, 77, 82, 83]); // SSL related errors
@@ -405,9 +422,8 @@ function fetchReceipt($url) {
     if ($is_ssl_error) {
         // errno 60 is this host's certificate store, not the provider's
         // certificate. The provider presents a GlobalSign RSA OV SSL CA 2018
-        // chain; a Plesk box without that root in its CA bundle fails here and
-        // the fix is on the host, so do not send the operator chasing Ethio
-        // Telecom for it.
+        // chain; a host without that root in its CA bundle fails here and the
+        // fix is on the host, so do not send the operator chasing Ethio Telecom.
         if ($error_no === 60) {
             return [
                 'success' => false,
@@ -425,7 +441,7 @@ function fetchReceipt($url) {
     if ($is_connection_error) {
         return [
             'success' => false,
-            'error' => "Ethiotelecom is unreachable. The proxy might be blocked or Ethiotelecom is experiencing hosting issues.",
+            'error' => "Ethiotelecom did not complete a TLS handshake on any of " . count($allFlows) . " fresh connections. Every flow from this host to the provider was dead this time; see the probe for whether that is the provider, this address, or the path.",
             'details' => "{$error_msg} | {$probe}"
         ];
     }
@@ -730,6 +746,11 @@ $response['relayTiming'] = [
     // null means the DOM was never needed, which is the healthy common case.
     'domMs' => $xpath->wasSkipped() ? null : $xpath->builtMs(),
     'domNote' => $xpath->wasSkipped() ? $xpath->skipReason() : ($xpath->builtMs() > 0 ? 'fallback used' : 'not needed'),
+    // The per-flow log from the fetch stage. This is the number that matters
+    // for this provider: how many fresh connections it took to find a live one.
+    // Watch it in the API logs; if it trends towards every flow dying, the
+    // provider-side fault is getting worse and no relay budget will save it.
+    'flows' => isset($fetchResult['probe']) ? $fetchResult['probe'] : null,
 ];
 
 $__stage = 'respond';
