@@ -4,34 +4,34 @@
   "requests": 5,
   "settleMs": 4000,
   "requestMs": {
-    "total": 618,
-    "mean": 123.6
+    "total": 621,
+    "mean": 124.2
   },
   "responses": [
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 124.3
+      "totalMs": 124.5
     },
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 123.2
+      "totalMs": 123.7
     },
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 123.3
+      "totalMs": 124.1
     },
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 123
+      "totalMs": 123.9
     },
     {
       "status": 402,
       "class": "quota_402",
-      "totalMs": 123.3
+      "totalMs": 124.1
     }
   ],
   "sqlStatements": 1,
