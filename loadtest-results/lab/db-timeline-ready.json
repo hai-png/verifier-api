@@ -4,19 +4,19 @@
   "requests": 2,
   "settleMs": 2500,
   "requestMs": {
-    "total": 126,
-    "mean": 63
+    "total": 127,
+    "mean": 63.5
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 63.1
+      "totalMs": 63.5
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.2
+      "totalMs": 62.7
     }
   ],
   "sqlStatements": 0,
@@ -26,7 +26,7 @@
     "Com_stmt_execute": 1
   },
   "controlNoise": {
-    "statements": 1,
+    "statements": 0,
     "comCounters": {
       "Com_select": 1,
       "Com_stmt_execute": 2
