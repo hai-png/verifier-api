@@ -1,33 +1,43 @@
 <?php
 /**
- * Telebirr upstream TLS probe — DIAGNOSTIC, DELETE AFTER USE.
+ * Telebirr upstream TLS sample — DIAGNOSTIC, DELETE AFTER USE.
  *
- * Why this exists
- * ---------------
- * The relay at proxy.noveld.com.et cannot complete a TLS handshake with
- * transactioninfo.ethiotelecom.et. The symptom is curl errno 28 with
- * "0 out of 0 bytes received": fsockopen() reaches the host in ~200-300ms, so
- * TCP is fine, but not a single byte comes back after the ClientHello. The same
- * URL, same reference, over the same provider, succeeds from other networks in
- * ~40ms on the TLS handshake and returns a 26KB page.
+ * One question only: does PHP's own TLS succeed where cURL fails?
  *
- * That makes this a property of the Plesk host or of its path to the provider,
- * not of the provider and not of verify.php. verify.php can only observe the
- * failure; this file isolates which TLS setting, if any, the host can complete.
+ * Both go through OpenSSL but share nothing below it — cURL has its own
+ * connection handling — so if they disagree, the fault is libcurl on this host
+ * and verify.php can use streams instead. If they agree, the fault is this
+ * host's path to the provider and no code change will help.
  *
- * It walks the matrix of options verify.php has used, plus a few it has not, so
- * the answer is a single number rather than another round trip.
+ * Everything else about this relay is already established: the provider answers
+ * other networks in ~40ms, TCP connects here in 0ms, the TLS handshake fails
+ * roughly half the time, spacing requests does not help, and the page is 26KB
+ * so extraction is irrelevant. Do not re-measure any of that.
  *
- * SECURITY: this prints the host's TLS capabilities to whoever can reach it, so
- * it refuses to run without the relay key. Upload it only long enough to read the
- * output, then delete it. It must never be left on a public document root.
+ * BUDGET: this host has max_execution_time=30, and a script killed at the limit
+ * emits nothing at all. An earlier version of this probe ran 9 cURL rows plus
+ * two sample sets and could need over 100s, so it produced a silent hang rather
+ * than an answer. Everything below is sized to finish inside 30s even when
+ * every single attempt fails:
+ *
+ *   4 cURL attempts x 3s  = 12s
+ *   3 streams x 4s        = 12s
+ *   overhead              ~1s
+ *
+ * SECURITY: prints this host's TLS capabilities to whoever can reach it, so it
+ * refuses to run without the relay key. Upload only long enough to read the
+ * output, then delete it.
  */
 
 header('Content-Type: text/plain; charset=utf-8');
 
-// ── Same key gate as verify.php. Copy your real key here. ────────────────────
 const PROBE_KEY = 'PASTE_YOUR_KEY_HERE';
-// ─────────────────────────────────────────────────────────────────────────────
+const HOST = 'transactioninfo.ethiotelecom.et';
+const CURL_SAMPLES = 4;
+const CURL_TIMEOUT_S = 3;
+const STREAM_SAMPLES = 3;
+const STREAM_TIMEOUT_S = 4;
+
 if (PROBE_KEY === 'PASTE_YOUR_KEY_HERE') {
     http_response_code(500);
     echo "Set PROBE_KEY at the top of this file to your relay key before running it.\n";
@@ -39,250 +49,108 @@ if (!isset($_GET['key']) || !hash_equals(PROBE_KEY, (string) $_GET['key'])) {
     exit;
 }
 
-const HOST = 'transactioninfo.ethiotelecom.et';
-const PATH = '/receipt/';
-
-/**
- * @return array{label:string, ok:bool, ms:int, errno:int, err:string, note:string}
- */
-function attempt(string $label, callable $configure): array
-{
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, 'https://' . HOST . PATH);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 6);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
-    curl_setopt($ch, CURLOPT_USERAGENT, 'telebirr-tls-probe');
-    $configure($ch);
-
-    $startedAt = microtime(true);
-    $body = curl_exec($ch);
-    $errno = curl_errno($ch);
-    $err = curl_error($ch);
-    $ms = round((microtime(true) - $startedAt) * 1000);
-    $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    return [
-        'label' => $label,
-        // A 4xx still proves the handshake completed, which is the only thing
-        // this probe measures. Treating "not 200" as failure would hide success.
-        'ok' => $errno === 0 && $http > 0,
-        'ms' => $ms,
-        'errno' => $errno,
-        'err' => $err,
-        'note' => $errno === 0 ? "http={$http} bytes=" . strlen((string) $body) : '',
-    ];
-}
-
-$sslVersionNames = [];
-if (defined('CURL_SSLVERSION_TLSv1_2')) {
-    $sslVersionNames['TLSv1_2'] = CURL_SSLVERSION_TLSv1_2;
-}
-if (defined('CURL_SSLVERSION_TLSv1_3')) {
-    $sslVersionNames['TLSv1_3'] = CURL_SSLVERSION_TLSv1_3;
-}
-
 echo "=== host ===\n";
-echo 'php          ' . PHP_VERSION . "\n";
-echo 'curl         ' . (function_exists('curl_version') ? curl_version()['version'] : 'n/a') . "\n";
-echo 'ssl backend  ' . (function_exists('curl_version')
+echo 'php              ' . PHP_VERSION . "\n";
+echo 'curl             ' . (function_exists('curl_version') ? curl_version()['version'] : 'n/a') . "\n";
+echo 'curl ssl backend ' . (function_exists('curl_version')
     ? (curl_version()['ssl_version'] ?? 'n/a')
     : 'n/a') . "\n";
-echo 'openssl      ' . (defined('OPENSSL_VERSION_TEXT') ? OPENSSL_VERSION_TEXT : 'n/a') . "\n";
-echo 'max_execution_time ' . ini_get('max_execution_time') . "\n";
-echo 'memory_limit       ' . ini_get('memory_limit') . "\n";
-echo 'disable_functions  ' . ini_get('disable_functions') . "\n";
-echo "\n";
+echo 'openssl          ' . (defined('OPENSSL_VERSION_TEXT') ? OPENSSL_VERSION_TEXT : 'n/a') . "\n";
+echo 'max_execution_time ' . ini_get('max_execution_time') . "\n\n";
 
-echo "=== raw TCP (no TLS) ===\n";
-$errno = 0;
-$errstr = '';
-$startedAt = microtime(true);
-$sock = @fsockopen('tcp://' . HOST . ':443', 4, $errno, $errstr, STREAM_CLIENT_CONNECT);
-printf(
-    "tcp connect   %s in %dms (errno=%d %s)\n",
-    $sock === false ? 'FAILED' : 'ok',
-    round((microtime(true) - $startedAt) * 1000),
-    $errno,
-    $errstr
-);
-if ($sock !== false) {
-    fclose($sock);
-}
-echo "\n";
-
-echo "=== TLS handshake matrix ===\n";
-echo "A 200 or any HTTP status means the handshake completed.\n\n";
-
-$attempts = [
-    'default (library picks)' => function ($ch) {},
-    'TLS1.2 forced' => function ($ch) use ($sslVersionNames) {
-        if (isset($sslVersionNames['TLSv1_2'])) {
-            curl_setopt($ch, CURLOPT_SSLVERSION, $sslVersionNames['TLSv1_2']);
-        }
-    },
-    'TLS1.3 forced' => function ($ch) use ($sslVersionNames) {
-        if (isset($sslVersionNames['TLSv1_3'])) {
-            curl_setopt($ch, CURLOPT_SSLVERSION, $sslVersionNames['TLSv1_3']);
-        }
-    },
-    'TLS1.2 + SECLEVEL=1 (current verify.php)' => function ($ch) use ($sslVersionNames) {
-        if (isset($sslVersionNames['TLSv1_2'])) {
-            curl_setopt($ch, CURLOPT_SSLVERSION, $sslVersionNames['TLSv1_2']);
-        }
-        curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=1');
-    },
-    'TLS1.2 + SECLEVEL=0' => function ($ch) use ($sslVersionNames) {
-        if (isset($sslVersionNames['TLSv1_2'])) {
-            curl_setopt($ch, CURLOPT_SSLVERSION, $sslVersionNames['TLSv1_2']);
-        }
-        curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=0');
-    },
-    'SECLEVEL=0, version unpinned' => function ($ch) {
-        curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=0');
-    },
-    'SECLEVEL=2, version unpinned' => function ($ch) {
-        curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=2');
-    },
-    // If the handshake dies only with verification on, the host is missing the
-    // issuer root. If it dies with verification off too, the handshake itself is
-    // being dropped, which points at the network path rather than the trust store.
-    'verify off (diagnostic only)' => function ($ch) {
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-    },
-    'TLS1.2 + SECLEVEL=0 + verify off' => function ($ch) use ($sslVersionNames) {
-        if (isset($sslVersionNames['TLSv1_2'])) {
-            curl_setopt($ch, CURLOPT_SSLVERSION, $sslVersionNames['TLSv1_2']);
-        }
-        curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, 'DEFAULT:@SECLEVEL=0');
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-    },
-];
-
-foreach ($attempts as $label => $configure) {
-    $result = attempt((string) $label, $configure);
-    printf(
-        "%-40s %-7s %5dms  errno=%-3d %s%s\n",
-        $result['label'],
-        $result['ok'] ? 'OK' : 'FAIL',
-        $result['ms'],
-        $result['errno'],
-        $result['ok'] ? $result['note'] . ' ' : '',
-        $result['ok'] ? '' : $result['err']
-    );
-}
-
-// The single most useful number this probe produces. A provider that fails half
-// the time is a retry problem, not a configuration problem, and one pass of the
-// matrix above cannot tell those apart: the same options have been observed
-// succeeding and failing minutes apart. Repeat one plain request and report the
-// success rate.
-echo "\n=== repeat sample: 6 identical requests ===\n";
-$repeats = 6;
-$ok = 0;
-$totalMs = 0;
-$errnos = [];
-for ($i = 1; $i <= $repeats; $i++) {
-    $result = attempt('repeat', function ($ch) {});
-    $totalMs += $result['ms'];
-    if ($result['ok']) {
-        $ok++;
-    } else {
-        $errnos[] = $result['errno'];
+/**
+ * One cURL attempt, matching verify.php's settings so the sample reflects what
+ * verify.php actually does rather than some idealised configuration.
+ */
+function curlAttempt($ip) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, 'https://' . HOST . '/receipt/');
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, CURL_TIMEOUT_S);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, CURL_TIMEOUT_S);
+    curl_setopt($ch, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+    if ($ip !== null && $ip !== '') {
+        curl_setopt($ch, CURLOPT_RESOLVE, [HOST . ':443:' . $ip]);
     }
-    printf(
-        "  #%d %-7s %5dms %s\n",
-        $i,
-        $result['ok'] ? 'OK' : 'FAIL',
-        $result['ms'],
-        $result['ok'] ? '' : $result['err']
-    );
-}
-printf(
-    "\n  %d/%d succeeded, mean %dms, failure errnos: %s\n",
-    $ok,
-    $repeats,
-    (int) round($totalMs / $repeats),
-    $errnos === [] ? 'none' : implode(',', $errnos)
-);
-if ($ok < $repeats) {
-    echo "  Intermittent. Retry inside a budget; a single attempt is a coin flip.\n";
-}
-
-// Second discriminator, and the one that decides where to look next. cURL on
-// this host is old (7.61.1), so it is worth knowing whether the fault belongs to
-// cURL or to the host. PHP's own TLS via stream_socket_client goes through
-// OpenSSL directly and shares nothing with libcurl's connection handling, so if
-// the two disagree the problem is libcurl on this box rather than the network.
-//
-// The timeout here is deliberately short and few samples. A previous version of
-// this section hung for over 400s: stream_socket_client's connect timeout does
-// not bound the TLS handshake, so a stalled handshake waits on default_socket_timeout.
-// Set that explicitly, and treat a sample that overruns as a failure rather than
-// letting the worker sit there.
-ini_set('default_socket_timeout', '5');
-
-echo "\n=== repeat sample via PHP streams, not cURL ===\n";
-$streamOk = 0;
-$streamSamples = 3;
-for ($i = 1; $i <= $streamSamples; $i++) {
     $startedAt = microtime(true);
-    $context = stream_context_create([
-        'ssl' => [
-            'peer_name' => HOST,
-            'verify_peer' => true,
-            'verify_peer_name' => true,
-            'SNI_enabled' => true,
-            'capture_peer_cert' => true,
-        ],
-    ]);
+    curl_exec($ch);
+    $errno = curl_errno($ch);
+    $ms = round((microtime(true) - $startedAt) * 1000);
+    curl_close($ch);
+    return ['ok' => $errno === 0, 'ms' => $ms, 'errno' => $errno];
+}
+
+// Same address verify.php would use, so this is comparable to production.
+$ip = '196.188.116.120';
+$cached = @file_get_contents(__DIR__ . '/.telebirr-upstream-ip');
+if (is_string($cached) && preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', trim($cached))) {
+    $ip = trim($cached);
+}
+
+echo "=== cURL, " . CURL_SAMPLES . " attempts, " . CURL_TIMEOUT_S . "s each (ip $ip) ===\n";
+$curlOk = 0;
+for ($i = 1; $i <= CURL_SAMPLES; $i++) {
+    $r = curlAttempt($ip);
+    if ($r['ok']) {
+        $curlOk++;
+    }
+    printf("  #%d %-4s %4dms%s\n", $i, $r['ok'] ? 'OK' : 'FAIL', $r['ms'],
+        $r['ok'] ? '' : ' errno=' . $r['errno']);
+    @ob_flush();
+    @flush();
+}
+printf("  curl: %d/%d\n\n", $curlOk, CURL_SAMPLES);
+
+// default_socket_timeout bounds the TLS handshake, which stream_socket_client's
+// own connect timeout does not. Without this a stalled handshake waits far past
+// the script's execution limit and the whole probe returns nothing.
+ini_set('default_socket_timeout', (string) STREAM_TIMEOUT_S);
+
+echo "=== PHP streams, " . STREAM_SAMPLES . " attempts ===\n";
+$streamOk = 0;
+for ($i = 1; $i <= STREAM_SAMPLES; $i++) {
+    $startedAt = microtime(true);
     $errno = 0;
     $errstr = '';
     $fp = @stream_socket_client(
         'ssl://' . HOST . ':443',
         $errno,
         $errstr,
-        5,
+        STREAM_TIMEOUT_S,
         STREAM_CLIENT_CONNECT,
-        $context
+        stream_context_create([
+            'ssl' => [
+                'peer_name' => HOST,
+                'verify_peer' => true,
+                'verify_peer_name' => true,
+                'SNI_enabled' => true,
+            ],
+        ])
     );
     $ms = round((microtime(true) - $startedAt) * 1000);
     if ($fp !== false) {
         $streamOk++;
         fclose($fp);
-        printf("  #%d OK   %5dms\n", $i, $ms);
-    } else {
-        printf("  #%d FAIL %5dms  errno=%d %s\n", $i, $ms, $errno, $errstr);
     }
-    // Report progress as it happens, so a stalled worker still leaves a trace.
+    printf("  #%d %-4s %4dms%s\n", $i, $fp !== false ? 'OK' : 'FAIL', $ms,
+        $fp !== false ? '' : ' errno=' . $errno . ' ' . $errstr);
     @ob_flush();
     @flush();
 }
-printf("\n  streams: %d/%d succeeded\n", $streamOk, $streamSamples);
-if ($streamOk === $streamSamples && $ok < $repeats) {
-    echo "  PHP streams succeed where cURL fails: the fault is in libcurl on this\n";
-    echo "  host, not the network. verify.php could use streams instead.\n";
-} elseif ($streamOk < $streamSamples && $ok < $repeats) {
-    echo "  Both fail: the fault is this host's path to the provider, not cURL.\n";
-    echo "  Retrying is the only in-app mitigation, and a second relay on a\n";
-    echo "  different network is the real fix.\n";
-}
+printf("  streams: %d/%d\n\n", $streamOk, STREAM_SAMPLES);
 
-echo "\n=== how to read this ===\n";
-echo "* Rows disagreeing between two runs of this file, or succeeding in some\n";
-echo "  rows and not others, is the finding. It means the fault is intermittent,\n";
-echo "  so the fix is to retry inside a budget rather than to change TLS options.\n";
-echo "  The repeat sample above is the direct measurement of that.\n";
-echo "* 'Resolving timed out' in an error is DNS, not TLS. It is worth fixing at\n";
-echo "  the host: in /etc/resolv.conf set 'options timeout:1 attempts:1' so a dead\n";
-echo "  nameserver fails fast instead of blocking. Note that CURLOPT_TIMEOUT does\n";
-echo "  not reliably cover name resolution on every cURL build, so an unbounded\n";
-echo "  resolver can overrun any timeout set here.\n";
-echo "* TLS 1.3 failing with 'tlsv1 alert protocol version' is expected and\n";
-echo "  correct: this provider is TLS 1.2 only. Pin TLS 1.2 and ignore that row.\n";
-echo "* If verify-off fails too, disabling verification is not the answer, so do\n";
-echo "  not ship it that way.\n";
+echo "=== answer ===\n";
+if ($streamOk === STREAM_SAMPLES && $curlOk < CURL_SAMPLES) {
+    echo "PHP streams succeed where cURL fails. The fault is libcurl on this host,\n";
+    echo "not the network. verify.php should use streams. This is fixable in code.\n";
+} elseif ($streamOk < STREAM_SAMPLES && $curlOk < CURL_SAMPLES) {
+    echo "Both fail. The fault is this host's path to the provider, not cURL and\n";
+    echo "not PHP. No code change will help. A second relay host on a different\n";
+    echo "network is the fix.\n";
+} else {
+    echo "Inconclusive or both healthy right now. The failure is intermittent, so a\n";
+    echo "clean run proves nothing. Re-run a few times and compare the two rates:\n";
+    echo "if streams consistently beats cURL, switch verify.php to streams.\n";
+}
 echo "\nDelete this file once you have the answer.\n";
