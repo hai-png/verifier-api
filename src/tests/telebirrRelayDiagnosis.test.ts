@@ -158,6 +158,75 @@ test('a per-attempt timeout at or above the pool total is clamped so the deadlin
   );
 });
 
+test('a relay 502 is reported in the relay\'s own words, not as a timeout', async (t) => {
+  // The relay deliberately returns a staged 502 naming the stage that stalled, so
+  // that the API can report which hop broke. Classifying any 5xx as a bare
+  // transport failure discarded that body and told the caller the relay "did not
+  // respond" -- the opposite of what happened, and it threw away the only useful
+  // diagnostic in the exchange.
+  useEnv(t);
+
+  const relayError = new Error('Request failed with status code 502');
+  const relayResponse: any = new Error('Request failed with status code 502');
+  relayResponse.isAxiosError = true;
+  relayResponse.response = {
+    status: 502,
+    data: {
+      success: false,
+      error: 'Ethiotelecom is unreachable. The proxy might be blocked or Ethiotelecom is experiencing hosting issues.',
+      details: 'ipSource=cache tcpProbe=ok attempts=3 [#1 4002ms errno=28] curlErrno=28'
+    }
+  };
+  relayResponse.config = {};
+  relayResponse.request = {};
+
+  await withStubbedAxios(
+    async () => { throw relayResponse; },
+    async () => {
+      await assert.rejects(
+        () => verifyTelebirr(REFERENCE),
+        (error: unknown) => {
+          assert.ok(error instanceof TelebirrVerificationError);
+          const message = error.message;
+          const details = String(error.details);
+          assert.match(message, /The Telebirr relay reported: Ethiotelecom is unreachable/,
+            `the relay's own diagnosis should lead the message: ${message}`);
+          assert.ok(!/did not respond within/.test(message),
+            `a 502 is a response, not a silence, but it was reported as a timeout: ${message}`);
+          assert.ok(!/upstream provider fetch/.test(message),
+            `must not guess a stage the relay already named: ${message}`);
+          // The relay's diagnostics must survive into the details.
+          assert.match(details, /status=502/);
+          assert.match(details, /curlErrno=28/);
+          // Still a transport failure, so the circuit breaker keeps protecting.
+          assert.equal((error as TelebirrVerificationError).kind, 'transport');
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test('a genuine silence with no response is still described as a timeout', async (t) => {
+  // The fix above must not swallow the case it was written for: no response at
+  // all, so there is nothing in the body to report.
+  useEnv(t);
+  await withStubbedAxios(
+    async () => { throw transportError('ECONNABORTED'); },
+    async () => {
+      await assert.rejects(
+        () => verifyTelebirr(REFERENCE),
+        (error: unknown) => {
+          assert.ok(error instanceof TelebirrVerificationError);
+          assert.match(error.message, /did not respond within 120ms/);
+          assert.match(String(error.details), /code=ECONNABORTED/);
+          return true;
+        },
+      );
+    },
+  );
+});
+
 test('DNS, refusal and routing failures are reported distinctly', async (t) => {
   useEnv(t);
   const cases: Array<[string, RegExp]> = [

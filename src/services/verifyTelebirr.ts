@@ -551,6 +551,34 @@ function describeRelayTransportFailure(
     }
 }
 
+/**
+ * Pull a diagnosis out of a relay response body, if it carries one.
+ *
+ * The relay answers with `{ success: false, error, details }` on every failure
+ * path, including its staged 502 naming the stage that stalled. Returns null
+ * when the body is absent, unparseable, or carries nothing useful, so the caller
+ * can fall back to describing the transport failure itself.
+ */
+function readRelayFailureBody(data: unknown): { error: string; details: string } | null {
+    let payload: any = data;
+    if (typeof payload === 'string') {
+        // A non-JSON body is still worth surfacing if it is short and textual,
+        // but never treat markup or a long page as a diagnosis.
+        const trimmed = payload.trim();
+        if (!trimmed || trimmed.length > 500 || /^[[{]/.test(trimmed) === false) {
+            return null;
+        }
+        return { error: trimmed, details: '' };
+    }
+    if (!payload || typeof payload !== 'object') return null;
+
+    const error = typeof payload.error === 'string' ? payload.error.trim() : '';
+    const details = typeof payload.details === 'string' ? payload.details.trim() : '';
+    if (!error && !details) return null;
+
+    return { error: error || 'no reason given', details };
+}
+
 async function fetchFromProxySource(
     reference: string,
     proxyUrl: string,
@@ -634,10 +662,6 @@ async function fetchFromProxySource(
             axiosError.code === 'ECONNREFUSED';
 
         if (isTransportFailure) {
-            // Name the failing hop. Every transport mode used to collapse into
-            // one sentence, so an operator could not tell a DNS problem from a
-            // dead Plesk host from "the relay answered but its own upstream
-            // scrape never finished" — which are three different fixes.
             const code = axiosError.code ?? 'UNKNOWN';
             const relayHost = (() => {
                 try {
@@ -646,6 +670,38 @@ async function fetchFromProxySource(
                     return 'the configured relay';
                 }
             })();
+
+            // A relay that answers at all has told us something, and its own words
+            // are strictly better than anything inferred from a status code.
+            //
+            // This matters because the relay deliberately returns a staged 502 when
+            // its own upstream fails, naming the stage that stalled. That contract
+            // is worthless if a 5xx is treated as a bare transport failure: the
+            // status code alone reads as "no response", so the body was discarded
+            // and the caller was told the relay "did not respond" at the exact
+            // moment the relay was explaining precisely what was wrong. Classify
+            // it as transport so the circuit breaker still opens, but report it in
+            // the relay's own words.
+            const relaySaid = readRelayFailureBody(axiosError.response?.data);
+            if (relaySaid) {
+                logger.warn(`Telebirr relay reported a failure: ${relaySaid.error}`, {
+                    relay: relayLabel,
+                    host: relayHost,
+                    status: axiosError.response?.status,
+                    ...relaySaid
+                });
+                throw new TelebirrVerificationError(
+                    `The Telebirr relay reported: ${relaySaid.error}`,
+                    `relay=${relayLabel} host=${relayHost} status=${axiosError.response?.status} ${relaySaid.details ? `| ${relaySaid.details}` : ''}`.trim(),
+                    'transport'
+                );
+            }
+
+            // Genuinely no response to read a diagnosis from, so describe the
+            // silence. Name the failing hop: every transport mode used to collapse
+            // into one sentence, so an operator could not tell a DNS problem from
+            // a dead Plesk host from "the relay answered but its own upstream
+            // scrape never finished" — which are three different fixes.
             const diagnosis = describeRelayTransportFailure(code, axiosError, Number(options.timeoutMs ?? 30_000));
             logger.warn(`Telebirr relay transport failure: ${diagnosis.summary}`, {
                 relay: relayLabel,

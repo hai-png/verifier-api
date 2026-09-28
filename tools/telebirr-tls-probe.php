@@ -217,9 +217,18 @@ if ($ok < $repeats) {
 // cURL or to the host. PHP's own TLS via stream_socket_client goes through
 // OpenSSL directly and shares nothing with libcurl's connection handling, so if
 // the two disagree the problem is libcurl on this box rather than the network.
+//
+// The timeout here is deliberately short and few samples. A previous version of
+// this section hung for over 400s: stream_socket_client's connect timeout does
+// not bound the TLS handshake, so a stalled handshake waits on default_socket_timeout.
+// Set that explicitly, and treat a sample that overruns as a failure rather than
+// letting the worker sit there.
+ini_set('default_socket_timeout', '5');
+
 echo "\n=== repeat sample via PHP streams, not cURL ===\n";
 $streamOk = 0;
-for ($i = 1; $i <= $repeats; $i++) {
+$streamSamples = 3;
+for ($i = 1; $i <= $streamSamples; $i++) {
     $startedAt = microtime(true);
     $context = stream_context_create([
         'ssl' => [
@@ -236,7 +245,7 @@ for ($i = 1; $i <= $repeats; $i++) {
         'ssl://' . HOST . ':443',
         $errno,
         $errstr,
-        6,
+        5,
         STREAM_CLIENT_CONNECT,
         $context
     );
@@ -248,12 +257,15 @@ for ($i = 1; $i <= $repeats; $i++) {
     } else {
         printf("  #%d FAIL %5dms  errno=%d %s\n", $i, $ms, $errno, $errstr);
     }
+    // Report progress as it happens, so a stalled worker still leaves a trace.
+    @ob_flush();
+    @flush();
 }
-printf("\n  streams: %d/%d succeeded\n", $streamOk, $repeats);
-if ($streamOk === $repeats && $ok < $repeats) {
+printf("\n  streams: %d/%d succeeded\n", $streamOk, $streamSamples);
+if ($streamOk === $streamSamples && $ok < $repeats) {
     echo "  PHP streams succeed where cURL fails: the fault is in libcurl on this\n";
     echo "  host, not the network. verify.php could use streams instead.\n";
-} elseif ($streamOk < $repeats && $ok < $repeats) {
+} elseif ($streamOk < $streamSamples && $ok < $repeats) {
     echo "  Both fail: the fault is this host's path to the provider, not cURL.\n";
     echo "  Retrying is the only in-app mitigation, and a second relay on a\n";
     echo "  different network is the real fix.\n";
