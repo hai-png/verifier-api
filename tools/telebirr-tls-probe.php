@@ -31,12 +31,25 @@
 
 header('Content-Type: text/plain; charset=utf-8');
 
+// Identify the build on every path, including the fast 401, so a deployed copy
+// can be identified with one sub-second request instead of a full run. This file
+// is uploaded by hand and `git pull` does not update it, so "which version is on
+// the host" is a real question -- and a script that dies at max_execution_time
+// returns 0 bytes, which is indistinguishable from a hang and from no file at
+// all. That ambiguity already cost a wasted cycle.
+const PROBE_VERSION = '2026-09-28.streams-vs-curl';
+header('X-Probe-Version: ' . PROBE_VERSION);
+
 const PROBE_KEY = 'PASTE_YOUR_KEY_HERE';
 const HOST = 'transactioninfo.ethiotelecom.et';
 const CURL_SAMPLES = 4;
 const CURL_TIMEOUT_S = 3;
 const STREAM_SAMPLES = 3;
 const STREAM_TIMEOUT_S = 4;
+
+echo "probe build " . PROBE_VERSION . "\n";
+@ob_flush();
+@flush();
 
 if (PROBE_KEY === 'PASTE_YOUR_KEY_HERE') {
     http_response_code(500);
