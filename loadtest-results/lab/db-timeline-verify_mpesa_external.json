@@ -4,19 +4,19 @@
   "requests": 2,
   "settleMs": 2500,
   "requestMs": {
-    "total": 1427,
-    "mean": 713.5
+    "total": 1425,
+    "mean": 712.5
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 713.6
+      "totalMs": 712.4
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 713.1
+      "totalMs": 711.6
     }
   ],
   "sqlStatements": 6,
@@ -24,6 +24,7 @@
   "comCountersPerRequest": {
     "Com_select": 3,
     "Com_stmt_execute": 4.5,
+    "Com_stmt_prepare": 0.5,
     "Com_update": 1.5
   },
   "controlNoise": {
@@ -46,40 +47,7 @@
       "perRequest": 1.5
     }
   ],
-  "statementTimeline": [
-    {
-      "sql": "BEGIN",
-      "ms": 0.121
-    },
-    {
-      "sql": "COMMIT",
-      "ms": 1.125
-    },
-    {
-      "sql": "BEGIN",
-      "ms": 0.1
-    },
-    {
-      "sql": "COMMIT",
-      "ms": 1.071
-    },
-    {
-      "sql": "BEGIN",
-      "ms": 0.107
-    },
-    {
-      "sql": "COMMIT",
-      "ms": 0.91
-    },
-    {
-      "sql": "BEGIN",
-      "ms": 0.131
-    },
-    {
-      "sql": "COMMIT",
-      "ms": 0.878
-    }
-  ],
-  "statementTimelineTotalMs": 4.4430000000000005,
+  "statementTimeline": [],
+  "statementTimelineTotalMs": 0,
   "statementTimelineSource": "events_statements_history_long"
 }

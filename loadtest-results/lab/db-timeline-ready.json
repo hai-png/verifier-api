@@ -4,19 +4,19 @@
   "requests": 2,
   "settleMs": 2500,
   "requestMs": {
-    "total": 127,
-    "mean": 63.5
+    "total": 126,
+    "mean": 63
   },
   "responses": [
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 63.5
+      "totalMs": 63.3
     },
     {
       "status": 200,
       "class": "ok",
-      "totalMs": 62.7
+      "totalMs": 62.2
     }
   ],
   "sqlStatements": 0,
