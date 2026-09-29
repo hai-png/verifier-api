@@ -23,7 +23,7 @@ header("Content-Type: application/json");
 // below is the cheapest place to read it, because it never touches the upstream
 // provider — useful for confirming which build is actually deployed.
 // Declared before the shutdown handler that reports it.
-const RELAY_VERSION = '2026-09-28.hedged-flows.2';
+const RELAY_VERSION = '2026-09-28.hedged-flows.3';
 
 // Wall-clock ceiling for the whole script, in ms, and the slice of it reserved for
 // the DOM/XPath fallback. The fallback is the only stage that cannot be bounded by
@@ -355,6 +355,98 @@ function fetchRound($url, $ip, $width, $round) {
     ];
 }
 
+/**
+ * Is this host's egress working right now?
+ *
+ * Every failure of this relay looks identical from the outside: some number of
+ * fresh connections to the provider got no handshake back. That is equally
+ * consistent with "the provider dropped us" and with "this host cannot reach
+ * anything at all right now" — a firewall change, a NIC reset, an upstream
+ * block — and those have completely different fixes. Running the probe by hand
+ * answers it in minutes, but only if someone is watching, and this fault is
+ * periodic, so the answer is usually needed hours later when nobody is.
+ *
+ * So every failure carries its own control, sampled at the moment of the
+ * failure. A live control means the path and the TLS stack are fine and the
+ * provider is the variable; a dead control means the host is, and no amount of
+ * hedging will help. That is the single fact that separates "wait it out" from
+ * "call the hosting provider".
+ *
+ * Cloudflare is the control because it is a different network, a different
+ * AS, and a different operator from the provider, so it shares no path with it.
+ * Pinned by IP with CURLOPT_RESOLVE so this never calls the resolver, which on
+ * this host can block past any timeout.
+ */
+const CONTROL_HOST = 'one.one.one.one';
+const CONTROL_IP = '1.1.1.1';
+const CONTROL_CONNECT_MS = 1000;
+const CONTROL_TOTAL_MS = 1500;
+
+function controlSample() {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, 'https://' . CONTROL_HOST . '/cdn-cgi/trace');
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT_MS, CONTROL_CONNECT_MS);
+    curl_setopt($ch, CURLOPT_TIMEOUT_MS, CONTROL_TOTAL_MS);
+    // Fresh connection: a pooled one could succeed on a warmed socket and hide
+    // exactly the kind of fault this is meant to detect.
+    curl_setopt($ch, CURLOPT_FRESH_CONNECT, true);
+    curl_setopt($ch, CURLOPT_FORBID_REUSE, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+    curl_setopt($ch, CURLOPT_RESOLVE, [CONTROL_HOST . ':443:' . CONTROL_IP]);
+
+    $startedAt = microtime(true);
+    curl_exec($ch);
+    $errno = curl_errno($ch);
+    $ms = (int) round((microtime(true) - $startedAt) * 1000);
+    $connectMs = (int) round(curl_getinfo($ch, CURLINFO_CONNECT_TIME) * 1000);
+    curl_close($ch);
+
+    // errno 60 counts as live. It means the TCP connect and the TLS handshake
+    // both completed and only certificate validation failed, which still proves
+    // the path and the TLS stack work. Reading it as dead would be exactly the
+    // wrong conclusion: the fault this whole file exists for presents as a
+    // connect-phase stall (errno 28), not as a certificate complaint.
+    $live = ($errno === 0 || $errno === 60);
+
+    return sprintf(
+        'control=%s:443 %s %dms connect=%dms errno=%d',
+        CONTROL_HOST,
+        $live ? 'live' : 'dead',
+        $ms,
+        $connectMs,
+        $errno
+    );
+}
+
+/**
+ * Append a bad-period event to a log next to this script.
+ *
+ * The 63/63 and 16/16 measurements that convinced us this relay is healthy were
+ * about twenty minutes of wall clock, and the fault that preceded them was
+ * periodic — eight of eight flows dead inside 3.6s is a ~0.4% event under
+ * independence, which is the signature of a fault that arrives in runs rather
+ * than at random. No single sample can distinguish "fixed" from "in a quiet
+ * period", and the quiet period always looks identical to the fix.
+ *
+ * This log is the answer to that. Failures and slow-but-successful rounds
+ * accumulate on the host, each with its own control sample attached, so a bad
+ * period can be identified after the fact with evidence of when it happened
+ * and whether the host was healthy at the time. It is written append-only and
+ * git-ignored: runtime state, not source.
+ *
+ * SLOW is recorded for any success that needed more than one round, which is
+ * the early-warning signal: a fault returning would show up here before it
+ * shows up as failed receipts.
+ */
+function recordEvent($outcome, $probe) {
+    $line = sprintf("%s %s %s\n", gmdate('Y-m-d\TH:i:s\Z'), $outcome, $probe);
+    // Unwritable directory is suppressed rather than fatal: losing the log is
+    // far better than turning a diagnosis into a second failure. Confirm the
+    // file appears after the first event, or this is silently doing nothing.
+    @file_put_contents(__DIR__ . '/.telebirr-relay-events.log', $line, FILE_APPEND | LOCK_EX);
+}
+
 function fetchReceipt($url) {
     global $__stage, $__startedAt;
 
@@ -412,6 +504,22 @@ function fetchReceipt($url) {
         implode(' ', $allFlows),
         $lastErrno
     );
+
+    // Every failure now carries a control sample, and failures plus slow rounds
+    // are recorded to a log on the host. Both exist because the fault is
+    // periodic: a clean sample cannot prove a cure, and a bad period can only be
+    // identified after the fact if something was written down when it happened.
+    //
+    // Worst case stays inside the budget: the round loop is capped at
+    // RELAY_BUDGET_MS - RELAY_DOM_RESERVE_MS (7s) and the control is capped at
+    // 1.5s, so 8.5s against a 9s ceiling, and nothing is parsed on this path.
+    if (!$ok) {
+        $__stage = 'control-sample';
+        $probe .= ' ' . controlSample();
+        recordEvent('FAIL', $probe);
+    } elseif ($rounds > 1) {
+        recordEvent('SLOW', $probe);
+    }
 
     if ($ok) {
         $htmlBytes = strlen($body);

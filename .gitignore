@@ -27,3 +27,6 @@ uploads/
 # known-good address, used to keep DNS off the request path. Machine state, not
 # source, and it must never be committed.
 .telebirr-upstream-ip
+
+# Relay host runtime state: timestamped bad-period log written by verify.php
+.telebirr-relay-events.log
