@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 🧹 Removed: the load-test automation and its reports
+
+- **Deleted `perf-lab.yml` and `loadtest-live.yml`.** Both were push-triggered on `loadtest/**`, `src/**` and `prisma/**`, and both held `permissions: contents: write` so the report was committed back to the branch. The practical effect was that every change under `src/` produced a multi-megabyte commit from the CI bot — one landed as a conflict needing a rebase in this session — and a lab run consumed up to 90 minutes of runner time per push. `ci.yml` and `keep-alive.yml` are untouched: CI, typecheck, tests, the image build and the five-minute keep-alive ping all still run.
+- **Deleted `loadtest-results/` (188 files, 5.8 MB, 36 runs) and git-ignored it.** Every run was additive and superseded the last. The committed output also included `api-restart.log`, a server log containing request bodies and a 6-character API key prefix, which is not something that should accumulate in a repository indefinitely. A manual `node loadtest/run.mjs` run now writes locally and is no longer committed by accident.
+- **The findings are preserved in `docs/loadtest-findings.md`**, including the caveat that they are lab numbers on a 4-vCPU runner with a stubbed relay and a single-CPU-pinned API, not a capacity promise for the deployed service. The parts worth keeping: the ~62 ms floor on authenticated paths is one database round trip, a verification costs 3.2–3.6 statements versus 0 for a rejected-early request, and throughput saturates near 40 rps at c=10 with latency rising 7.5× by c=40 — a queued resource rather than CPU exhaustion, since the system shed no load at all (zero 429s, zero 5xx).
+- **The harness in `loadtest/` is unchanged and still works** — its own regression tests pass (11/11), and `loadtest/lab-profile.json` and `loadtest/live-profile.json` are intact so a re-created workflow would pick up the same parameters. `DEPLOYMENT.md` now points at the summary rather than at the deleted reports.
+
+
 ### ✅ Telebirr: hedged flows verified working on the live relay
 
 - **63 of 63 real receipts succeeded, and none of them ever used the hedge.** Three batches on the deployed `hedged-flows.2` build: 8 consecutive, then 25 spaced 2s apart, then 30 back-to-back with no delay (2.4 req/s over 12.6s). Every single request reports `rounds=1` and `flows=[r1.1 ok …]` — the *first* of the two parallel flows, so the fallback was never invoked. Latency min 230ms, mean 327ms, max 575ms. Before this build: roughly 50% first-attempt success, 0.3–13.7s, 1–3 rounds consumed.

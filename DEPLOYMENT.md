@@ -305,8 +305,10 @@ curl -X POST https://fitlife-hub-api.hbetseha.workers.dev/api/payments/verify-te
 
 ## Performance, regions and capacity
 
-Measured on the live deployment (see `loadtest/README.md` and
-`loadtest-results/`). Read this before tuning anything else.
+Measured on the live deployment. The findings are summarised in
+`docs/loadtest-findings.md`, and the harness that produced them is still in
+`loadtest/` and runnable by hand — the workflows that ran it automatically have
+been removed. Read this before tuning anything else.
 
 ### 1. The database region must match the Render region
 

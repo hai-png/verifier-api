@@ -18,10 +18,12 @@ dist/
 # Customer receipt uploads (multer destination).
 uploads/
 
-# loadtest-results/ deliberately stays tracked: the CI report publisher commits
-# there by design, and `git add loadtest-results` (no -f) only works while the
-# directory is not ignored. Note the committed reports include a server log with
-# request bodies and a 6-character API key prefix — see the prelaunch notes.
+# loadtest-results/ was tracked until the load-test workflows were removed, and
+# carried 5.8MB of superseded reports across 36 runs plus a server log containing
+# request bodies and a 6-character API key prefix. It is now ignored, so a manual
+# `node loadtest/run.mjs` run writes locally without being committed by accident.
+# The findings are summarised in docs/loadtest-findings.md.
+loadtest-results/
 
 # Written by verify.php at runtime on the relay host: the provider's last
 # known-good address, used to keep DNS off the request path. Machine state, not
