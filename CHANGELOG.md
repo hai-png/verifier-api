@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 🔍 Telebirr: hedged flows verified working, and the open question answered
+
+- **`hedged-flows.2` measured on the live relay, and the provider is healthy from that host.** Eight consecutive real receipts: 8/8 success, every one won on the first flow of round one, 254-431ms total. Against a session-long measurement of roughly a 50% per-flow death rate, sixteen-plus consecutive clean flows has a probability near 1.5e-5.
+- **The probe's control set rules out this host and the route.** `provider:443` returned `ok=8/8` on *single, unhedged* flows (26-42ms each) while `cloudflare:443` returned `ok=8/8` (22-36ms). The host's TLS stack and uplink are healthy, and so is the route to `196.188.116.120`. The result is therefore not an artefact of the hedging masking the fault — the underlying per-flow rate is currently 0/8. The other two probe rows are expected and unrelated: `provider:80` is not served (`errno 28`), and `ethiotelecom.et:443` fails certificate validation (`errno 60`) on a different host this relay does not use.
+- **`HANDSHAKE_DEADLINE_MS` 900 -> 1100 and `FLOW_TOTAL_MS` 3000 -> 2500, plus a 300ms gap between rounds.** The deadline is set just above 1s on purpose: Linux retransmits a lost SYN at 1s, and 900ms was cutting off exactly the window where a first retransmit could rescue a flow. The gap exists because the fault arrives in periods — 8 of 8 flows dead inside 3.6s is a ~0.4% event under independence — so back-to-back rounds re-sample the same bad period, and spacing costs nothing when the first round wins. Worst case is now 3 x 1.4s + 2.5s = 6.7s inside the 9s budget.
+- **Reported honestly:** this is one clean window. The prior fault was intermittent and bursty, so permanence is not established. `relayTiming.flows` is on every success and is the tripwire — `r1.1 FAIL r1.2 ok` means the fault returned and the hedge is absorbing it; `r2.*` or higher means the hedge is losing too.
+
 ### 🔍 Root cause: Telebirr relay (2026-09-28 audit)
 
 - **What is actually wrong.** From the relay host (`213.55.96.150`, Ethio Telecom AS24757, Addis Ababa — the same network as the provider at `196.188.116.120`), every TCP connection to the provider is decided individually: it either completes its TLS handshake in ~30ms, or the ClientHello goes out and nothing ever comes back. The "slow successes" previously recorded at ~1.0s and ~3.0–3.3s are TCP retransmission backoff (0.2 + 0.4 + 0.8 + 1.6s = 3.0s), i.e. a dead flow occasionally rescued by a retransmit. Roughly half of flows are dead. Full write-up, including why each of yesterday's twelve commits could not have fixed it, is in `docs/telebirr-root-cause.md`.

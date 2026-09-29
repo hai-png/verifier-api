@@ -14,8 +14,8 @@ header("Content-Type: application/json");
 //
 // Budget arithmetic for this build (see the fetch section for why it is shaped
 // this way): up to 4 rounds of hedged connections, each round abandoned after a
-// 900ms handshake deadline, the winning flow allowed 3s in total. Worst case
-// 3 x 0.9s + 3s = 5.7s, leaving the rest of RELAY_BUDGET_MS for parse/extract,
+// 1.1s handshake deadline and a 0.3s gap, the winning flow allowed 2.5s in
+// total. Worst case 3 x 1.4s + 2.5s = 6.7s, leaving the rest of RELAY_BUDGET_MS,
 // and the whole thing inside the API's 12s per-attempt timeout with room for the
 // relay's own diagnosis to arrive instead of a bare timeout.
 //
@@ -23,7 +23,7 @@ header("Content-Type: application/json");
 // below is the cheapest place to read it, because it never touches the upstream
 // provider — useful for confirming which build is actually deployed.
 // Declared before the shutdown handler that reports it.
-const RELAY_VERSION = '2026-09-28.hedged-flows';
+const RELAY_VERSION = '2026-09-28.hedged-flows.2';
 
 // Wall-clock ceiling for the whole script, in ms, and the slice of it reserved for
 // the DOM/XPath fallback. The fallback is the only stage that cannot be bounded by
@@ -173,17 +173,27 @@ const UPSTREAM_PORT = 443;
 // better expected time than waiting for the 3s retransmit rescue. libcurl's
 // connect timeout covers TCP connect *and* the TLS handshake, which is exactly
 // the phase that fails, so this is the option that implements the deadline.
-const HANDSHAKE_DEADLINE_MS = 900;
+// Set just above 1000ms on purpose: Linux retransmits a lost SYN at 1s, and the
+// first live result from this build showed the flows dying at TCP connect
+// ("Connection timed out after 900 milliseconds" is libcurl's connect-phase
+// text, not its TLS text). 1100ms lets a first SYN retransmit rescue a flow.
+const HANDSHAKE_DEADLINE_MS = 1100;
 // Once the handshake is done the page (26KB, same network) arrives in tens of
 // milliseconds; this is a generous ceiling for a live flow, not a wait budget.
-const FLOW_TOTAL_MS = 3000;
+const FLOW_TOTAL_MS = 2500;
+// Pause between rounds. The first live result was 8 of 8 flows dead in 3.6s,
+// which at p=0.5 independent is a 0.4% event -- so the fault comes in periods,
+// and back-to-back rounds just re-sample the same bad period. Spacing them
+// costs nothing on a good round (the first round wins) and buys the later
+// rounds a chance to land after the period ends.
+const ROUND_GAP_MS = 300;
 // Connections opened simultaneously per round. Two is the sweet spot: it takes
 // a round from 50% to 75% success at the cost of one extra handshake, and it
 // keeps the load on the provider modest in case its edge *is* throttling this
 // address (the probe will say). Raise to 3 only if the probe rules that out.
 const HEDGE_WIDTH = 2;
 // Rounds of fresh connections before giving up. Worst case is
-// (MAX_ROUNDS - 1) * HANDSHAKE_DEADLINE_MS + FLOW_TOTAL_MS = 5.7s.
+// (MAX_ROUNDS - 1) * (HANDSHAKE_DEADLINE_MS + ROUND_GAP_MS) + FLOW_TOTAL_MS = 6.7s.
 const MAX_ROUNDS = 4;
 
 // Last known address, used when there is no cache file yet. gethostbyname()
@@ -369,8 +379,12 @@ function fetchReceipt($url) {
         $elapsedMs = (microtime(true) - $__startedAt) * 1000;
         // Never start a round the budget cannot absorb; an explicit failure
         // inside the budget beats a truthful one after the API has hung up.
-        if ($round > 1 && $elapsedMs + FLOW_TOTAL_MS > RELAY_BUDGET_MS - RELAY_DOM_RESERVE_MS) {
+        // The gap is included because a round is not started without paying it.
+        if ($round > 1 && $elapsedMs + ROUND_GAP_MS + FLOW_TOTAL_MS > RELAY_BUDGET_MS - RELAY_DOM_RESERVE_MS) {
             break;
+        }
+        if ($round > 1) {
+            usleep(ROUND_GAP_MS * 1000);
         }
         $rounds = $round;
         $result = fetchRound($url, $ip, HEDGE_WIDTH, $round);
@@ -388,12 +402,13 @@ function fetchReceipt($url) {
     }
 
     $probe = sprintf(
-        'ipSource=%s ip=%s rounds=%d width=%d handshakeDeadlineMs=%d flows=[%s] curlErrno=%d',
+        'ipSource=%s ip=%s rounds=%d width=%d handshakeDeadlineMs=%d roundGapMs=%d flows=[%s] curlErrno=%d',
         $resolution['source'],
         (string) $ip,
         $rounds,
         HEDGE_WIDTH,
         HANDSHAKE_DEADLINE_MS,
+        ROUND_GAP_MS,
         implode(' ', $allFlows),
         $lastErrno
     );
@@ -441,7 +456,7 @@ function fetchReceipt($url) {
     if ($is_connection_error) {
         return [
             'success' => false,
-            'error' => "Ethiotelecom did not complete a TLS handshake on any of " . count($allFlows) . " fresh connections. Every flow from this host to the provider was dead this time; see the probe for whether that is the provider, this address, or the path.",
+            'error' => "Ethiotelecom did not answer any of " . count($allFlows) . " fresh connections from this host (see flows: connect=0 means the SYN got no reply). Run tools/telebirr-tls-probe.php to tell the provider edge, the route, and this host apart.",
             'details' => "{$error_msg} | {$probe}"
         ];
     }

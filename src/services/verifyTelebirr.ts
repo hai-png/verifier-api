@@ -966,14 +966,14 @@ async function verifyWithTelebirrProxyPool(
     // fall back to. The attempt then held the connection for 18s and reported a
     // bare ECONNABORTED, even when the relay was about to answer.
     //
-    // The default of 12s is deliberately above RELAY_BUDGET_MS (9s) in
-    // verify.php so the relay's own staged diagnosis arrives instead of this
-    // side hanging up on an empty body. The relay's fetch stage is now hedged
-    // fresh connections with a 900ms handshake deadline (worst case ~5.7s), so
-    // 12s is generous headroom rather than a wait budget. The clamp below only
-    // enforces the invariant that keeps the pool deadline reachable; it
-    // deliberately does not try to second-guess an operator who deliberately
-    // configured short timeouts.
+// The default of 12s is deliberately above RELAY_BUDGET_MS (9s) in
+// verify.php so the relay's own staged diagnosis arrives instead of this
+// side hanging up on an empty body. The relay's fetch stage is now hedged
+// fresh connections with a 1100ms handshake deadline and a 300ms round gap
+// (worst case 3 x 1.4s + 2.5s = 6.7s), so 12s is generous headroom rather
+// than a wait budget. The clamp below only enforces the invariant that keeps
+// the pool deadline reachable; it deliberately does not try to second-guess an
+// operator who deliberately configured short timeouts.
     const proxyTimeoutMs = Math.min(
         configuredProxyTimeoutMs,
         Math.max(1, totalTimeoutMs - 1)
