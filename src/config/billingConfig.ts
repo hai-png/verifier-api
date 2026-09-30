@@ -150,9 +150,32 @@ export function validateBillingConfigUpdate(input: unknown): Partial<BillingConf
 // which is ~150 ms against a cross-region database. The pricing row changes
 // rarely, so cache it briefly and invalidate on write.
 const BILLING_CONFIG_CACHE_TTL_MS = Number(process.env.BILLING_CONFIG_CACHE_TTL_MS ?? 30_000);
+// Stale-while-revalidate window. Once the TTL lapses, the cached row is still
+// served immediately and refreshed in the background, so no request ever waits
+// on this query. Measured on the deployed API, the request that happened to
+// land on the expiry paid a full ~300 ms cross-region round trip inside
+// `rate_limit` — for a row that changes a few times a year. Only after the
+// stale window has also lapsed (i.e. the refresh kept failing, or the process
+// was idle that long) does a request block on the read again.
+//
+// Note the trade-off this widens. `invalidateBillingConfigCache()` only clears
+// the calling process, so on a multi-instance deployment an admin pricing
+// change already took up to TTL to reach the other workers; the stale window
+// takes that to TTL + BILLING_CONFIG_STALE_MS. That is the intended bargain —
+// the row drives rate limits and quotas and changes a few times a year, while
+// the read sits on every authenticated request — but it means a pricing edit is
+// not instantaneous everywhere. Set BILLING_CONFIG_STALE_MS=0 to restore
+// blocking-on-expiry behaviour.
+const BILLING_CONFIG_STALE_MS = Number(process.env.BILLING_CONFIG_STALE_MS ?? 10 * 60_000);
 
 let cachedBillingConfig: { value: BillingConfig; expiresAt: number } | null = null;
 let inflightBillingConfig: Promise<BillingConfig> | null = null;
+
+/** True when the cached row is past its TTL but still inside the stale window. */
+function hasUsableStale(now: number): boolean {
+  return cachedBillingConfig !== null
+    && cachedBillingConfig.expiresAt + BILLING_CONFIG_STALE_MS > now;
+}
 
 /** Drop the cached pricing row (called after an admin update). */
 export function invalidateBillingConfigCache(): void {
@@ -160,11 +183,12 @@ export function invalidateBillingConfigCache(): void {
   inflightBillingConfig = null;
 }
 
-export function billingConfigCacheState(): { cached: boolean; expiresInMs: number | null; ttlMs: number } {
+export function billingConfigCacheState(): { cached: boolean; expiresInMs: number | null; ttlMs: number; staleMs: number } {
   return {
     cached: cachedBillingConfig !== null,
     expiresInMs: cachedBillingConfig ? Math.max(0, cachedBillingConfig.expiresAt - Date.now()) : null,
     ttlMs: BILLING_CONFIG_CACHE_TTL_MS,
+    staleMs: BILLING_CONFIG_STALE_MS,
   };
 }
 
@@ -176,6 +200,12 @@ export async function getBillingConfig(): Promise<BillingConfig> {
   // Coalesce concurrent misses (a burst of requests must not fan out into the
   // same query on every worker).
   if (BILLING_CONFIG_CACHE_TTL_MS > 0 && inflightBillingConfig) {
+    // A stale value is still better than waiting on the in-flight refresh. The
+    // refresh already has a handler from whoever started it, so returning here
+    // cannot orphan it.
+    if (hasUsableStale(now)) {
+      return cachedBillingConfig!.value;
+    }
     return inflightBillingConfig;
   }
 
@@ -226,6 +256,15 @@ export async function getBillingConfig(): Promise<BillingConfig> {
     .finally(() => {
       inflightBillingConfig = null;
     });
+
+  // Stale-while-revalidate: serve the expired row now, let the refresh land in
+  // the background. A failed refresh must not surface as an unhandled rejection
+  // here; the stale row is still returned, and the next caller inside the stale
+  // window retries.
+  if (hasUsableStale(now)) {
+    inflightBillingConfig.catch(() => undefined);
+    return cachedBillingConfig!.value;
+  }
 
   return inflightBillingConfig;
 }

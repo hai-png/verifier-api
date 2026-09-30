@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 ---
 
 ## [Unreleased]
+### ⚡ Latency
+
+- **Billing config is stale-while-revalidate.** `getBillingConfig()` runs on every authenticated request behind a 30s cache, so one request in each 30s window paid the full cross-region read — measured at ~300ms inside `rate_limit` on the deployed API, for a row that changes a few times a year. An expired row is now served immediately and refreshed in the background (`BILLING_CONFIG_STALE_MS`, default 10 min); only past that window does a caller block on the read. Pinned by `billingConfigStale.test.ts`. With the relay now answering in ~0.3s, the pre-provider stages (`access` ≈ 1 DB read, `quota` ≈ 1 DB write, each ~300ms Oregon→Frankfurt) are the largest remaining cost of a verification; that is a deployment-topology fix, not a code one.
+- **What this widens, stated plainly:** `invalidateBillingConfigCache()` only clears the calling process, so on a multi-instance deployment an admin pricing change already took up to one TTL to reach the other workers. The stale window takes that to TTL + `BILLING_CONFIG_STALE_MS`, so a pricing edit is no longer near-instantaneous everywhere. That is the intended bargain — the read sits on every authenticated request and the row changes a few times a year — and `BILLING_CONFIG_STALE_MS=0` restores blocking-on-expiry. Misconfiguration fails safe: a non-numeric, zero or negative value makes the comparison false, so requests block on a real read rather than serving unbounded stale pricing.
+- **A failed background refresh cannot wedge the cache.** The rejected promise has a handler attached before the stale value is returned, so it cannot surface as an unhandled rejection, the last good row is kept, and the next caller inside the window starts a fresh attempt.
+
 
 ### 🧹 Removed: the load-test automation and its reports
 
