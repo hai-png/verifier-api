@@ -1,6 +1,13 @@
-/** Base URL of the verifier-api. Baked in at build time. */
+/**
+ * Base URL of the verifier-api. Baked in at build time.
+ *
+ * This was duplicated as a local `API_BASE` in five files, each with its own
+ * copy of the same fallback — and that fallback named a service that no longer
+ * exists, so a build without NEXT_PUBLIC_API_URL set pointed the whole dashboard
+ * at a dead host. One definition now.
+ */
 export const API_URL =
-  (process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com").replace(/\/$/, "");
+  (process.env.NEXT_PUBLIC_API_URL || "https://verify.noveld.com.et").replace(/\/$/, "");
 
 const TOKEN_KEY = "nvd_token";
 const WORKSPACE_KEY = "nvd_workspace_id";

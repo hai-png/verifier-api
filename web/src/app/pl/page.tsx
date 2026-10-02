@@ -8,10 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { API_URL as API_BASE } from "@/lib/api"
 import { Loader2, AlertCircle, CheckCircle2, CreditCard } from "lucide-react";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com";
 
 interface PublicLink {
   id: string;

@@ -5,8 +5,7 @@ import { Loader2, LogOut, LayoutDashboard, ShieldCheck } from "lucide-react"
 import VerifyForm from "@/components/VerifyForm"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com"
+import { API_URL as API_BASE } from "@/lib/api"
 
 type SessionUser = {
   id: string

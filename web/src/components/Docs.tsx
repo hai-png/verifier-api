@@ -18,7 +18,16 @@ export function DocP({ children }: { children: ReactNode }) {
   return <p className="text-sm leading-6 mb-3">{children}</p>;
 }
 
-export function Code({ code }: { code: string }) {
+export function Code({ code, inline = false }: { code: string; inline?: boolean }) {
+  // Field names like `payoutAccountId` need to be named mid-sentence; a <pre>
+  // block for a two-word identifier breaks the paragraph apart.
+  if (inline) {
+    return (
+      <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] break-words">
+        {code}
+      </code>
+    );
+  }
   return (
     <pre className="bg-muted rounded-md p-4 overflow-auto text-xs mb-4 whitespace-pre-wrap break-words">
       {code}

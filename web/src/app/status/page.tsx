@@ -5,9 +5,7 @@ import SiteNav from "@/components/SiteNav";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, CheckCircle2, XCircle } from "lucide-react";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com";
+import { API_URL as API_BASE } from "@/lib/api"
 
 interface Summary {
   status: string;

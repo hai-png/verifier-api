@@ -43,10 +43,11 @@ import {
   Users, ArrowRight, Menu, X, Eye, EyeOff, AlertCircle, CheckCircle2,
   Loader2, Building2, ChevronRight, BarChart3
 } from 'lucide-react'
+import { API_URL } from '@/lib/api'
 
 // ─── API Config ─────────────────────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://verifier-api-selfhosted.onrender.com'
+const API_BASE = API_URL
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
