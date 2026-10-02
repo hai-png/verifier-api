@@ -92,7 +92,12 @@ function startKeepAlivePinger(): void {
             if (res.ok) {
                 logger.info(`Keep-alive ping OK in ${Date.now() - startedAt}ms`);
             } else {
-                logger.warn(`Keep-alive ping returned ${res.status}`);
+                // Name the URL. "returned 404" on its own did not say which host
+                // was wrong, and the wrong host was the entire bug.
+                logger.warn(
+                    `Keep-alive ping to ${keepAliveUrl}/ready returned ${res.status} — ` +
+                    'set KEEP_ALIVE_URL to this API\u2019s public URL',
+                );
             }
         } catch (error) {
             logger.warn(`Keep-alive ping failed: ${error instanceof Error ? error.message : 'unknown error'}`);

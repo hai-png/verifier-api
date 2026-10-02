@@ -10,13 +10,14 @@
  */
 
 import { Prisma } from '@prisma/client';
+import { resolveAppUrl } from '../config/appUrl';
 import { Request, Response, Router } from 'express';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 
 const router = Router();
 
-const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
+const APP_URL = resolveAppUrl();
 const VALID_PROVIDERS = ['telebirr', 'cbe', 'dashen', 'abyssinia', 'cbebirr', 'mpesa'] as const;
 
 type AuthSource = 'DASHBOARD' | 'API_KEY';

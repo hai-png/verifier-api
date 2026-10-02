@@ -16,6 +16,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolvePublicApiUrl } from '../config/publicApiUrl';
+import { resolveAppUrl } from '../config/appUrl';
 import { createRedisConnectionOptions } from '../queues/redisConnection';
 
 function withEnv(t: any, vars: Record<string, string | undefined>) {
@@ -61,6 +62,38 @@ test('a trailing slash cannot turn /ready into //ready', (t) => {
 
   assert.equal(resolvePublicApiUrl(), 'https://verify.noveld.com.et');
   assert.equal(`${resolvePublicApiUrl()}/ready`, 'https://verify.noveld.com.et/ready');
+});
+
+test('KEEP_ALIVE_URL overrides a RENDER_EXTERNAL_URL that is not routed here', (t) => {
+  withEnv(t, {
+    RENDER_EXTERNAL_URL: 'https://verifier-api-ikp1.onrender.com',
+    KEEP_ALIVE_URL: 'https://verify.noveld.com.et',
+    VERITAS_APP_URL: undefined,
+  });
+
+  // The deployed service had RENDER_EXTERNAL_URL pointing at an onrender.com
+  // hostname that answered 404 for every path, including /ready.
+  assert.equal(resolvePublicApiUrl(), 'https://verify.noveld.com.et');
+});
+
+test('the app URL is the dashboard, never the API', (t) => {
+  withEnv(t, { VERITAS_APP_URL: 'https://dashboard.noveld.com.et/' });
+
+  // Every route built from this is a frontend page. A trailing slash would also
+  // produce '/pl//<id>'.
+  assert.equal(resolveAppUrl(), 'https://dashboard.noveld.com.et');
+  assert.equal(
+    `${resolveAppUrl()}/reset-password?token=abc`,
+    'https://dashboard.noveld.com.et/reset-password?token=abc',
+  );
+});
+
+test('an unset app URL defaults to the dashboard, not the API', (t) => {
+  withEnv(t, { VERITAS_APP_URL: undefined });
+
+  // The old default was the API host, which is how a password-reset email came
+  // to point at a 401.
+  assert.equal(resolveAppUrl(), 'https://dashboard.noveld.com.et');
 });
 
 test('Redis retries back off and then stop hammering', (t) => {

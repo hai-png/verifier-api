@@ -11,10 +11,16 @@
  *
  * So this is the single place that resolves it. Anything that needs to address
  * the API itself — the keep-alive pinger, the status page — reads this. Anything
- * that builds a link a human clicks reads VERITAS_APP_URL instead.
+ * that builds a link a human clicks reads resolveAppUrl() instead.
+ *
+ * KEEP_ALIVE_URL exists because RENDER_EXTERNAL_URL is set by Render and, on
+ * this service, holds an onrender.com hostname that is not routed here, so the
+ * pinger 404ed on /ready every five minutes. That variable is awkward to correct
+ * in the dashboard; this one is not.
  *
  * Trailing slashes are stripped so callers can append a path directly.
  */
 export function resolvePublicApiUrl(): string {
-    return (process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+    const configured = (process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
+    return configured.replace(/\/+$/, '');
 }

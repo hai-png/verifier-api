@@ -1,6 +1,7 @@
 import { runSmartVerify } from '../services/verifyUniversal';
 import { Router, Request, Response, RequestHandler, NextFunction } from 'express';
 import { generateApiKey, getApiKeys } from '../middleware/apiKeyAuth';
+import { resolveAppUrl } from '../config/appUrl';
 import { getUsageStats } from '../middleware/requestLogger';
 import { fireRegisteredWebhook } from '../utils/fireWebhook';
 import { getWebhookQueueHealth, replayWebhookDelivery } from '../queues/webhookQueue';
@@ -771,7 +772,7 @@ router.post('/password-reset-link', checkAdminAuth as RequestHandler, async (req
 
         const { createPasswordResetToken } = await import('./auth');
         const { rawToken, expiresAt } = await createPasswordResetToken(user.id);
-        const base = (process.env.VERITAS_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+        const base = resolveAppUrl();
 
         logger.info(`Admin issued password reset link for ${user.email}`);
         res.json({

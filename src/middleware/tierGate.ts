@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../utils/prisma';
+import { resolveAppUrl } from '../config/appUrl';
 import { getWorkspaceContext } from '../utils/workspaceContext';
 import {
   addMonths,
@@ -14,7 +15,7 @@ import { getBillingConfig, type BillingConfig } from '../config/billingConfig';
 import { isTrustedBillingPaymentVerification } from '../utils/trustedInternalOperation';
 import { markQuotaCharged } from '../utils/quotaCharge';
 
-const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
+const APP_URL = resolveAppUrl();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

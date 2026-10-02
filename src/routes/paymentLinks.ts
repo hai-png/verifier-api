@@ -11,6 +11,7 @@
  */
 
 import { Prisma } from '@prisma/client';
+import { resolveAppUrl } from '../config/appUrl';
 import { Router, Request, Response, NextFunction } from 'express';
 import { runSmartVerify } from '../services/verifyUniversal';
 import { accountMatches, cbeAccountMatches, extractPaymentDetails, maskCbeAccount } from '../utils/paymentMatch';
@@ -25,7 +26,7 @@ import { MemoryWindowCounter } from '../utils/expiringStore';
 
 const router = Router();
 
-const APP_URL = process.env.VERITAS_APP_URL ?? 'https://verify.noveld.com.et';
+const APP_URL = resolveAppUrl();
 const MAX_EXPIRES_MINUTES = 1440;
 const VALID_PROVIDERS = ['telebirr', 'cbe', 'dashen', 'abyssinia', 'cbebirr', 'mpesa'] as const;
 

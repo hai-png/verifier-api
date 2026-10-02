@@ -15,6 +15,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../utils/prisma';
+import { resolveAppUrl } from '../config/appUrl';
 import logger from '../utils/logger';
 import { safeSecretEquals } from '../utils/secretCompare';
 import { MemoryWindowCounter } from '../utils/expiringStore';
@@ -374,8 +375,7 @@ const RESET_IDENTIFIER_PREFIX = 'pwreset:';
 
 /** Where the dashboard's reset page lives (the emailed link points here). */
 function resetPageUrl(rawToken: string): string {
-    const base = (process.env.VERITAS_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
-    return `${base}/reset-password?token=${rawToken}`;
+    return `${resolveAppUrl()}/reset-password?token=${rawToken}`;
 }
 
 function hashResetToken(rawToken: string): string {

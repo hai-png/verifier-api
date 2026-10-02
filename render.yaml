@@ -52,6 +52,8 @@ services:
       - key: MISTRAL_API_KEY
         sync: false
       # Telebirr proxy (your Plesk-hosted verify.php on proxy.noveld.com.et)
+      # Comma-separated for failover: with one URL, hedging and failover are
+      # inert and the Plesk box is a single point of failure for Telebirr.
       - key: FALLBACK_PROXIES
         sync: false
       - key: TELEBIRR_PROXY_KEY
@@ -63,8 +65,16 @@ services:
         sync: false
       - key: MPESA_PROXY_KEY
         sync: false
-      # App URL
+      # Dashboard URL — this is the WEB APP, not the API. Every link built from
+      # it is a frontend route: /reset-password, /pl/<id>, /dashboard/billing.
+      # Pointing it at the API made all three 401, because the auth router is
+      # mounted at /auth and those paths fall through to apiKeyAuth.
       - key: VERITAS_APP_URL
+        value: https://dashboard.noveld.com.et
+      # Where the keep-alive pinger sends its request. RENDER_EXTERNAL_URL is
+      # set by Render and on this service holds an onrender.com hostname that is
+      # not routed here, so /ready 404ed every five minutes. This overrides it.
+      - key: KEEP_ALIVE_URL
         value: https://verify.noveld.com.et
       # Redis (optional — only needed for webhook delivery, not for verifications)
       # If you want webhooks, get free Redis from Upstash and set this:
