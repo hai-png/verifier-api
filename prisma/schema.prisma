@@ -188,6 +188,9 @@ model UsageLog {
     @@index([apiKeyId])
     @@index([endpoint])
     @@index([createdAt])
+    // The status page groups usage by client IP, which was a full table scan
+    // (98ms and climbing with row count) because ip carried no index.
+    @@index([ip])
 }
 
 // Account-owned webhook. Every webhook in a workspace fires for every matching
