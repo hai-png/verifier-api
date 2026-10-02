@@ -238,6 +238,32 @@ const client = new Mistral({
 });
 
 export const verifyImageHandler = [
+    // First, so every later response — including the upload rejections below —
+    // carries a timing breakdown. Without this /verify-image answered with no
+    // Server-Timing of its own, so a slow receipt was indistinguishable from a
+    // slow host: the dashboard showed only Cloudflare's cfExtPri. It is not
+    // routed through createVerificationPipeline, so nothing else supplied one.
+    (req: Request, res: Response, next: NextFunction): void => {
+        const start = performance.now();
+        const marks: Record<string, number> = {};
+        res.locals.imageTiming = {
+            mark: (name: string) => { marks[name] = performance.now() - start; },
+        };
+        const json = res.json.bind(res);
+        res.json = (body: unknown) => {
+            const timings = { ...marks, verify_total: performance.now() - start };
+            res.setHeader(
+                'Server-Timing',
+                Object.entries(timings).map(([name, duration]) => `${name};dur=${Number(duration).toFixed(1)}`).join(', '),
+            );
+            // Same rule as the reference path: a browser or CDN must not cache a
+            // receipt.
+            res.setHeader('Cache-Control', 'no-store');
+            return json(body);
+        };
+        next();
+    },
+
     upload.single("file"),
 
     // multer reports limit violations and rejected MIME types as errors. Without
@@ -271,8 +297,13 @@ export const verifyImageHandler = [
     async (req: Request, res: Response): Promise<void> => {
         // ── Resolve API key identity (set by apiKeyAuth) ──────────────────────
         const apiKeyData = (req as any).apiKeyData as { id: string } | undefined;
+        // No-op when the timing wrapper is not in front, so a mark can never be
+        // the reason a request fails.
+        const mark = (res.locals.imageTiming as { mark?: (name: string) => void } | undefined)?.mark
+            ?? (() => { /* not instrumented */ });
 
         try {
+            mark('validate');
             const autoVerify = req.query.autoVerify === "true";
             const accountSuffix = req.body?.suffix || null;
             const payoutAccountId = req.body?.payoutAccountId ?? null;
@@ -330,10 +361,12 @@ export const verifyImageHandler = [
                 }
             }
 
+            mark('payout_lookup');
             // ── 3. Call Mistral Vision ────────────────────────────────────────
             const filePath = req.file.path;
             const imageBuffer = fs.readFileSync(filePath);
             const base64Image = imageBuffer.toString("base64");
+                mark('upload');
 
             const prompt = `
 You are a payment receipt analyzer for Ethiopian payment systems. Based on the uploaded image, determine which bank or payment provider issued the receipt, and extract the key transaction details.
@@ -443,6 +476,7 @@ Return this JSON format exactly, with no extra prose:
                 return;
             }
 
+            mark('ocr');
             // ── 4. Parse and route result (credit already consumed) ───────────
             const result = JSON.parse(messageContent);
             logger.info("OCR Result", result);
@@ -451,6 +485,8 @@ Return this JSON format exactly, with no extra prose:
                 if (autoVerify) {
                     try {
                         const verification = await runSmartVerify({ reference: result.transaction_number, provider: 'telebirr' });
+
+                        mark('provider');
                         if (!verification.success) {
                             res.status(verification.httpStatus).json({ verified: false, error: verification.error });
                             return;
@@ -504,6 +540,8 @@ Return this JSON format exactly, with no extra prose:
 
                 try {
                     const verification = await runSmartVerify({ reference: result.transaction_id, suffix: accountSuffix, provider: 'cbe' });
+
+                    mark('provider');
                     if (!verification.success) {
                         res.status(verification.httpStatus).json({ verified: false, error: verification.error });
                         return;
