@@ -110,12 +110,58 @@ function serialiseResponseBody(data: unknown): string | null {
   }
 }
 
-function buildSignature(payload: WebhookPayload, signingSecret: string | null): string | null {
-  if (!signingSecret) return null;
+/**
+ * Signature format: `t=<unix seconds>,v1=<hex>`.
+ *
+ * The previous signature was HMAC(secret, body) with no timestamp, so a delivery
+ * captured in transit stayed valid forever: anyone who could see one request
+ * could replay it and the receiver had no way to tell a retry from a forgery.
+ * Binding a timestamp into the signed material lets the receiver reject
+ * anything outside its own tolerance window, which is what makes the scheme
+ * worth the trouble.
+ *
+ * The version marker is not ceremony. It is what lets a receiver accept v1 today
+ * and a v2 (different key derivation, say) later without guessing, and it is why
+ * the legacy shape is still emitted alongside rather than replacing this
+ * silently.
+ */
+export const WEBHOOK_SIGNATURE_VERSION = 'v1';
+
+/** How old a delivery may be before a receiver should stop trusting it. */
+export const WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 5 * 60;
+
+/**
+ * Serialise once and send these exact bytes. Previously the signature covered
+ * `JSON.stringify(payload)` while axios serialised the object again on the way
+ * out — two separate serialisations of the same value, which agree only while
+ * nothing reorders keys. A receiver verifying the bytes it actually received
+ * against a digest computed over a different string is a bug waiting for a
+ * property order change.
+ */
+export function serialiseWebhookBody(payload: WebhookPayload): string {
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    // A payload that will not serialise would otherwise throw here, outside the
+    // delivery try/catch, and strand the job with no record of why.
+    return JSON.stringify({ error: 'payload could not be serialised' });
+  }
+}
+
+export function buildWebhookSignature(
+  body: string,
+  signingSecret: string,
+  timestamp: number,
+): string {
   return crypto
     .createHmac('sha256', signingSecret)
-    .update(JSON.stringify(payload))
+    .update(`${timestamp}.${body}`)
     .digest('hex');
+}
+
+/** The pre-timestamp shape, still emitted so existing verifiers keep working. */
+function buildLegacySignature(body: string, signingSecret: string): string {
+  return crypto.createHmac('sha256', signingSecret).update(body).digest('hex');
 }
 
 async function enqueueAttempt(
@@ -215,10 +261,16 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
   });
 
   const payload = delivery.payload as unknown as WebhookPayload;
+  const body = serialiseWebhookBody(payload);
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const signature = buildSignature(payload, delivery.webhook.signingSecret);
-  if (signature) {
-    headers['X-Veritas-Signature'] = `sha256=${signature}`;
+  const signingSecret = delivery.webhook.signingSecret;
+  if (signingSecret) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = buildWebhookSignature(body, signingSecret, timestamp);
+    headers['X-Veritas-Timestamp'] = String(timestamp);
+    headers['X-Veritas-Signature'] = `t=${timestamp},${WEBHOOK_SIGNATURE_VERSION}=${signature}`;
+    // Deprecated. Remove once every receiver is verifying the timestamped form.
+    headers['X-Veritas-Legacy-Signature'] = `sha256=${buildLegacySignature(body, signingSecret)}`;
   }
 
   try {
@@ -227,7 +279,9 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
     // may predate this check. Redirects are not followed, because each hop would
     // be a fresh unvalidated destination.
     await assertSafeOutboundUrl(delivery.webhook.url);
-    const response = await axios.post(delivery.webhook.url, payload, {
+    // `body`, not `payload`: the string that was signed must be the string that
+    // is transmitted.
+    const response = await axios.post(delivery.webhook.url, body, {
       headers,
       timeout: REQUEST_TIMEOUT_MS,
       maxRedirects: 0,

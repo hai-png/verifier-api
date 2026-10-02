@@ -993,6 +993,11 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
     return;
   }
 
+  // Advisory only — a cheap early exit for the common sold-out case. It is not
+  // the check that enforces the cap; the atomic claim below is, because two
+  // buyers arriving together both read the same "one slot left" here and both
+  // proceed. Deliberately kept so the fast path still fails before we spend
+  // seconds talking to the payment provider.
   const linkedProduct = paymentLink.product;
 
   if (linkedProduct && linkedProduct.maxBuyers !== null && paymentLink.productId) {
@@ -1102,8 +1107,31 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
     return;
   }
 
+  // Claim the slot with a single conditional UPDATE. The capacity test lives
+  // inside the WHERE clause, so the database decides the winner — the loser gets
+  // count 0 and is told it is sold out. Placed here, after verification
+  // succeeds, so a buyer who fails verification never consumes a slot and the
+  // release path below is the only compensation needed.
+  const productId = paymentLink.productId;
+  const maxBuyers = linkedProduct?.maxBuyers ?? null;
+  if (productId && maxBuyers !== null) {
+    const claim = await prisma.product.updateMany({
+      where: { id: productId, soldCount: { lt: maxBuyers } },
+      data: { soldCount: { increment: 1 } },
+    });
+    if (claim.count === 0) {
+      res.status(409).json({
+        success: false,
+        code: 'SOLD_OUT',
+        error: 'Sold out. Another buyer completed this purchase a moment ago.',
+      });
+      return;
+    }
+  }
+
+  let order: Awaited<ReturnType<typeof prisma.order.create>>;
   try {
-    const order = await prisma.order.create({
+    order = await prisma.order.create({
       data: {
         paymentLinkId: paymentLink.id,
         productId: paymentLink.productId,
@@ -1118,7 +1146,20 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
         status: 'PAID',
       },
     });
+  } catch (orderError) {
+    // The slot was claimed but never became an order. Give it back, otherwise a
+    // failed write permanently shrinks the product.
+    if (productId && maxBuyers !== null) {
+      await prisma.product
+        .updateMany({ where: { id: productId }, data: { soldCount: { decrement: 1 } } })
+        .catch((releaseError) =>
+          logger.error('Failed to release a claimed sales slot:', releaseError),
+        );
+    }
+    throw orderError;
+  }
 
+  try {
     const linkUrl = `${APP_URL}/pl/${paymentLink.id}`;
     await emitWorkspaceEvent(paymentLink.workspaceId, 'payment_link.paid', {
       order: {
@@ -1149,17 +1190,21 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
       }),
     });
 
-    if (linkedProduct && linkedProduct.maxBuyers !== null && paymentLink.productId) {
-      const totalPaid = await prisma.order.count({
-        where: { productId: paymentLink.productId, status: 'PAID' },
+    if (productId && maxBuyers !== null) {
+      // Read the claimed counter rather than recounting orders: the recount was
+      // a second read of the same race, and could both miss a sold-out that had
+      // just happened and fire the event while a slot was still free.
+      const { soldCount } = await prisma.product.findUniqueOrThrow({
+        where: { id: productId },
+        select: { soldCount: true },
       });
-      if (totalPaid >= linkedProduct.maxBuyers) {
+      if (soldCount >= maxBuyers) {
         await emitWorkspaceEvent(paymentLink.workspaceId, 'product.sold_out', {
           product: {
-            id: linkedProduct.id,
-            name: linkedProduct.name,
-            totalOrders: totalPaid,
-            maxBuyers: linkedProduct.maxBuyers,
+            id: linkedProduct?.id,
+            name: linkedProduct?.name,
+            totalOrders: soldCount,
+            maxBuyers,
             url: linkUrl,
           },
         });

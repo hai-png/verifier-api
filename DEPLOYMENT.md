@@ -672,3 +672,71 @@ canonical cache and provider dispatch with database/provider I/O stubbed. They
 are not production latency measurements or a real-MySQL concurrency benchmark.
 Before rollout, run the suite against real MySQL, then use a dedicated workspace
 on the Frankfurt replacement to compare miss/hit timings and quota behavior.
+
+## Pending production schema changes
+
+The live Frankfurt TiDB database is **behind the schema in this repository**. Code
+that reads these columns fails at runtime, not at deploy time, so the service starts
+and then errors on the affected endpoints:
+
+```
+The column 'verificationCreditsUnlimited' does not exist in the current database.
+```
+
+This is a configuration state, not a code fault. `render.yaml` asks for
+`SKIP_SCHEMA_PUSH=false`, but Render only applies blueprint values when the service
+is re-synced from the blueprint. The live service still carries the older
+`SKIP_SCHEMA_PUSH=true`, so every boot skips `prisma db push`.
+
+### Apply it
+
+1. Render dashboard -> your API service -> **Environment**, and set:
+
+   | Variable | Value |
+   | --- | --- |
+   | `SKIP_SCHEMA_PUSH` | `false` |
+   | `KEEP_ALIVE_URL` | `https://verify.noveld.com.et` |
+   | `VERITAS_APP_URL` | `https://dashboard.noveld.com.et` |
+
+2. **Deploy > Deploy latest commit** and wait for the boot log. It must contain a
+   schema-push line. A boot that reports the schema being skipped means the
+   variable did not take effect — check for a typo or a stale blueprint sync
+   before deploying again.
+
+3. Confirm the columns landed:
+
+   ```sql
+   SELECT COLUMN_NAME FROM information_schema.COLUMNS
+    WHERE TABLE_NAME = 'Workspace'
+      AND COLUMN_NAME IN ('verificationCreditsUnlimited', 'imageCreditsUnlimited');
+
+   SELECT COLUMN_NAME FROM information_schema.COLUMNS
+    WHERE TABLE_NAME = 'ApiKey' AND COLUMN_NAME = 'defaultPayoutAccountId';
+
+   SELECT TABLE_NAME FROM information_schema.TABLES
+    WHERE TABLE_NAME = 'VerifiedTransaction';
+
+   SELECT INDEX_NAME FROM information_schema.STATISTICS
+    WHERE TABLE_NAME = 'UsageLog' AND INDEX_NAME LIKE '%ip%';
+   ```
+
+4. Reconcile the sales counter. `Product.soldCount` is a new column defaulting to
+   `0`, so existing products would otherwise look like they had unlimited stock:
+
+   ```bash
+   DATABASE_URL='mysql://…' npm run backfill:sold-count -- --dry-run
+   DATABASE_URL='mysql://…' npm run backfill:sold-count
+   ```
+
+5. Set `SKIP_SCHEMA_PUSH` back to `true` and redeploy. Boot-time pushes are skipped
+   in steady state on purpose — they add seconds to every cold start and can fail
+   the deploy on a transient database hiccup.
+
+`KEEP_ALIVE_URL` is separate from the schema. Until it is set, the keep-alive
+pinger falls back to the default Render hostname and logs:
+
+```
+Keep-alive ping to https://<service>.onrender.com/ready returned 404
+```
+
+That 404 is the service's old URL, not a broken `/ready` endpoint.

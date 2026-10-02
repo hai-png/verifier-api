@@ -426,6 +426,11 @@ model Product {
 
     acceptedProviders Json    @default("[]")
     maxBuyers         Int?
+    /// Confirmed sales, claimed atomically so concurrent confirmations cannot
+    /// oversell. Counted orders was a read-then-write: two buyers arriving at
+    /// once both read the same "one slot left" and both won. Only
+    /// paymentLinks.ts creates orders, so this stays in step with them.
+    soldCount         Int     @default(0)
     active            Boolean @default(true)
 
     successMessage String? @db.Text

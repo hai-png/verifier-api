@@ -41,7 +41,7 @@ import {
   LayoutDashboard, Key, Wallet, Link2, CreditCard, Webhook, Settings,
   LogOut, Plus, Trash2, Copy, Check, TrendingUp, DollarSign, ShoppingCart,
   Users, ArrowRight, Menu, X, Eye, EyeOff, AlertCircle, CheckCircle2,
-  Loader2, Building2, ChevronRight, BarChart3, Pencil, Star, History
+  Loader2, Building2, ChevronRight, BarChart3, Pencil, Star, History, Lock
 } from 'lucide-react'
 import { API_URL } from '@/lib/api'
 
@@ -133,6 +133,28 @@ interface Product {
   createdAt: string
   payoutAccounts: { id: string; label: string }[]
   _count?: { orders: number }
+}
+
+/**
+ * Owners and admins may change money, credentials and destinations. Members may
+ * read everything and verify — verifying is the product — but the API refuses
+ * their writes with 403, so the buttons are hidden rather than left to fail.
+ * Mirrors the privilege boundary in src/routes/dashboard.ts; if the two drift,
+ * the failure mode is a visible button that 403s rather than a hole.
+ */
+function canManageWorkspace(role: string | undefined): boolean {
+  return role === 'OWNER' || role === 'ADMIN'
+}
+
+/** Shown in place of management controls a member cannot use. */
+function ReadOnlyNotice({ what }: { what: string }) {
+  return (
+    <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+      <Lock className="w-3 h-3" />
+      You are a member of this workspace. You can view everything here, but {what} is
+      limited to owners and admins.
+    </p>
+  )
 }
 
 interface WorkspaceStats {
@@ -686,6 +708,8 @@ function WorkspacePage({
     return <div>Workspace not found</div>
   }
 
+  const canManage = canManageWorkspace(workspace.role)
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
@@ -696,6 +720,7 @@ function WorkspacePage({
           <h1 className="text-2xl font-bold">{workspace.name}</h1>
           <div className="flex items-center gap-2 mt-1">
             <Badge variant="secondary">{workspace.tier}</Badge>
+            <Badge variant="outline">{workspace.role.toLowerCase()}</Badge>
             <span className="text-sm text-muted-foreground">
               {workspace.verificationCredits} verification credits
             </span>
@@ -720,28 +745,28 @@ function WorkspacePage({
           <OverviewTab workspaceId={workspaceId} />
         </TabsContent>
         <TabsContent value="api-keys" className="mt-6">
-          <ApiKeysTab workspaceId={workspaceId} />
+          <ApiKeysTab workspaceId={workspaceId} canManage={canManage} />
         </TabsContent>
         <TabsContent value="payouts" className="mt-6">
-          <PayoutsTab workspaceId={workspaceId} />
+          <PayoutsTab workspaceId={workspaceId} canManage={canManage} />
         </TabsContent>
           <TabsContent value="verifications" className="mt-6">
             <VerificationsTab workspaceId={workspaceId} />
           </TabsContent>
         <TabsContent value="links" className="mt-6">
-          <PaymentLinksTab workspaceId={workspaceId} />
+          <PaymentLinksTab workspaceId={workspaceId} canManage={canManage} />
         </TabsContent>
         <TabsContent value="products" className="mt-6">
-          <ProductsTab workspaceId={workspaceId} />
+          <ProductsTab workspaceId={workspaceId} canManage={canManage} />
         </TabsContent>
         <TabsContent value="payments" className="mt-6">
           <PaymentsTab workspaceId={workspaceId} />
         </TabsContent>
         <TabsContent value="webhooks" className="mt-6">
-          <WebhooksTab workspaceId={workspaceId} />
+          <WebhooksTab workspaceId={workspaceId} canManage={canManage} />
         </TabsContent>
         <TabsContent value="settings" className="mt-6">
-          <SettingsTab workspace={workspace} />
+          <SettingsTab workspace={workspace} canManage={canManage} />
         </TabsContent>
       </Tabs>
     </div>
@@ -861,7 +886,7 @@ function OverviewTab({ workspaceId }: { workspaceId: string }) {
 
 // ─── API Keys Tab ───────────────────────────────────────────────────────────
 
-function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
+function ApiKeysTab({ workspaceId, canManage }: { workspaceId: string; canManage: boolean }) {
   const { token } = useAuth()
   const { toast } = useToast()
   const [keys, setKeys] = useState<ApiKey[]>([])
@@ -965,11 +990,20 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">API Keys</h2>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Generate Key
-        </Button>
+        {canManage ? (
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Generate Key
+          </Button>
+        ) : (
+          <Badge variant="outline" className="flex items-center gap-1">
+            <Lock className="w-3 h-3" />
+            Read only
+          </Badge>
+        )}
       </div>
+
+      {!canManage && <ReadOnlyNotice what="creating or revoking keys" />}
 
       {newKey && (
         <Card className="border-primary">
@@ -1023,6 +1057,7 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
                 <div className="flex items-center gap-2">
                   {/* Bind the expected recipient once so every call with this key
                       is checked, instead of each request naming an account. */}
+                  {canManage && (
                   <Select
                     value={key.defaultPayoutAccountId ?? ''}
                     disabled={bindingId === key.id}
@@ -1038,9 +1073,12 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
                       ))}
                     </SelectContent>
                   </Select>
+                  )}
+                  {canManage && (
                   <Button variant="ghost" size="sm" disabled={revokingId === key.id} onClick={() => revokeKey(key.id)}>
                     {revokingId === key.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
                   </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -1083,7 +1121,7 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
     { id: 'mpesa', label: 'M-Pesa', type: 'PHONE' },
   ]
 
-function PayoutsTab({ workspaceId }: { workspaceId: string }) {
+function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage: boolean }) {
   const { token } = useAuth()
   const { toast } = useToast()
   const [payouts, setPayouts] = useState<PayoutAccount[]>([])
@@ -1194,16 +1232,24 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Payout Accounts</h2>
-        <Button onClick={openCreate}>
-          <Plus className="w-4 h-4 mr-2" />
-          Add Account
-        </Button>
+        {canManage ? (
+          <Button onClick={openCreate}>
+            <Plus className="w-4 h-4 mr-2" />
+            Add Account
+          </Button>
+        ) : (
+          <Badge variant="outline" className="flex items-center gap-1">
+            <Lock className="w-3 h-3" />
+            Read only
+          </Badge>
+        )}
       </div>
       <p className="text-sm text-muted-foreground">
         These are the bank accounts / phone numbers where payments should be sent.
         When a buyer pays, the platform checks that the money went to one of these accounts.
         Pick one on the verify page, or bind it to an API key to have every verification checked.
       </p>
+      {!canManage && <ReadOnlyNotice what="adding, editing or deleting accounts" />}
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
@@ -1238,17 +1284,21 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
-                  {!p.isDefault && (
+                  {canManage && !p.isDefault && (
                     <Button variant="ghost" size="sm" title="Use as the default" onClick={() => makeDefault(p.id)}>
                       <Star className="w-4 h-4" />
                     </Button>
                   )}
-                  <Button variant="ghost" size="sm" title="Edit" onClick={() => openEdit(p)}>
-                    <Pencil className="w-4 h-4" />
-                  </Button>
-                  <Button variant="ghost" size="sm" disabled={removingId === p.id} onClick={() => remove(p.id)}>
-                    {removingId === p.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
-                  </Button>
+                  {canManage && (
+                    <Button variant="ghost" size="sm" title="Edit" onClick={() => openEdit(p)}>
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                  )}
+                  {canManage && (
+                    <Button variant="ghost" size="sm" disabled={removingId === p.id} onClick={() => remove(p.id)}>
+                      {removingId === p.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -1443,7 +1493,7 @@ function VerificationsTab({ workspaceId }: { workspaceId: string }) {
 
 // ─── Payment Links Tab ──────────────────────────────────────────────────────
 
-function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
+function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canManage: boolean }) {
   const { token } = useAuth()
   const { toast } = useToast()
   const [links, setLinks] = useState<PaymentLink[]>([])
@@ -1506,15 +1556,23 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Payment Links</h2>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Create Link
-        </Button>
+        {canManage ? (
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Create Link
+          </Button>
+        ) : (
+          <Badge variant="outline" className="flex items-center gap-1">
+            <Lock className="w-3 h-3" />
+            Read only
+          </Badge>
+        )}
       </div>
       <p className="text-sm text-muted-foreground">
         Hosted payment pages. Share the link with buyers — they pay via Telebirr/CBE/etc.,
         get verified automatically, and are redirected back to your app.
       </p>
+      {!canManage && <ReadOnlyNotice what="creating or editing links" />}
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
@@ -1667,7 +1725,7 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
 
 // ─── Products Tab ─────────────────────────────────────────────────────────────
 
-function ProductsTab({ workspaceId }: { workspaceId: string }) {
+function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManage: boolean }) {
   const { token } = useAuth()
   const { toast } = useToast()
   const [products, setProducts] = useState<Product[]>([])
@@ -1740,15 +1798,23 @@ function ProductsTab({ workspaceId }: { workspaceId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Products</h2>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          New Product
-        </Button>
+        {canManage ? (
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            New Product
+          </Button>
+        ) : (
+          <Badge variant="outline" className="flex items-center gap-1">
+            <Lock className="w-3 h-3" />
+            Read only
+          </Badge>
+        )}
       </div>
       <p className="text-sm text-muted-foreground">
         Sellable items with a fixed price. Creating a product also generates its default hosted
         payment link.
       </p>
+      {!canManage && <ReadOnlyNotice what="creating or editing products" />}
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
@@ -1937,7 +2003,7 @@ const WEBHOOK_EVENTS = [
   'webhook.dead_letter',
 ]
 
-function WebhooksTab({ workspaceId }: { workspaceId: string }) {
+function WebhooksTab({ workspaceId, canManage }: { workspaceId: string; canManage: boolean }) {
   const { token } = useAuth()
   const { toast } = useToast()
   const [webhooks, setWebhooks] = useState<any[]>([])
@@ -1996,15 +2062,23 @@ function WebhooksTab({ workspaceId }: { workspaceId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Webhooks</h2>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Add Webhook
-        </Button>
+        {canManage ? (
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Add Webhook
+          </Button>
+        ) : (
+          <Badge variant="outline" className="flex items-center gap-1">
+            <Lock className="w-3 h-3" />
+            Read only
+          </Badge>
+        )}
       </div>
       <p className="text-sm text-muted-foreground">
         When a payment is verified, the platform sends a POST request to your webhook URL.
         Use this to automatically grant access, send emails, or trigger any workflow.
       </p>
+      {!canManage && <ReadOnlyNotice what="registering or deleting webhooks" />}
 
       {newSecret && (
         <Card className="border-primary">
@@ -2058,9 +2132,11 @@ function WebhooksTab({ workspaceId }: { workspaceId: string }) {
                     </div>
                   </div>
                 </div>
+                {canManage && (
                 <Button variant="ghost" size="sm" disabled={removingId === wh.id} onClick={() => remove(wh.id)}>
                   {removingId === wh.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
                 </Button>
+                )}
               </CardContent>
             </Card>
           ))}
@@ -2113,7 +2189,7 @@ function WebhooksTab({ workspaceId }: { workspaceId: string }) {
 
 // ─── Settings Tab ───────────────────────────────────────────────────────────
 
-function SettingsTab({ workspace }: { workspace: Workspace }) {
+function SettingsTab({ workspace, canManage }: { workspace: Workspace; canManage: boolean }) {
   const { token } = useAuth()
   const { toast } = useToast()
   const [name, setName] = useState(workspace.name)
@@ -2153,6 +2229,17 @@ function SettingsTab({ workspace }: { workspace: Workspace }) {
           <div className="flex justify-between"><span className="text-muted-foreground">Created</span><span>{new Date(workspace.createdAt).toLocaleDateString()}</span></div>
         </CardContent>
       </Card>
+      {!canManage && (
+        <>
+          <ReadOnlyNotice what="renaming this workspace" />
+          <Card>
+            <CardContent className="py-8 text-center text-muted-foreground text-sm">
+              Only owners and admins can rename this workspace.
+            </CardContent>
+          </Card>
+        </>
+      )}
+      {canManage && (
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Rename workspace</CardTitle>
@@ -2166,6 +2253,7 @@ function SettingsTab({ workspace }: { workspace: Workspace }) {
           </div>
         </CardContent>
       </Card>
+      )}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Credits</CardTitle>
