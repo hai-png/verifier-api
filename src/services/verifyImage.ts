@@ -37,6 +37,7 @@ interface PayoutAccountLike {
     id: string;
     label: string;
     account: string;
+    accountHolderName: string | null;
     providersAllowed: unknown;
 }
 
@@ -76,7 +77,7 @@ async function resolvePayoutAccount(
 
     const account = await prisma.payoutAccount.findFirst({
         where: { id: payoutAccountId.trim(), workspaceId, active: true },
-        select: { id: true, label: true, account: true, providersAllowed: true },
+        select: { id: true, label: true, account: true, accountHolderName: true, providersAllowed: true },
     });
 
     if (!account) {
@@ -128,14 +129,17 @@ function enforceRecipient(params: {
     providerType: string;
     foundAccount: string | null;
     useCbeAccountRule?: boolean;
+    foundName?: string | null;
     details?: Record<string, unknown>;
 }): boolean {
-    const { res, payoutAccount, providerType, foundAccount, useCbeAccountRule = false, details } = params;
+    const { res, payoutAccount, providerType, foundAccount, useCbeAccountRule = false, foundName, details } = params;
     if (!payoutAccount) return true;
 
     const outcome = checkReceiptRecipient({
         foundAccount,
         expectedAccount: payoutAccount.account,
+        expectedHolderName: payoutAccount.accountHolderName,
+        foundName,
         useCbeAccountRule,
     });
     if (outcome.ok) return true;
@@ -534,6 +538,7 @@ Return this JSON format exactly, with no extra prose:
                     payoutAccount,
                     providerType: result.type,
                     foundAccount: result.receiver_account,
+                    foundName: result.receiver_name,
                     useCbeAccountRule: normaliseProviderForPayout(result.type) === 'cbe',
                     details: ocrDetails,
                 })) {

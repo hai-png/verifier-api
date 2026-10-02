@@ -17,7 +17,12 @@
 // this module never inherits the skip.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkReceiptRecipient, payoutAccountAllowsProvider } from '../utils/recipientCheck';
+import {
+  checkReceiptRecipient,
+  maskedAccountMatches,
+  payoutAccountAllowsProvider,
+  receiverNameMatches,
+} from '../utils/recipientCheck';
 
 test('a receipt naming another account is rejected', () => {
   const result = checkReceiptRecipient({ foundAccount: '9999999999', expectedAccount: '0911223344' });
@@ -26,15 +31,18 @@ test('a receipt naming another account is rejected', () => {
   assert.equal(result.reason, 'RECIPIENT_MISMATCH');
   assert.equal(result.foundAccount, '9999999999');
   assert.equal(result.expectedAccount, '0911223344');
+  assert.equal(result.matchedOn, 'account');
 });
 
-test('an account OCR could not read is rejected, not waved through', () => {
-  // This is the regression that matters: accountMatches() returns true here.
+test('with nothing to compare against the result is "not verifiable", never a pass', () => {
+  // This is the regression that matters: accountMatches() returns true here. An
+  // unreadable field and a provider that never printed one look identical from
+  // the outside, so the answer says so rather than guessing which it was.
   for (const found of [null, undefined, '', '   ']) {
     const result = checkReceiptRecipient({ foundAccount: found, expectedAccount: '0911223344' });
 
     assert.equal(result.ok, false, `found=${JSON.stringify(found)} must not pass`);
-    assert.equal(result.reason, 'RECIPIENT_UNREADABLE');
+    assert.equal(result.reason, 'RECIPIENT_NOT_VERIFIABLE');
     assert.equal(result.foundAccount, null);
   }
 });
@@ -104,4 +112,108 @@ test('providersAllowed is read defensively, because it is a Json column', () => 
   for (const junk of [null, undefined, 'telebirr', 42, {}, [['telebirr']]]) {
     assert.equal(payoutAccountAllowsProvider(junk, 'telebirr'), false, `junk=${JSON.stringify(junk)}`);
   }
+});
+
+// ─── Masked account numbers ──────────────────────────────────────────────────
+// Dashen prints no full account number at all, and other banks print only part
+// of one. When digits are visible they are real evidence and are checked; the
+// hidden middle is the bank's choice, not something to guess at.
+
+test('a masked account passes when its visible digits line up', () => {
+  const expected = '5155104739011';
+  for (const printed of ['5155*******11', '5155***9011', '****4739011', '5155104739***']) {
+    assert.equal(maskedAccountMatches(printed, expected), true, `${printed} should match`);
+  }
+});
+
+test('a masked account is rejected when a visible digit disagrees', () => {
+  const expected = '5155104739011';
+  for (const printed of ['5155*******12', '9999*******11', '1234*******11']) {
+    assert.equal(maskedAccountMatches(printed, expected), false, `${printed} should not match`);
+  }
+});
+
+test('a lone visible run must sit at one end, not merely somewhere', () => {
+  // 4739 is in the middle of 5155104739011 but matches neither end. Accepting a
+  // middle run would let far too much through.
+  assert.equal(maskedAccountMatches('****4739****', '5155104739011'), false);
+  assert.equal(maskedAccountMatches('****9011', '5155104739011'), true);
+  assert.equal(maskedAccountMatches('5155****', '5155104739011'), true);
+});
+
+test('a masked receipt account is matched through the main entry point', () => {
+  const ok = checkReceiptRecipient({ foundAccount: '5155*******11', expectedAccount: '5155104739011' });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.matchedOn, 'maskedAccount');
+
+  const bad = checkReceiptRecipient({ foundAccount: '5155*******12', expectedAccount: '5155104739011' });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.reason, 'RECIPIENT_MISMATCH');
+});
+
+// ─── Receiver name fallback ──────────────────────────────────────────────────
+// The step that makes Dashen work at all: it identifies the beneficiary by name
+// only, so the name is compared against the payout account's holder name.
+
+test('a matching receiver name carries the check when no account is printed', () => {
+  const result = checkReceiptRecipient({
+    foundAccount: null,
+    foundName: 'CRRSA AKAKI KALITY WOREDA 07',
+    expectedAccount: '5155104739011',
+    expectedHolderName: 'CRRSA Akaki Kality Woreda 07',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.matchedOn, 'receiverName');
+});
+
+test('a different receiver name is rejected even when nothing else is readable', () => {
+  const result = checkReceiptRecipient({
+    foundAccount: null,
+    foundName: 'SOMEONE ELSE PLC',
+    expectedAccount: '5155104739011',
+    expectedHolderName: 'CRRSA Akaki Kality Woreda 07',
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'RECIPIENT_MISMATCH');
+  assert.match(result.error!, /SOMEONE ELSE PLC/);
+});
+
+test('the name fallback needs both sides; a missing holder name is not a pass', () => {
+  // The merchant never filled in accountHolderName, so there is nothing to
+  // compare against and the check must not quietly succeed.
+  for (const expectedHolderName of [null, undefined, '', '   ']) {
+    const result = checkReceiptRecipient({
+      foundAccount: null,
+      foundName: 'CRRSA AKAKI KALITY WOREDA 07',
+      expectedAccount: '5155104739011',
+      expectedHolderName,
+    });
+    assert.equal(result.ok, false, `holder=${JSON.stringify(expectedHolderName)} must not pass`);
+    assert.equal(result.reason, 'RECIPIENT_NOT_VERIFIABLE');
+  }
+});
+
+test('names are compared exactly after normalisation, not fuzzily', () => {
+  // Punctuation, case and spacing are noise; a truncation is a real difference
+  // and must fail closed, because accepting it would start approving receipts
+  // for similarly-named payees.
+  assert.equal(receiverNameMatches('crrsa-akaki, kality woreda 07', 'CRRSA AKAKI KALITY WOREDA 07'), true);
+  assert.equal(receiverNameMatches('CRRSA AKAKI KALITY', 'CRRSA AKAKI KALITY WOREDA 07'), false);
+  assert.equal(receiverNameMatches('AKAKI KALITY WOREDA 07', 'CRRSA AKAKI KALITY WOREDA 07'), false);
+  assert.equal(receiverNameMatches('', 'CRRSA'), false);
+});
+
+test('a matching account number does not also require the name', () => {
+  // Requiring both would reject correct receipts whose name the bank truncated.
+  const result = checkReceiptRecipient({
+    foundAccount: '5155104739011',
+    foundName: 'A DIFFERENT NAME',
+    expectedAccount: '5155104739011',
+    expectedHolderName: 'CRRSA Akaki Kality Woreda 07',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.matchedOn, 'account');
 });

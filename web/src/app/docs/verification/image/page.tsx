@@ -35,12 +35,32 @@ export default function Image() {
       />
       <DocP>
         The account must belong to the calling key&apos;s own workspace, and must accept the provider
-        the receipt turns out to be from. Two failures are reported separately so they can be told
-        apart: <Code code="RECIPIENT_MISMATCH" inline /> when the receipt names a different account, and{' '}
-        <Code code="RECIPIENT_UNREADABLE" inline /> when no account could be read from the image at all.
-        The second is deliberate — a receipt whose account number could not be read is not evidence
-        that the payment arrived. An unknown or other workspace&apos;s account id is rejected with 404
-        before the image credit is spent.
+        the receipt turns out to be from. Failures are reported separately so they can be told apart:{' '}
+        <Code code="RECIPIENT_MISMATCH" inline /> when the receipt names a different account, and{' '}
+        <Code code="RECIPIENT_NOT_VERIFIABLE" inline /> when the receipt carries nothing that identifies
+        the destination. An unknown or other workspace&apos;s account id is rejected with 404 before the
+        image credit is spent.
+      </DocP>
+
+      <DocH2>Not every receipt prints an account</DocH2>
+      <DocP>
+        Some banks identify the beneficiary by name only — Dashen publishes no destination account
+        number at all, on the receipt or through its API. So the check uses whatever evidence the
+        receipt carries, strongest first, and fails closed at every step:
+      </DocP>
+      <DocP>
+        <Code code="1." inline /> a full account number, compared exactly;{' '}
+        <Code code="2." inline /> a masked one like <Code code="5155*******11" inline />, where every
+        visible digit must line up with your account;{' '}
+        <Code code="3." inline /> the receiver name, compared against your payout account&apos;s
+        account holder name; <Code code="4." inline /> nothing usable, which fails rather than passes.
+      </DocP>
+      <DocP>
+        If you rely on the name check — which you will for Dashen — set the account holder name on
+        the payout account. Without it there is nothing to compare against and the request fails with{' '}
+        <Code code="RECIPIENT_NOT_VERIFIABLE" inline />. Names are compared exactly after normalising
+        case and punctuation, so a name the bank truncated is reported as a mismatch rather than
+        guessed at.
       </DocP>
       <DocH2>Coverage</DocH2>
       <DocP>

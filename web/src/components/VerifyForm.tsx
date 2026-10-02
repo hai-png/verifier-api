@@ -69,7 +69,8 @@ interface ImageResult {
 
 const RECIPIENT_REASON_COPY: Record<string, string> = {
   RECIPIENT_MISMATCH: "Paid to a different account than the one selected.",
-  RECIPIENT_UNREADABLE: "No legible destination account on the receipt, so it cannot be confirmed.",
+  RECIPIENT_NOT_VERIFIABLE:
+    "This receipt shows no destination account or receiver name we can match. Some banks don't print one — set the account holder name on your payout account to allow a name check.",
   PROVIDER_NOT_ALLOWED: "The selected payout account does not accept this provider.",
 }
 
