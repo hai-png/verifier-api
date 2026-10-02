@@ -23,6 +23,12 @@ import { createVerificationPipeline, dashboardVerificationAccess } from '../midd
 import { verifyImageGate } from '../middleware/tierGate';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { verifyImageHandler } from '../services/verifyImage';
+import {
+    normaliseAccount,
+    normaliseProviders as normalisePayoutProviders,
+    validatePayoutEdit,
+    validatePayoutInput,
+} from '../utils/payoutInput';
 import { assertBrowserNavigableUrl, assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 import { WORKSPACE_EVENTS } from '../utils/workspaceEvents';
 import {
@@ -288,7 +294,7 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
         providersAllowed?: string[];
     };
 
-    if (!label || !accountHolderName || !type || !account) {
+        if (!label || !accountHolderName || !type || !account) {
         res.status(400).json({ success: false, error: 'label, accountHolderName, type, and account are required.' });
         return;
     }
@@ -300,15 +306,29 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
             return;
         }
 
+        // This route used to store whatever it was given, while the API-key route
+        // validated. An account with a malformed phone number could be saved here,
+        // then be offered as the expected recipient and quietly never match a
+        // receipt. Same validation as POST /payouts now.
+        const providers = normalisePayoutProviders(providersAllowed ?? ['telebirr']);
+        const problem = validatePayoutInput(type, normaliseAccount(account), providers);
+        if (problem) {
+            res.status(400).json({ success: false, error: problem });
+            return;
+        }
+
+        // First account in a workspace becomes the default, matching POST /payouts.
+        const existing = await prisma.payoutAccount.count({ where: { workspaceId, active: true } });
+
         const payout = await prisma.payoutAccount.create({
             data: {
                 workspaceId,
                 label,
                 accountHolderName,
                 type,
-                account,
-                providersAllowed: providersAllowed || ['telebirr'],
-                isDefault: false,
+                account: normaliseAccount(account),
+                providersAllowed: providers,
+                isDefault: existing === 0,
                 active: true,
             },
         });
@@ -317,6 +337,64 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
     } catch (err) {
         logger.error('Create payout error:', err);
         res.status(500).json({ success: false, error: 'Failed to create payout account.' });
+    }
+});
+
+// Edit an account. Absent entirely before, so the only way to correct a label, a
+// holder name or a provider list from the UI was to delete the account and
+// recreate it — which would break any product or payment link pointing at it.
+router.patch('/:workspaceId/payouts/:payoutId', async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).userId as string;
+    const { workspaceId, payoutId } = req.params as { workspaceId: string; payoutId: string };
+    const body = req.body as Record<string, unknown>;
+
+    try {
+        const membership = await verifyWorkspaceAccess(userId, workspaceId);
+        if (!membership) {
+            res.status(403).json({ success: false, error: 'Access denied.' });
+            return;
+        }
+
+        const current = await prisma.payoutAccount.findFirst({
+            where: { id: payoutId, workspaceId, active: true },
+            select: { id: true, type: true, account: true, providersAllowed: true, isDefault: true },
+        });
+        if (!current) {
+            res.status(404).json({ success: false, error: 'Payout account not found.' });
+            return;
+        }
+
+        const validated = validatePayoutEdit({ type: current.type }, body);
+        if ('error' in validated) {
+            res.status(400).json({ success: false, error: validated.error });
+            return;
+        }
+
+        // Setting a default has to unset the others in one transaction, or a
+        // second "default" can appear and nothing knows which one wins.
+        const wantsDefault = body.isDefault === true;
+        const shouldClear = wantsDefault || body.isDefault === false;
+
+        const payout = await prisma.$transaction(async (tx) => {
+            if (shouldClear) {
+                await tx.payoutAccount.updateMany({
+                    where: { workspaceId, isDefault: true },
+                    data: { isDefault: false },
+                });
+            }
+            return tx.payoutAccount.update({
+                where: { id: payoutId },
+                data: {
+                    ...validated.data,
+                    ...(shouldClear ? { isDefault: wantsDefault } : {}),
+                },
+            });
+        });
+
+        res.json({ success: true, payout });
+    } catch (err) {
+        logger.error('Update payout error:', err);
+        res.status(500).json({ success: false, error: 'Failed to update payout account.' });
     }
 });
 
@@ -779,6 +857,50 @@ router.get('/:workspaceId/orders', async (req: Request, res: Response): Promise<
 });
 
 // ═══ MANUAL VERIFICATION ═════════════════════════════════════════════════════
+// Verification history. The rows already exist — every successful verification
+// records one so a replayed receipt can be recognised — but nothing could show
+// them, so the replay flag was only visible in an API response. This is what
+// makes the history a merchant can actually look at: which references they have
+// accepted, when each was first seen, and how many times it has come back.
+router.get('/:workspaceId/verifications', async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).userId as string;
+    const { workspaceId } = req.params as { workspaceId: string };
+    const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(String(req.query.pageSize ?? '25'), 10) || 25));
+
+    try {
+        const membership = await verifyWorkspaceAccess(userId, workspaceId);
+        if (!membership) {
+            res.status(403).json({ success: false, error: 'Access denied.' });
+            return;
+        }
+
+        const where = { workspaceId };
+        const [rows, total] = await Promise.all([
+            prisma.verifiedTransaction.findMany({
+                where,
+                orderBy: { lastSeenAt: 'desc' },
+                skip: (page - 1) * pageSize,
+                take: pageSize,
+                select: {
+                    id: true, provider: true, reference: true, amount: true,
+                    firstSeenAt: true, lastSeenAt: true, seenCount: true,
+                },
+            }),
+            prisma.verifiedTransaction.count({ where }),
+        ]);
+
+        res.json({
+            success: true,
+            verifications: rows,
+            pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
+        });
+    } catch (err) {
+        logger.error('List verifications error:', err);
+        res.status(500).json({ success: false, error: 'Failed to list verifications.' });
+    }
+});
+
 router.post('/:workspaceId/verify', dashboardVerificationAccess(), ...createVerificationPipeline({ envelope: 'dashboard' }));
 
 /**

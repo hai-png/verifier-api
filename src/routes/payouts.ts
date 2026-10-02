@@ -11,12 +11,19 @@ import { Prisma } from '@prisma/client';
 import { Request, Response, Router } from 'express';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import {
+  BANK_PROVIDERS,
+  PHONE_PROVIDERS,
+  normaliseAccount,
+  normaliseOptionalLabel,
+  normalisePayoutType,
+  normaliseProviders,
+  type PayoutType,
+  validatePayoutInput,
+} from '../utils/payoutInput';
 
 const router = Router();
 
-const PHONE_PROVIDERS = ['telebirr', 'cbebirr', 'mpesa'] as const;
-const BANK_PROVIDERS = ['cbe', 'dashen', 'abyssinia'] as const;
-type PayoutType = 'PHONE' | 'BANK';
 type AuthSource = 'DASHBOARD' | 'API_KEY';
 
 const payoutAccountSelect = Prisma.validator<Prisma.PayoutAccountSelect>()({
@@ -30,6 +37,7 @@ const payoutAccountSelect = Prisma.validator<Prisma.PayoutAccountSelect>()({
   createdAt: true,
   active: true,
 });
+
 
 function getAuthContext(req: Request): {
   workspaceId: string;
@@ -61,80 +69,6 @@ function getAuthContext(req: Request): {
   return null;
 }
 
-function normaliseOptionalLabel(input: unknown): string | null | 'invalid' {
-  if (input === undefined) return null;
-  if (typeof input !== 'string') return 'invalid';
-  const trimmed = input.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalisePayoutType(input: unknown): PayoutType | null {
-  if (input === 'PHONE' || input === 'BANK') return input;
-  return null;
-}
-
-function normaliseAccount(input: unknown): string | 'invalid' {
-  if (typeof input !== 'string') return 'invalid';
-  const trimmed = input.trim();
-  return trimmed.length > 0 ? trimmed : 'invalid';
-}
-
-function normaliseProviders(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  return [
-    ...new Set(
-      input
-        .filter((value): value is string => typeof value === 'string')
-        .map((value) => value.trim().toLowerCase())
-        .filter((value) => value.length > 0),
-    ),
-  ];
-}
-
-function isValidPhone(account: string): boolean {
-  return /^(09|07)\d{8}$/.test(account) || /^251(9|7)\d{8}$/.test(account);
-}
-
-function isValidBankAccount(account: string): boolean {
-  return /^\d{13,16}$/.test(account);
-}
-
-function validatePayoutInput(
-  type: PayoutType,
-  account: string,
-  providersAllowed: string[],
-): string | null {
-  if (providersAllowed.length === 0) {
-    return 'providersAllowed must include at least one provider.';
-  }
-
-  if (type === 'PHONE') {
-    if (!isValidPhone(account)) {
-      return 'account must be a valid Ethiopian phone number (09/07/251 format).';
-    }
-
-    const bad = providersAllowed.filter((provider) => !PHONE_PROVIDERS.includes(provider as (typeof PHONE_PROVIDERS)[number]));
-    if (bad.length > 0) {
-      return `Phone accounts cannot accept: ${bad.join(', ')}. Valid: ${PHONE_PROVIDERS.join(', ')}.`;
-    }
-    return null;
-  }
-
-  if (!isValidBankAccount(account)) {
-    return 'account must be a 13-16 digit bank account number.';
-  }
-
-  if (providersAllowed.length !== 1) {
-    return 'Bank accounts must be assigned to exactly one bank provider.';
-  }
-
-  const bad = providersAllowed.filter((provider) => !BANK_PROVIDERS.includes(provider as (typeof BANK_PROVIDERS)[number]));
-  if (bad.length > 0) {
-    return `Bank accounts cannot accept: ${bad.join(', ')}. Valid: ${BANK_PROVIDERS.join(', ')}.`;
-  }
-
-  return null;
-}
 
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   const auth = getAuthContext(req);

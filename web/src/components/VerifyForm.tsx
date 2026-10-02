@@ -143,6 +143,48 @@ function PayoutSelect({
 }
 
 /**
+ * What the pasted text looks like, so the form can stop asking for a suffix that
+ * this receipt generation never had.
+ *
+ * The rule the API enforces: a legacy CBE reference (FT + 10 characters) needs
+ * the payer's 8-digit tail; a new-format token must not be given one; Abyssinia
+ * wants 5 digits. Without this the only feedback was a 400 after the fact, which
+ * is the error that prompted it.
+ */
+type RefShape = "empty" | "legacy-cbe" | "new-cbe" | "abyssinia-combined" | "telebirr" | "other"
+
+function detectReferenceShape(value: string): RefShape {
+  const trimmed = value.trim()
+  if (trimmed === "") return "empty"
+
+  // A full receipt URL, either generation.
+  if (/^https?:\/\//i.test(trimmed)) {
+    if (/apps\.cbe\.com\.et/i.test(trimmed)) return "legacy-cbe"
+    if (/mbreciept\.cbe\.com\.et/i.test(trimmed)) return "new-cbe"
+    return "other"
+  }
+
+  // Reference and tail printed together.
+  if (/^FT[A-Z0-9]{10}\d{8}$/i.test(trimmed)) return "legacy-cbe"
+  if (/^FT[A-Z0-9]{10}\d{5}$/i.test(trimmed)) return "abyssinia-combined"
+  if (/^FT[A-Z0-9]{10}$/i.test(trimmed)) return "legacy-cbe"
+
+  // 15-40 characters and not FT-prefixed: the new CBE token shape.
+  if (/^[A-Za-z0-9]{15,40}$/.test(trimmed)) return "new-cbe"
+  if (/^[A-Za-z0-9]{10}$/.test(trimmed)) return "telebirr"
+  return "other"
+}
+
+const REF_SHAPE_HELP: Record<RefShape, string> = {
+  empty: "",
+  "legacy-cbe": "Legacy CBE receipt — needs the payer's 8-digit account suffix, the digits printed after 1000. You can also paste the whole receipt URL.",
+  "new-cbe": "New-format CBE receipt — no suffix needed. Leave the field below empty.",
+  "abyssinia-combined": "Abyssinia receipt — the account tail is already included in the reference above. Leave the suffix field empty.",
+  telebirr: "Telebirr or CBE Birr receipt — a reference on its own, no suffix needed.",
+  other: "",
+}
+
+/**
  * Opt-in: leaving it blank checks nothing, which is reported as
  * amountChecked:false rather than passing silently.
  */
@@ -196,7 +238,16 @@ const [expectedAmount, setExpectedAmount] = useState("")
 const [imageResult, setImageResult] = useState<ImageResult | null>(null)
 
   const selectedProvider = VERIFICATION_PROVIDERS.find(item => item.id === provider)
-  const showSuffix = provider === "auto" || provider === "cbe" || provider === "abyssinia"
+  const refShape = detectReferenceShape(reference)
+  // A new-format token, or a combined Abyssinia reference, must NOT be sent a
+  // suffix — the API rejects it — so the field is hidden rather than shown with a
+  // request to leave it empty.
+  const suffixIsForbidden = refShape === "new-cbe" || refShape === "abyssinia-combined"
+  const suffixIsRequired =
+    refShape === "legacy-cbe" && !suffixIsForbidden &&
+    suffix.trim().length !== 8 && suffix.trim().length !== 5
+  const showSuffix =
+    !suffixIsForbidden && (provider === "auto" || provider === "cbe" || provider === "abyssinia")
   const showPhone = provider === "auto" || provider === "cbebirr"
 
   // Needed by both tabs now: the reference form can name a payout account too,
@@ -377,13 +428,25 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
 
             {showSuffix && (
               <div className="space-y-2">
-                <Label htmlFor="verify-suffix">Account suffix</Label>
+                <Label htmlFor="verify-suffix">
+                  Account suffix {suffixIsRequired && <span className="text-destructive">*</span>}
+                </Label>
                 <Input
                   id="verify-suffix"
                   value={suffix}
                   onChange={event => setSuffix(event.target.value)}
-                  placeholder={provider === "abyssinia" ? "Last 5 digits of the account" : "CBE payer tail: 8 digits after 1000"}
+                  inputMode="numeric"
+                  placeholder={
+                    provider === "abyssinia"
+                      ? "Last 5 digits of the account"
+                      : "CBE payer tail: 8 digits after 1000"
+                  }
                 />
+                {REF_SHAPE_HELP[refShape] && (
+                  <p className={`text-xs ${suffixIsRequired ? "text-amber-600" : "text-muted-foreground"}`}>
+                    {REF_SHAPE_HELP[refShape]}
+                  </p>
+                )}
               </div>
             )}
 
@@ -415,7 +478,7 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
               </div>
             )}
 
-            <Button type="submit" className="w-full" disabled={busy || !reference.trim()}>
+            <Button type="submit" className="w-full" disabled={busy || !reference.trim() || suffixIsRequired}>
               {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
               Verify Transaction
             </Button>

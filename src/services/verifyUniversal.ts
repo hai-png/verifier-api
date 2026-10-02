@@ -9,7 +9,7 @@ import { verifyCBEBirr } from './verifyCBEBirr';
 import { verifyAwash } from './verifyAwash';
 import { verifyZemen } from './verifyZemen';
 import { verifyMpesa } from './verifyMpesa';
-import { extractLegacyCbeUrlData, extractNewCbeToken, isLegacyCbeReference, splitLegacyCbeCombinedId } from '../utils/cbeReference';
+import { extractLegacyCbeUrlData, extractNewCbeToken, isLegacyCbeReference, normaliseReference, splitLegacyCbeCombinedId } from '../utils/cbeReference';
 import logger from '../utils/logger';
 
 export interface SmartVerifyInput {
@@ -64,7 +64,11 @@ export function prepareVerification(input: unknown): VerificationPreparation {
       const offender = values.find((v) => typeof v !== 'string');
       throw new Error(`${key} must be a string (received ${Array.isArray(offender) ? 'array' : typeof offender}).`);
     }
-    const strings = (values as string[]).map((v) => v.trim());
+    // Normalise rather than just trim: references are copied out of PDFs and
+    // spreadsheets, so they arrive with newlines, runs of spaces, zero-width
+    // characters and full-width digits. Case is left alone because new-format CBE
+    // tokens are case-sensitive.
+    const strings = (values as string[]).map((v) => normaliseReference(v));
     if (strings.some((v) => v !== strings[0])) throw new Error(`Conflicting ${key} aliases.`);
     return strings[0] || undefined;
   };

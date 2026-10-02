@@ -14,6 +14,30 @@ export function extractNewCbeToken(input: string): string | null {
 }
 
 /**
+ * Clean a pasted reference without changing what it identifies.
+ *
+ * Receipts get copied out of PDFs and spreadsheets, which drags along
+ * whitespace and line breaks, and non-Latin keyboards produce full-width digits
+ * and letters that look identical but are not. A reference is also
+ * case-sensitive in the new CBE format, so nothing here changes case — only the
+ * characters that are noise.
+ *
+ * NFKC does the full-width folding for us: it maps ＦＴ and １２３ onto FT and 123.
+ */
+export function normaliseReference(input: unknown): string {
+  if (typeof input !== 'string') return '';
+  return input
+    // Zero-width and BOM characters survive a copy out of some apps and break
+    // every length check downstream.
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
+    .normalize('NFKC')
+    // A newline inside a reference is always a paste artefact, never a receipt.
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * A receipt that prints the reference and the account tail next to each other,
  * pasted as one unbroken string.
  *

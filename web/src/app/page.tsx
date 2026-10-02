@@ -41,7 +41,7 @@ import {
   LayoutDashboard, Key, Wallet, Link2, CreditCard, Webhook, Settings,
   LogOut, Plus, Trash2, Copy, Check, TrendingUp, DollarSign, ShoppingCart,
   Users, ArrowRight, Menu, X, Eye, EyeOff, AlertCircle, CheckCircle2,
-  Loader2, Building2, ChevronRight, BarChart3
+  Loader2, Building2, ChevronRight, BarChart3, Pencil, Star, History
 } from 'lucide-react'
 import { API_URL } from '@/lib/api'
 
@@ -80,8 +80,11 @@ interface ApiKey {
   usageCount: number
   lastUsed: string | null
   isActive: boolean
-  createdAt: string
-  permissions: string[]
+    createdAt: string
+    permissions: string[]
+    /** Which payout account this key's verifications are checked against. */
+    defaultPayoutAccountId?: string | null
+    defaultPayoutAccount?: { id: string; label: string; account: string } | null
 }
 
 interface PayoutAccount {
@@ -703,6 +706,7 @@ function WorkspacePage({
           <TabsTrigger value="overview"><BarChart3 className="w-4 h-4 mr-1" />Overview</TabsTrigger>
           <TabsTrigger value="api-keys"><Key className="w-4 h-4 mr-1" />API Keys</TabsTrigger>
           <TabsTrigger value="payouts"><Wallet className="w-4 h-4 mr-1" />Payouts</TabsTrigger>
+          <TabsTrigger value="verifications"><History className="w-4 h-4 mr-1" />History</TabsTrigger>
           <TabsTrigger value="links"><Link2 className="w-4 h-4 mr-1" />Links</TabsTrigger>
           <TabsTrigger value="products"><ShoppingCart className="w-4 h-4 mr-1" />Products</TabsTrigger>
           <TabsTrigger value="payments"><CreditCard className="w-4 h-4 mr-1" />Payments</TabsTrigger>
@@ -719,6 +723,9 @@ function WorkspacePage({
         <TabsContent value="payouts" className="mt-6">
           <PayoutsTab workspaceId={workspaceId} />
         </TabsContent>
+          <TabsContent value="verifications" className="mt-6">
+            <VerificationsTab workspaceId={workspaceId} />
+          </TabsContent>
         <TabsContent value="links" className="mt-6">
           <PaymentLinksTab workspaceId={workspaceId} />
         </TabsContent>
@@ -860,18 +867,52 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
   const [newKey, setNewKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
-  const [revokingId, setRevokingId] = useState<string | null>(null)
+    const [revokingId, setRevokingId] = useState<string | null>(null)
+    const [payouts, setPayouts] = useState<PayoutAccount[]>([])
+    const [bindingId, setBindingId] = useState<string | null>(null)
 
-  const load = useCallback(() => {
-    apiFetch(`/dashboard/${workspaceId}/api-keys`, token)
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) setKeys(data.apiKeys)
-      })
-      .finally(() => setLoading(false))
-  }, [token, workspaceId])
+    const load = useCallback(() => {
+      apiFetch(`/dashboard/${workspaceId}/api-keys`, token)
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) setKeys(data.apiKeys)
+        })
+        .finally(() => setLoading(false))
+      // Needed for the per-key account selector.
+      apiFetch(`/dashboard/${workspaceId}/payouts`, token)
+        .then(res => res.json())
+        .then(data => { if (data.success) setPayouts(data.payouts ?? []) })
+        .catch(() => setPayouts([]))
+    }, [token, workspaceId])
 
-  useEffect(() => { load() }, [load])
+    useEffect(() => { load() }, [load])
+
+    // Bind or unbind the account a key's verifications are checked against. The
+    // binding is what makes the check automatic, so it has to be reachable here
+    // rather than only over the API.
+    const bindPayout = async (keyId: string, payoutAccountId: string) => {
+      setBindingId(keyId)
+      try {
+        const res = await apiFetch(`/dashboard/${workspaceId}/api-keys/${keyId}/payout-account`, token, {
+          method: 'PATCH',
+          body: JSON.stringify({ payoutAccountId: payoutAccountId || null }),
+        })
+        const data = await res.json()
+        if (!res.ok || !data.success) {
+          toast({ title: 'Failed to update', description: data.error || 'Please try again.', variant: 'destructive' })
+          return
+        }
+        load()
+        toast({
+          title: payoutAccountId ? 'Payout account bound' : 'Payout account unbound',
+          description: payoutAccountId
+            ? 'Verifications with this key are now checked against it.'
+            : 'This key will no longer check who was paid.',
+        })
+      } finally {
+        setBindingId(null)
+      }
+    }
 
   const createKey = async () => {
     try {
@@ -965,7 +1006,7 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
         <div className="space-y-2">
           {keys.map(key => (
             <Card key={key.id}>
-              <CardContent className="flex items-center justify-between py-4">
+              <CardContent className="flex items-center justify-between py-4 gap-4">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center">
                     <Key className="w-5 h-5" />
@@ -977,9 +1018,28 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
                     </div>
                   </div>
                 </div>
-                <Button variant="ghost" size="sm" disabled={revokingId === key.id} onClick={() => revokeKey(key.id)}>
-                  {revokingId === key.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
-                </Button>
+                <div className="flex items-center gap-2">
+                  {/* Bind the expected recipient once so every call with this key
+                      is checked, instead of each request naming an account. */}
+                  <Select
+                    value={key.defaultPayoutAccountId ?? ''}
+                    disabled={bindingId === key.id}
+                    onValueChange={(v) => bindPayout(key.id, v)}
+                  >
+                    <SelectTrigger className="w-56" title="Payout account this key is checked against">
+                      <SelectValue placeholder="No account — recipient unchecked" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">No account — recipient unchecked</SelectItem>
+                      {payouts.map(p => (
+                        <SelectItem key={p.id} value={p.id}>{p.label} — {p.account}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button variant="ghost" size="sm" disabled={revokingId === key.id} onClick={() => revokeKey(key.id)}>
+                    {revokingId === key.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ))}
@@ -1032,6 +1092,7 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
     account: '',
     providersAllowed: [] as string[],
   })
+  const [editingId, setEditingId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     apiFetch(`/dashboard/${workspaceId}/payouts`, token)
@@ -1044,20 +1105,65 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
 
   useEffect(() => { load() }, [load])
 
-  const create = async () => {
-    const res = await apiFetch(`/dashboard/${workspaceId}/payouts`, token, {
-      method: 'POST',
-      body: JSON.stringify(form),
+  const openCreate = () => {
+    setEditingId(null)
+    setForm({ label: '', accountHolderName: '', type: 'PHONE', account: '', providersAllowed: [] })
+    setCreateOpen(true)
+  }
+
+  // Editing reuses the same dialog rather than duplicating the field layout, and
+  // type is deliberately not editable: a PHONE account's providers and validity
+  // rules differ from a BANK account's, and the API keys them together. Changing
+  // it means creating a replacement.
+  const openEdit = (p: PayoutAccount) => {
+    setEditingId(p.id)
+    setForm({
+      label: p.label,
+      accountHolderName: p.accountHolderName || '',
+      type: p.type,
+      account: p.account,
+      providersAllowed: [...(p.providersAllowed as string[])],
     })
+    setCreateOpen(true)
+  }
+
+  const save = async () => {
+    const isEdit = editingId !== null
+    const res = await apiFetch(
+      isEdit ? `/dashboard/${workspaceId}/payouts/${editingId}` : `/dashboard/${workspaceId}/payouts`,
+      token,
+      {
+        method: isEdit ? 'PATCH' : 'POST',
+        body: JSON.stringify(form),
+      },
+    )
     const data = await res.json()
     if (data.success) {
-      toast({ title: 'Payout account created' })
+      toast({ title: isEdit ? 'Payout account updated' : 'Payout account created' })
       setCreateOpen(false)
+      setEditingId(null)
       setForm({ label: '', accountHolderName: '', type: 'PHONE', account: '', providersAllowed: [] })
       load()
     } else {
       toast({ title: 'Error', description: data.error, variant: 'destructive' })
     }
+  }
+
+  // A default is what the verify form preselects and what new keys inherit, so it
+  // is reachable in one click. Clearing every default would leave nothing to
+  // preselect, so the API refuses it.
+  const makeDefault = async (id: string) => {
+    const res = await apiFetch(`/dashboard/${workspaceId}/payouts/${id}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify({ isDefault: true }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) {
+      toast({ title: 'Failed to set default', description: data.error || 'Please try again.', variant: 'destructive' })
+      return
+    }
+    load()
+    toast({ title: 'Default payout account updated' })
   }
 
   const remove = async (id: string) => {
@@ -1083,7 +1189,7 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Payout Accounts</h2>
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button onClick={openCreate}>
           <Plus className="w-4 h-4 mr-2" />
           Add Account
         </Button>
@@ -1091,6 +1197,7 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
       <p className="text-sm text-muted-foreground">
         These are the bank accounts / phone numbers where payments should be sent.
         When a buyer pays, the platform checks that the money went to one of these accounts.
+        Pick one on the verify page, or bind it to an API key to have every verification checked.
       </p>
 
       {loading ? (
@@ -1111,7 +1218,10 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
                     <Wallet className="w-5 h-5" />
                   </div>
                   <div>
-                    <div className="font-semibold">{p.label}</div>
+                    <div className="font-semibold flex items-center gap-2">
+                      {p.label}
+                      {p.isDefault && <Badge variant="secondary" className="text-xs">default</Badge>}
+                    </div>
                     <div className="text-sm text-muted-foreground">
                       {p.accountHolderName} · {p.type === 'PHONE' ? '📱' : '🏦'} {p.account}
                     </div>
@@ -1122,9 +1232,19 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
                     </div>
                   </div>
                 </div>
-                <Button variant="ghost" size="sm" disabled={removingId === p.id} onClick={() => remove(p.id)}>
-                  {removingId === p.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
-                </Button>
+                <div className="flex items-center gap-1">
+                  {!p.isDefault && (
+                    <Button variant="ghost" size="sm" title="Use as the default" onClick={() => makeDefault(p.id)}>
+                      <Star className="w-4 h-4" />
+                    </Button>
+                  )}
+                  <Button variant="ghost" size="sm" title="Edit" onClick={() => openEdit(p)}>
+                    <Pencil className="w-4 h-4" />
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={removingId === p.id} onClick={() => remove(p.id)}>
+                    {removingId === p.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ))}
@@ -1134,7 +1254,7 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Add Payout Account</DialogTitle>
+            <DialogTitle>{editingId ? 'Edit Payout Account' : 'Add Payout Account'}</DialogTitle>
             <DialogDescription>Where should payments be sent?</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -1148,8 +1268,11 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
             </div>
             <div className="space-y-2">
               <Label>Type</Label>
-              <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v as 'PHONE' | 'BANK', providersAllowed: [] })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <Select
+                value={form.type}
+                disabled={editingId !== null}
+                onValueChange={(v) => setForm({ ...form, type: v as 'PHONE' | 'BANK', providersAllowed: [] })}
+              >                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="PHONE">📱 Phone (Telebirr / CBE Birr / M-Pesa)</SelectItem>
                   <SelectItem value="BANK">🏦 Bank (CBE / Dashen / Abyssinia / Awash / Zemen)</SelectItem>
@@ -1184,13 +1307,131 @@ function PayoutsTab({ workspaceId }: { workspaceId: string }) {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button onClick={create} disabled={!form.label || !form.accountHolderName || !form.account || form.providersAllowed.length === 0}>
-              Create
+            <Button variant="ghost" onClick={() => { setCreateOpen(false); setEditingId(null) }}>Cancel</Button>
+            <Button onClick={save} disabled={!form.label || !form.accountHolderName || !form.account || form.providersAllowed.length === 0}>
+              {editingId ? 'Save changes' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+// ─── Verification History Tab ─────────────────────────────────────────────────
+// The replay records were written for every successful verification but had no
+// view. This is the merchant's view of what they have accepted: which
+// references, when first seen, and how often each has come back.
+
+interface VerifiedTransaction {
+  id: string
+  provider: string
+  reference: string
+  amount: number | null
+  firstSeenAt: string
+  lastSeenAt: string
+  seenCount: number
+}
+
+function VerificationsTab({ workspaceId }: { workspaceId: string }) {
+  const { token } = useAuth()
+  const [rows, setRows] = useState<VerifiedTransaction[]>([])
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [query, setQuery] = useState('')
+
+  const load = useCallback(() => {
+    setLoading(true)
+    apiFetch(`/dashboard/${workspaceId}/verifications?page=${page}`, token)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setRows(data.verifications ?? [])
+          setTotalPages(data.pagination?.totalPages ?? 1)
+          setTotal(data.pagination?.total ?? 0)
+        }
+      })
+      .finally(() => setLoading(false))
+  }, [token, workspaceId, page])
+
+  useEffect(() => { load() }, [load])
+
+  const needle = query.trim().toLowerCase()
+  const visible = needle
+    ? rows.filter(r => r.reference.toLowerCase().includes(needle) || r.provider.toLowerCase().includes(needle))
+    : rows
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-xl font-semibold">Verification history</h2>
+        <Input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Filter this page by reference or provider"
+          className="max-w-xs"
+        />
+      </div>
+      <p className="text-sm text-muted-foreground">
+        Every successful verification is recorded here. A reference seen more than once may be a
+        legitimate re-check, or the same receipt being reused — check before issuing anything.
+        {needle && ' Filtering this page only.'}
+      </p>
+
+      {loading ? (
+        <Loader2 className="w-6 h-6 animate-spin" />
+      ) : rows.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            No successful verifications recorded yet.
+          </CardContent>
+        </Card>
+      ) : visible.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            Nothing on this page matches “{query}”.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-2">
+          {visible.map(r => (
+            <Card key={r.id}>
+              <CardContent className="flex items-center justify-between py-3 gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="secondary" className="capitalize">{r.provider}</Badge>
+                    <code className="text-sm font-mono break-all">{r.reference}</code>
+                    {r.seenCount > 1 && (
+                      <Badge variant="outline" className="border-amber-500 text-amber-600">
+                        seen {r.seenCount}×
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    first seen {new Date(r.firstSeenAt).toLocaleString()}
+                    {r.lastSeenAt !== r.firstSeenAt && <> · last {new Date(r.lastSeenAt).toLocaleString()}</>}
+                    {r.amount != null && <> · {r.amount} ETB</>}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+            Previous
+          </Button>
+          <span className="text-xs text-muted-foreground">Page {page} of {totalPages} · {total} total</span>
+          <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
+            Next
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
