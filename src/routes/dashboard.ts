@@ -20,6 +20,8 @@ import logger from '../utils/logger';
 import { requireSession } from './auth';
 import { generateApiKey } from '../middleware/apiKeyAuth';
 import { createVerificationPipeline, dashboardVerificationAccess } from '../middleware/verificationPipeline';
+import { verifyImageGate } from '../middleware/tierGate';
+import { verifyImageHandler } from '../services/verifyImage';
 import { assertBrowserNavigableUrl, assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 import { WORKSPACE_EVENTS } from '../utils/workspaceEvents';
 import {
@@ -693,5 +695,21 @@ router.get('/:workspaceId/orders', async (req: Request, res: Response): Promise<
 
 // ═══ MANUAL VERIFICATION ═════════════════════════════════════════════════════
 router.post('/:workspaceId/verify', dashboardVerificationAccess(), ...createVerificationPipeline({ envelope: 'dashboard' }));
+
+/**
+ * Image verification for the dashboard, on the same terms as POST /verify-image.
+ *
+ * The browser cannot call that route directly: apiKeyAuth does not accept a
+ * Bearer session token, and /verify-image is not on its skip list, so a
+ * dashboard session alone gets 401. This mounts the identical handler behind
+ * dashboardVerificationAccess() — which is what makes /dashboard/* reachable at
+ * all — and then verifyImageGate, which enforces the tier ceiling and the
+ * image-credit balance and sets resolvedAccount exactly as it does for API keys.
+ *
+ * A duplicate of the handler, not a wrapper, so the credit decrement, the OCR
+ * call and the payout-account check cannot drift apart between the two entry
+ * points.
+ */
+router.post('/:workspaceId/verify-image', dashboardVerificationAccess(), verifyImageGate, ...verifyImageHandler);
 
 export default router;

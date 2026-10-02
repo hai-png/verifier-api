@@ -1,14 +1,13 @@
 "use client"
 
-import { useState } from "react"
-import { AlertCircle, CheckCircle2, Loader2, ShieldCheck } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { AlertCircle, CheckCircle2, ImageUp, Loader2, ShieldCheck } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://verifier-api-selfhosted.onrender.com"
+import { API_URL as API_BASE } from "@/lib/api"
 
 export const VERIFICATION_PROVIDERS = [
   { id: "auto", label: "Auto-detect", help: "Let the reference format choose the provider." },
@@ -30,6 +29,39 @@ interface VerifyResult {
   data?: unknown
 }
 
+/** Shape of GET /dashboard/:workspaceId/payouts */
+interface PayoutOption {
+  id: string
+  label: string
+  account: string
+  type: string
+  providersAllowed: string[]
+  isDefault: boolean
+}
+
+/** The extra fields /verify-image adds when a payout account was enforced. */
+interface ImageResult {
+  verified?: boolean
+  verified_success?: boolean
+  type?: string
+  reference?: string
+  error?: string
+  reason?: string
+  expectedAccount?: string
+  foundAccount?: string | null
+  recipientChecked?: boolean
+  payoutAccountId?: string
+  payoutAccountLabel?: string
+  note?: string
+  forward_to?: string
+}
+
+const RECIPIENT_REASON_COPY: Record<string, string> = {
+  RECIPIENT_MISMATCH: "Paid to a different account than the one selected.",
+  RECIPIENT_UNREADABLE: "No legible destination account on the receipt, so it cannot be confirmed.",
+  PROVIDER_NOT_ALLOWED: "The selected payout account does not accept this provider.",
+}
+
 interface VerifyFormProps {
   workspaceId: string
   token: string
@@ -45,9 +77,85 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
   const [busy, setBusy] = useState(false)
   const [measurement, setMeasurement] = useState<{ seconds: string; cache: string | null; timing: string | null } | null>(null)
 
+  // Receipt-image mode.
+  const [mode, setMode] = useState<"reference" | "image">("reference")
+  const [file, setFile] = useState<File | null>(null)
+  const [autoVerify, setAutoVerify] = useState(true)
+  const [payouts, setPayouts] = useState<PayoutOption[]>([])
+  const [payoutAccountId, setPayoutAccountId] = useState("")
+  const [imageResult, setImageResult] = useState<ImageResult | null>(null)
+
   const selectedProvider = VERIFICATION_PROVIDERS.find(item => item.id === provider)
   const showSuffix = provider === "auto" || provider === "cbe" || provider === "abyssinia"
   const showPhone = provider === "auto" || provider === "cbebirr"
+
+  // Only needed for the image flow, and only once that tab is opened.
+  useEffect(() => {
+    if (mode !== "image" || payouts.length > 0) return
+    let cancelled = false
+    fetch(`${API_BASE}/dashboard/${workspaceId}/payouts`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(response => response.json())
+      .then((body: { success?: boolean; payouts?: PayoutOption[] }) => {
+        if (cancelled) return
+        const rows = body.payouts ?? []
+        setPayouts(rows)
+        // Preselect the default account, since that is the common case.
+        const preferred = rows.find(row => row.isDefault) ?? rows[0]
+        if (preferred) setPayoutAccountId(preferred.id)
+      })
+      .catch(() => {
+        // Not fatal: the flow still works with no account selected, which simply
+        // means the platform cannot check the recipient.
+        if (!cancelled) setPayouts([])
+      })
+    return () => { cancelled = true }
+  }, [mode, payouts.length, workspaceId, token])
+
+  const resetOutcome = useCallback(() => {
+    setError(null)
+    setResult(null)
+    setImageResult(null)
+    setMeasurement(null)
+  }, [])
+
+  function switchMode(next: "reference" | "image") {
+    setMode(next)
+    resetOutcome()
+  }
+
+  async function onSubmitImage(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    resetOutcome()
+    if (!file) return
+    setBusy(true)
+    const startedAt = performance.now()
+
+    try {
+      const body = new FormData()
+      body.append("file", file)
+      if (payoutAccountId) body.append("payoutAccountId", payoutAccountId)
+      if (suffix.trim()) body.append("suffix", suffix.trim())
+
+      const response = await fetch(
+        `${API_BASE}/dashboard/${workspaceId}/verify-image?autoVerify=${autoVerify ? "true" : "false"}`,
+        { method: "POST", headers: { Authorization: `Bearer ${token}` }, body },
+      )
+      const parsed = (await response.json()) as ImageResult
+      setMeasurement({
+        seconds: ((performance.now() - startedAt) / 1000).toFixed(2),
+        cache: response.headers.get("x-verify-cache"),
+        timing: response.headers.get("server-timing"),
+      })
+      setImageResult(parsed)
+      if (!response.ok && !parsed.error) setError(`Image verification failed (${response.status}).`)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Image verification failed.")
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -100,6 +208,26 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
         </div>
       </div>
 
+      <div className="inline-flex rounded-md border border-input p-1">
+        <button
+          type="button"
+          onClick={() => switchMode("reference")}
+          aria-pressed={mode === "reference"}
+          className={`rounded px-3 py-1 text-sm ${mode === "reference" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+        >
+          Reference
+        </button>
+        <button
+          type="button"
+          onClick={() => switchMode("image")}
+          aria-pressed={mode === "image"}
+          className={`inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm ${mode === "image" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+        >
+          <ImageUp className="w-3.5 h-3.5" /> Receipt image
+        </button>
+      </div>
+
+      {mode === "reference" ? (
       <Card>
         <CardHeader>
           <CardTitle>Payment verification</CardTitle>
@@ -173,6 +301,140 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
           </form>
         </CardContent>
       </Card>
+      ) : (
+      <Card>
+        <CardHeader>
+          <CardTitle>Receipt image verification</CardTitle>
+          <CardDescription>
+            Uploads the receipt, reads it with vision, and checks it against the payout account you select.
+            Uses one image credit.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={onSubmitImage} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="verify-image-file">Receipt image</Label>
+              <Input
+                id="verify-image-file"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={event => setFile(event.target.files?.[0] ?? null)}
+                required
+              />
+              <p className="text-xs text-muted-foreground">JPEG, PNG or WebP, up to 8 MB.</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="verify-image-payout">Expected payout account</Label>
+              <select
+                id="verify-image-payout"
+                value={payoutAccountId}
+                onChange={event => setPayoutAccountId(event.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="">Do not check the recipient</option>
+                {payouts.map(account => (
+                  <option key={account.id} value={account.id}>
+                    {account.label} — {account.account}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                {payoutAccountId
+                  ? "The receipt must name this account. A mismatch is rejected, and so is a receipt whose account cannot be read."
+                  : "Without an account the platform cannot confirm who was paid, and says so in the result. Select one to enforce it."}
+              </p>
+              {payouts.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  No payout accounts yet. Add one under Payouts to enable recipient checking.
+                </p>
+              )}
+            </div>
+
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={autoVerify}
+                onChange={event => setAutoVerify(event.target.checked)}
+              />
+              Look the receipt up with the provider
+              <span className="text-xs text-muted-foreground">
+                (Telebirr and CBE are checked against the live provider; other banks are read from the image alone)
+              </span>
+            </label>
+
+            <div className="space-y-2">
+              <Label htmlFor="verify-image-suffix">Account suffix (CBE only, optional)</Label>
+              <Input
+                id="verify-image-suffix"
+                value={suffix}
+                onChange={event => setSuffix(event.target.value)}
+                placeholder="Payer account tail used as the CBE lookup key"
+              />
+            </div>
+
+            {error && (
+              <div className="flex items-center gap-2 text-sm text-destructive">
+                <AlertCircle className="w-4 h-4" />
+                {error}
+              </div>
+            )}
+
+            <Button type="submit" className="w-full" disabled={busy || !file}>
+              {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Verify receipt
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+      )}
+
+      {imageResult && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 flex-wrap">
+              Result
+              {imageResult.type && <Badge variant="secondary">{imageResult.type}</Badge>}
+              <Badge variant={imageResult.verified ? "default" : "destructive"}>
+                {imageResult.verified ? (
+                  <span className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> VERIFIED</span>
+                ) : "FAILED"}
+              </Badge>
+              {imageResult.recipientChecked && <Badge variant="outline">recipient checked</Badge>}
+            </CardTitle>
+            {measurement && (
+              <div className="text-sm text-muted-foreground" aria-live="polite">
+                Completed in {measurement.seconds}s
+                {measurement.timing && (
+                  <details className="mt-2 text-xs">
+                    <summary>Server timing (milliseconds)</summary>
+                    <code className="break-words">{measurement.timing}</code>
+                  </details>
+                )}
+              </div>
+            )}
+            {imageResult.reason && (
+              <CardDescription>
+                {RECIPIENT_REASON_COPY[imageResult.reason] ?? imageResult.error}
+              </CardDescription>
+            )}
+            {!imageResult.reason && !imageResult.verified && imageResult.error && (
+              <CardDescription>{imageResult.error}</CardDescription>
+            )}
+            {imageResult.forward_to && (
+              <CardDescription>
+                Recognised as {imageResult.type}. Continue at <code>{imageResult.forward_to}</code>.
+              </CardDescription>
+            )}
+            {imageResult.note && <CardDescription>{imageResult.note}</CardDescription>}
+          </CardHeader>
+          <CardContent>
+            <pre className="bg-muted rounded-md p-4 overflow-auto text-xs max-h-96 whitespace-pre-wrap break-words">
+              {JSON.stringify(imageResult, null, 2)}
+            </pre>
+          </CardContent>
+        </Card>
+      )}
 
       {result && (
         <Card>

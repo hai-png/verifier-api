@@ -6,6 +6,10 @@ import logger from "../utils/logger";
 import { runSmartVerify } from "./verifyUniversal";
 import { prisma } from "../utils/prisma";
 import dotenv from "dotenv";
+import {
+    checkReceiptRecipient,
+    payoutAccountAllowsProvider,
+} from "../utils/recipientCheck";
 
 dotenv.config();
 
@@ -19,6 +23,125 @@ async function refundCredit(account: ResolvedAccount): Promise<void> {
         where: { id: account.creditHolderId },
         data: { imageCredits: { increment: 1 } },
     });
+}
+
+// ─── Payout account enforcement ───────────────────────────────────────────────
+
+interface PayoutAccountLike {
+    id: string;
+    label: string;
+    account: string;
+    providersAllowed: unknown;
+}
+
+/**
+ * The OCR vocabulary and the payout vocabulary disagree in one place: Mistral is
+ * asked for `cbe-birr`, while a payout account stores `cbebirr`. Everything else
+ * (`dashen`, `abyssinia`, `awash`, `zemen`, `mpesa`, ...) is spelled the same.
+ */
+function normaliseProviderForPayout(providerType: string): string {
+    return providerType === "cbe-birr" ? "cbebirr" : providerType;
+}
+
+/**
+ * The workspace whose credits this request spends. verifyImageGate sets it
+ * before the handler runs, so it is available from the first line.
+ */
+function resolvedWorkspaceId(req: Request): string | undefined {
+    return (req as any).resolvedAccount?.creditHolderId;
+}
+
+/**
+ * Load the payout account the caller expects the payment to have reached.
+ *
+ * Scoped to the workspace that owns the credits, so a caller cannot name another
+ * tenant's account id and have their receipts checked against it. Unknown and
+ * inactive ids are rejected the same way, so this does not confirm that an id
+ * exists in some other workspace.
+ */
+async function resolvePayoutAccount(
+    workspaceId: string | undefined,
+    payoutAccountId: unknown,
+): Promise<PayoutAccountLike | null> {
+    if (typeof payoutAccountId !== 'string' || payoutAccountId.trim() === '') return null;
+    if (!workspaceId) {
+        throw Object.assign(new Error('A payout account requires workspace-scoped credentials.'), { status: 400 });
+    }
+
+    const account = await prisma.payoutAccount.findFirst({
+        where: { id: payoutAccountId.trim(), workspaceId, active: true },
+        select: { id: true, label: true, account: true, providersAllowed: true },
+    });
+
+    if (!account) {
+        throw Object.assign(new Error('Payout account not found for this workspace.'), { status: 404 });
+    }
+    return account;
+}
+
+/**
+ * Providers differ in which field carries the credited account. Telebirr returns
+ * `creditedPartyAccountNo`; the others are inconsistent. Take the first that is
+ * actually present rather than assuming one shape.
+ */
+function extractCreditedAccount(data: unknown): string | null {
+    if (!data || typeof data !== 'object') return null;
+    const record = data as Record<string, unknown>;
+    const candidates = [
+        'creditedPartyAccountNo',
+        'creditedPartyAccount',
+        'creditedAccount',
+        'receiverAccount',
+        'account',
+        'accountNo',
+    ];
+    for (const key of candidates) {
+        const value = record[key];
+        if (typeof value === 'string' && value.trim() !== '') return value.trim();
+    }
+    return null;
+}
+
+/**
+ * Apply the recipient check and, on failure, write the response. Returns true
+ * when the caller may continue with a success response.
+ *
+ * A mismatch does not refund the credit: the OCR ran and the answer is
+ * definitive, so the merchant got what they paid for. Refunds stay reserved for
+ * the case where we could not produce an answer at all.
+ */
+function enforceRecipient(params: {
+    res: Response;
+    payoutAccount: PayoutAccountLike | null;
+    providerType: string;
+    foundAccount: string | null;
+    useCbeAccountRule?: boolean;
+}): boolean {
+    const { res, payoutAccount, providerType, foundAccount, useCbeAccountRule = false } = params;
+    if (!payoutAccount) return true;
+
+    const outcome = checkReceiptRecipient({
+        foundAccount,
+        expectedAccount: payoutAccount.account,
+        useCbeAccountRule,
+    });
+    if (outcome.ok) return true;
+
+    logger.warn('Image verification recipient check failed', {
+        payoutAccountId: payoutAccount.id,
+        providerType,
+        reason: outcome.reason,
+    });
+
+    res.status(422).json({
+        verified: false,
+        error: outcome.error,
+        reason: outcome.reason,
+        type: providerType,
+        expectedAccount: outcome.expectedAccount,
+        foundAccount: outcome.foundAccount,
+    });
+    return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,11 +213,32 @@ export const verifyImageHandler = [
         try {
             const autoVerify = req.query.autoVerify === "true";
             const accountSuffix = req.body?.suffix || null;
+            const payoutAccountId = req.body?.payoutAccountId ?? null;
 
             // ── 1. File must be present before we consume a credit ────────────
             if (!req.file) {
                 logger.warn("No file uploaded");
                 res.status(400).json({ error: "No file uploaded" });
+                return;
+            }
+
+            // ── 2. Resolve the expected payout account, before any work ────────
+            // Still ahead of the credit decrement: a bad account id is a caller
+            // mistake, not a verification result, and must not cost an image
+            // credit. Behind the file check, so a request with neither gets the
+            // more useful 400.
+            let payoutAccount: PayoutAccountLike | null;
+            try {
+                payoutAccount = await resolvePayoutAccount(resolvedWorkspaceId(req), payoutAccountId);
+            } catch (err) {
+                const status = (err as { status?: number }).status ?? 400;
+                if (req.file?.path) {
+                    try { fs.unlinkSync(req.file.path); } catch { /* best effort */ }
+                }
+                res.status(status).json({
+                    verified: false,
+                    error: err instanceof Error ? err.message : 'Invalid payout account.',
+                });
                 return;
             }
 
@@ -250,6 +394,16 @@ Return this JSON format exactly, with no extra prose:
                             return;
                         }
                         const data = verification.data;
+                        // The provider already told us who was credited, so the
+                        // check needs no OCR.
+                        if (!enforceRecipient({
+                            res,
+                            payoutAccount,
+                            providerType: 'telebirr',
+                            foundAccount: extractCreditedAccount(data),
+                        })) {
+                            return;
+                        }
                         res.json({
                             verified: true,
                             type: "telebirr",
@@ -292,6 +446,15 @@ Return this JSON format exactly, with no extra prose:
                         return;
                     }
                     const data = verification.data;
+                    if (!enforceRecipient({
+                        res,
+                        payoutAccount,
+                        providerType: 'cbe',
+                        foundAccount: extractCreditedAccount(data),
+                        useCbeAccountRule: true,
+                    })) {
+                        return;
+                    }
                     res.json({
                         verified: true,
                         type: "cbe",
@@ -318,6 +481,35 @@ Return this JSON format exactly, with no extra prose:
             ];
 
             if (ocrVerifiedTypes.includes(result.type)) {
+                // A payout account is optional, but when one is supplied the
+                // platform can finally enforce what the note below used to
+                // delegate to the caller. Reject up front if this account cannot
+                // even receive this provider, otherwise the comparison below
+                // would be between two unrelated things.
+                if (payoutAccount && !payoutAccountAllowsProvider(payoutAccount.providersAllowed, normaliseProviderForPayout(result.type))) {
+                    logger.warn('Image verification payout account cannot receive provider', {
+                        payoutAccountId: payoutAccount.id,
+                        providerType: result.type,
+                    });
+                    res.status(422).json({
+                        verified: false,
+                        error: `The selected payout account does not accept ${result.type} payments. Choose an account that accepts this provider, or omit the account.`,
+                        reason: 'PROVIDER_NOT_ALLOWED',
+                        type: result.type,
+                    });
+                    return;
+                }
+
+                if (!enforceRecipient({
+                    res,
+                    payoutAccount,
+                    providerType: result.type,
+                    foundAccount: result.receiver_account,
+                    useCbeAccountRule: normaliseProviderForPayout(result.type) === 'cbe',
+                })) {
+                    return;
+                }
+
                 res.json({
                     verified: true,
                     type: result.type,
@@ -333,7 +525,18 @@ Return this JSON format exactly, with no extra prose:
                         reference: result.reference || result.transaction_id || result.transaction_number,
                         paymentReason: result.payment_reason,
                     },
-                    note: "OCR-verified receipt (no public API available for this provider). Verify amount + payer against expected values before issuing subscription.",
+                    // Only meaningful when no payout account was supplied, which is
+                    // the one case where the platform cannot check it.
+                    note: payoutAccount
+                        ? undefined
+                        : "OCR-verified receipt (no public API available for this provider). Verify amount + payer against expected values before issuing subscription.",
+                    ...(payoutAccount
+                        ? {
+                            recipientChecked: true,
+                            payoutAccountId: payoutAccount.id,
+                            payoutAccountLabel: payoutAccount.label,
+                        }
+                        : {}),
                 });
                 return;
             }
