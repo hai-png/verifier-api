@@ -87,22 +87,40 @@ async function resolvePayoutAccount(
 }
 
 /**
- * Providers differ in which field carries the credited account. Telebirr returns
- * `creditedPartyAccountNo`; the others are inconsistent. Take the first that is
- * actually present rather than assuming one shape.
+ * Providers differ in which field carries the credited account, and they are not
+ * interchangeable: extractPaymentDetails names the real ones per provider
+ * (creditedPartyAccountNo for Telebirr, receiverAccount for CBE and Abyssinia,
+ * creditAccount for CBE Birr). A generic `account` or `accountNo` is deliberately
+ * NOT accepted — where a provider returns one it is usually the *payer's*
+ * account, and matching that against the merchant's would reject correct
+ * receipts while proving nothing about who was paid.
  */
 function extractCreditedAccount(data: unknown): string | null {
     if (!data || typeof data !== 'object') return null;
     const record = data as Record<string, unknown>;
     const candidates = [
         'creditedPartyAccountNo',
+        'receiverAccount',
+        'creditAccount',
         'creditedPartyAccount',
         'creditedAccount',
-        'receiverAccount',
-        'account',
-        'accountNo',
     ];
     for (const key of candidates) {
+        const value = record[key];
+        if (typeof value === 'string' && value.trim() !== '') return value.trim();
+    }
+    return null;
+}
+
+/**
+ * The credited party's name, for the same reason: it is the only identifier
+ * Dashen-style providers give when there is no account number, so the recipient
+ * check can still fall back to a name comparison on the API-backed path.
+ */
+function extractCreditedName(data: unknown): string | null {
+    if (!data || typeof data !== 'object') return null;
+    const record = data as Record<string, unknown>;
+    for (const key of ['creditedPartyName', 'receiverName', 'accountHolderName']) {
         const value = record[key];
         if (typeof value === 'string' && value.trim() !== '') return value.trim();
     }
@@ -419,6 +437,7 @@ Return this JSON format exactly, with no extra prose:
                             payoutAccount,
                             providerType: 'telebirr',
                             foundAccount: extractCreditedAccount(data),
+                            foundName: extractCreditedName(data),
                         })) {
                             return;
                         }
@@ -469,6 +488,7 @@ Return this JSON format exactly, with no extra prose:
                         payoutAccount,
                         providerType: 'cbe',
                         foundAccount: extractCreditedAccount(data),
+                        foundName: extractCreditedName(data),
                         useCbeAccountRule: true,
                     })) {
                         return;
@@ -539,7 +559,6 @@ Return this JSON format exactly, with no extra prose:
                     providerType: result.type,
                     foundAccount: result.receiver_account,
                     foundName: result.receiver_name,
-                    useCbeAccountRule: normaliseProviderForPayout(result.type) === 'cbe',
                     details: ocrDetails,
                 })) {
                     return;
@@ -550,11 +569,16 @@ Return this JSON format exactly, with no extra prose:
                     type: result.type,
                     reference: result.transaction_id || result.transaction_number || result.reference,
                     details: ocrDetails,
-                    // Only meaningful when no payout account was supplied, which is
-                    // the one case where the platform cannot check it.
+                    // The recipient check says who was paid. It says nothing about
+                    // how much, and the previous wording dropped that caution
+                    // entirely once a payout account was supplied — a receipt for
+                    // 100 Birr to the right account passed as readily as 5,000.
+                    // So state the limit explicitly instead of implying the
+                    // receipt is fully checked.
+                    amountChecked: false,
                     note: payoutAccount
-                        ? undefined
-                        : "OCR-verified receipt (no public API available for this provider). Verify amount + payer against expected values before issuing subscription.",
+                        ? 'The destination account was checked against the selected payout account. The amount was NOT checked — compare it against what the customer owes before issuing anything.'
+                        : 'OCR-verified receipt (no public API available for this provider). Neither the recipient nor the amount was checked — compare both against expected values before issuing a subscription.',
                     ...(payoutAccount
                         ? {
                             recipientChecked: true,

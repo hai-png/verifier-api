@@ -50,6 +50,7 @@ interface ImageResult {
   expectedAccount?: string
   foundAccount?: string | null
   recipientChecked?: boolean
+  amountChecked?: boolean
   payoutAccountId?: string
   payoutAccountLabel?: string
   note?: string
@@ -413,6 +414,9 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
                 ) : "FAILED"}
               </Badge>
               {imageResult.recipientChecked && <Badge variant="outline">recipient checked</Badge>}
+              {!imageResult.amountChecked && imageResult.verified && (
+                <Badge variant="outline" className="border-amber-500 text-amber-600">amount not checked</Badge>
+              )}
             </CardTitle>
             {measurement && (
               <div className="text-sm text-muted-foreground" aria-live="polite">

@@ -21,6 +21,7 @@ import { requireSession } from './auth';
 import { generateApiKey } from '../middleware/apiKeyAuth';
 import { createVerificationPipeline, dashboardVerificationAccess } from '../middleware/verificationPipeline';
 import { verifyImageGate } from '../middleware/tierGate';
+import { rateLimiter } from '../middleware/rateLimiter';
 import { verifyImageHandler } from '../services/verifyImage';
 import { assertBrowserNavigableUrl, assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 import { WORKSPACE_EVENTS } from '../utils/workspaceEvents';
@@ -709,7 +710,20 @@ router.post('/:workspaceId/verify', dashboardVerificationAccess(), ...createVeri
  * A duplicate of the handler, not a wrapper, so the credit decrement, the OCR
  * call and the payout-account check cannot drift apart between the two entry
  * points.
+ *
+ * rateLimiter is not optional here. POST /verify-image has it (index.ts), and
+ * without one on this route an image verification was unmetered from the
+ * browser. That matters more now than it did: an unlimited workspace spends no
+ * image credits, so credits are no longer what bounds how fast it can call
+ * Mistral Vision, and an unmetered route is unbounded spend on someone else's
+ * API key. It charges the workspace's normal plan rate limit.
  */
-router.post('/:workspaceId/verify-image', dashboardVerificationAccess(), verifyImageGate, ...verifyImageHandler);
+router.post(
+    '/:workspaceId/verify-image',
+    rateLimiter,
+    dashboardVerificationAccess(),
+    verifyImageGate,
+    ...verifyImageHandler,
+);
 
 export default router;

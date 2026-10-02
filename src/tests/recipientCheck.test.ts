@@ -217,3 +217,95 @@ test('a matching account number does not also require the name', () => {
   assert.equal(result.ok, true);
   assert.equal(result.matchedOn, 'account');
 });
+
+// ─── Separators ──────────────────────────────────────────────────────────────
+// Banks print account numbers in groups. The exact comparison does no
+// normalisation, so without this every grouped receipt read as a mismatch — and
+// grouping is the normal way an account is printed.
+
+test('an account printed in groups is recognised as the same account', () => {
+  const expected = '5155104739011';
+  for (const printed of [
+    '5155 1047 39011',
+    '5155-1047-39011',
+    '5155.1047.39011',
+    '5155/1047/39011',
+    '5155 1047 39011',
+    '  5155104739011  ',
+  ]) {
+    const result = checkReceiptRecipient({ foundAccount: printed, expectedAccount: expected });
+    assert.equal(result.ok, true, `${printed} should match`);
+    assert.equal(result.matchedOn, 'account');
+  }
+});
+
+test('grouping does not make two different accounts match', () => {
+  const result = checkReceiptRecipient({ foundAccount: '5155 1047 39012', expectedAccount: '5155104739011' });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'RECIPIENT_MISMATCH');
+});
+
+// ─── Mask glyphs ─────────────────────────────────────────────────────────────
+// A mask character we fail to recognise is worse than none: it sends the value
+// down the exact-comparison path and reports a mismatch on a correct receipt.
+
+test('every common mask glyph is treated as masking, not as a digit', () => {
+  const expected = '5155104739011';
+  for (const printed of ['5155*******11', '5155xxxxxxx11', '5155#######11', '5155•••••••11', '5155 – 11', '5155 — 11', '5155 ······· 11']) {
+    const result = checkReceiptRecipient({ foundAccount: printed, expectedAccount: expected });
+    assert.equal(result.ok, true, `${printed} should match`);
+    assert.equal(result.matchedOn, 'maskedAccount');
+  }
+});
+
+test('a fully masked account is not verifiable, not a mismatch', () => {
+  // The bank printed nothing, so nothing contradicts anything. Reporting a
+  // mismatch would send an operator looking for the wrong problem.
+  for (const printed of ['************', 'xxxxxxxxxxxxxx', '***-***-****', '••••••••']) {
+    const result = checkReceiptRecipient({ foundAccount: printed, expectedAccount: '5155104739011' });
+    assert.equal(result.reason, 'RECIPIENT_NOT_VERIFIABLE', `${printed} should be unverifiable`);
+  }
+});
+
+// ─── Non-Latin scripts ───────────────────────────────────────────────────────
+// The severe one. Normalising to [a-z0-9] reduced three unrelated Amharic
+// business names to the same "07" and all three passed each other's check.
+
+test('Amharic names are compared on their own script, not reduced to digits', () => {
+  const businessA = 'ክርሳ አካኪ ካሊቲ ወረዳ 07';
+  const businessB = 'ብርታ ሶንብ ኢንተርፓይዘሽ 07';
+  const businessC = 'አዲስ አበባ ንግድ 07';
+
+  assert.equal(receiverNameMatches(businessA, businessA), true);
+  for (const other of [businessB, businessC]) {
+    assert.equal(receiverNameMatches(other, businessA), false, `${other} must not match ${businessA}`);
+  }
+});
+
+test('a receipt for a different Amharic business fails the full check', () => {
+  const mine = 'ክርሳ አካኪ ካሊቲ ወረዳ 07';
+  for (const theirs of ['ብርታ ሶንብ ኢንተርፓይዘሽ 07', 'አዲስ አበባ ንግድ 07']) {
+    const result = checkReceiptRecipient({
+      foundAccount: null,
+      foundName: theirs,
+      expectedAccount: '5155104739011',
+      expectedHolderName: mine,
+    });
+    assert.equal(result.ok, false, `${theirs} must not verify`);
+    assert.equal(result.reason, 'RECIPIENT_MISMATCH');
+  }
+});
+
+test('names in different scripts do not collide', () => {
+  // Same trailing digits, one Latin and one Amharic.
+  assert.equal(receiverNameMatches('Akaki Kality 07', 'አካኪ ካሊቲ 07'), false);
+  assert.equal(receiverNameMatches('AKAKI KALITY 07', 'Akaki  Kality-07'), true);
+});
+
+test('a name that normalises to almost nothing is refused rather than guessed', () => {
+  // Below the length floor the comparison is not evidence of anything, so it
+  // must not return true.
+  assert.equal(receiverNameMatches('07', '07'), false);
+  assert.equal(receiverNameMatches('', 'anything'), false);
+  assert.equal(receiverNameMatches('ab', 'ab'), false);
+});

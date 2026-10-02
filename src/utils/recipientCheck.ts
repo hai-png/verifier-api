@@ -55,10 +55,25 @@ export function payoutAccountAllowsProvider(providersAllowed: unknown, provider:
 
 /**
  * True when the printed account is only partly legible — banks commonly show
- * `5155*******11` or `****4739011` rather than the whole number.
+ * `5155*******11`, `5155 – 11` or `5155###11` rather than the whole number.
+ * The glyph set is deliberately wide: a mask character we do not recognise is
+ * worse than none, because it sends the value down the exact-comparison path and
+ * produces a false mismatch on a correct receipt.
  */
 function isMaskedAccount(value: string): boolean {
-    return /[*xX•·]/.test(value) || /\d\s+[*xX•·]/.test(value);
+    return /[*xX#•·–—−‒―]/.test(value);
+}
+
+/**
+ * Remove the separators banks print between digit groups.
+ *
+ * `5155 1047 39011`, `5155-1047-39011`, `51551047.39011` and `5155104739011` are
+ * the same account. The exact comparison below does no normalisation at all, so
+ * without this every grouped receipt reads as a mismatch — and grouping is the
+ * normal way an account number is printed.
+ */
+function stripSeparators(value: string): string {
+    return value.replace(/[\s./\\|_-]/g, '');
 }
 
 /**
@@ -75,7 +90,7 @@ function isMaskedAccount(value: string): boolean {
 export function maskedAccountMatches(found: string, expected: string): boolean {
     const runs = found.match(/\d+/g);
     if (!runs || runs.length === 0) return false;
-    const target = expected.replace(/\D/g, '');
+    const target = stripSeparators(expected).replace(/\D/g, '');
     if (target === '') return false;
 
     if (runs.length >= 2) {
@@ -90,21 +105,32 @@ export function maskedAccountMatches(found: string, expected: string): boolean {
 /**
  * Compare a receipt's receiver name against the payout account's holder name.
  *
- * Exact on a normalised form (case, spacing and punctuation removed). Not fuzzy
- * on purpose: banks truncate long names on receipts, and a loose comparison here
- * would start accepting receipts for a similarly-named payee. A truncation
- * produces a visible RECIPIENT_MISMATCH with the names in the response, which is
- * the right way to find out.
+ * Normalisation keeps letters and digits of *any* script. An earlier version
+ * stripped to `[a-z0-9]`, which is catastrophic here: Ethiopian receipts carry
+ * Amharic names, so "ክርሳ አካኪ ካሊቲ ወረዳ 07", "ብርታ ሶንብ ኢንተርፓይዘሽ 07" and
+ * "አዲስ አበባ ንግድ 07" all reduced to "07" and matched each other — three
+ * unrelated businesses passed one another's check. Only the trailing digits
+ * survived, which is no evidence at all.
+ *
+ * Not fuzzy beyond that: banks truncate long names on receipts, and a loose
+ * comparison would start approving receipts for a similarly-named payee. A
+ * truncation produces a visible RECIPIENT_MISMATCH with the names in the
+ * response, which is the right way to find out.
  */
 export function receiverNameMatches(found: string, expected: string): boolean {
     const normalise = (value: string) =>
         value
             .toLowerCase()
-            .normalize('NFKD')
-            .replace(/[^a-z0-9]/g, '');
+            .normalize('NFKC')
+            // Keep letters and digits in every script; drop punctuation, spaces
+            // and separators. \p{L}\p{N} rather than [a-z0-9] is the whole point.
+            .replace(/[^\p{L}\p{N}]/gu, '');
     const a = normalise(found);
     const b = normalise(expected);
-    return a !== '' && a === b;
+    // A floor rather than just non-empty: if normalisation somehow collapses a
+    // name to a token or two, two different payees could collide, so refuse to
+    // decide on so little.
+    return a.length >= 3 && a === b;
 }
 
 /**
@@ -124,13 +150,19 @@ export function checkReceiptRecipient(params: {
 }): RecipientCheckResult {
     const { expectedAccount, useCbeAccountRule = false } = params;
     const expected = expectedAccount.trim();
-    const target = expected.replace(/\D/g, '');
+    const expectedDigits = stripSeparators(expected);
 
     const raw = typeof params.foundAccount === 'string' ? params.foundAccount.trim() : '';
     const found = raw === '' ? null : raw;
 
-    // 1. A full account number is the strongest evidence there is.
+    // 1. A full account number is the strongest evidence there is. Strip the
+    //    separators a bank prints between groups first, so 5155 1047 39011 and
+    //    5155104739011 are recognised as the same account before anything else
+    //    gets a chance to call them different.
     if (found !== null && !isMaskedAccount(found)) {
+        if (expectedDigits !== '' && stripSeparators(found) === expectedDigits) {
+            return { ok: true, foundAccount: found, matchedOn: 'account' };
+        }
         const matches = useCbeAccountRule
             ? cbeAccountMatches(found, expected)
             : accountMatches(found, expected);
@@ -139,9 +171,14 @@ export function checkReceiptRecipient(params: {
             : mismatch(found, expected, 'account');
     }
 
-    // 2. Masked but legible: the digits still shown must line up.
+    // 2. Masked but legible: the digits still shown must line up. A mask that
+    //    hides every digit tells us nothing either way, so it is not a mismatch.
     if (found !== null) {
-        return maskedAccountMatches(found, target || expected)
+        const visible = (found.match(/\d+/g) ?? []).join('');
+        if (visible === '') {
+            return notVerifiable(expected);
+        }
+        return maskedAccountMatches(found, expectedDigits || expected)
             ? { ok: true, foundAccount: found, matchedOn: 'maskedAccount' }
             : mismatch(found, expected, 'maskedAccount');
     }
@@ -164,6 +201,16 @@ export function checkReceiptRecipient(params: {
     // 4. Nothing on the receipt that identifies the destination. Not a pass:
     //    an unreadable field and a provider that never printed one look the
     //    same from here, so say that rather than guessing which it was.
+    return notVerifiable(expected);
+}
+
+/**
+ * "Nothing to check against" — one reason for every shape it arrives in, because
+ * an unreadable field, a fully masked account and a provider that never prints
+ * one are indistinguishable from here. Claiming a mismatch would point an
+ * operator at the wrong problem.
+ */
+function notVerifiable(expected: string): RecipientCheckResult {
     return {
         ok: false,
         reason: 'RECIPIENT_NOT_VERIFIABLE',
