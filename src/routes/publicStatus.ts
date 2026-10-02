@@ -11,6 +11,7 @@
 import os from 'node:os';
 import { Router, Request, Response } from 'express';
 import { getStatusCapabilities } from '../services/statusProbeService';
+import { resolvePublicApiUrl } from '../config/publicApiUrl';
 import { usageLogStats } from '../middleware/requestLogger';
 import { keyUsageStats } from '../middleware/apiKeyAuth';
 import { rateLimiterState } from '../middleware/rateLimiter';
@@ -68,9 +69,10 @@ function buildDiagnostics() {
             // x-dashboard-key" or "why did it not sleep" from outside, without
             // disclosing any secret value.
             dashboardSecretConfigured: Boolean(process.env.DASHBOARD_SECRET),
-            keepAliveUrlConfigured: Boolean(
-                process.env.RENDER_EXTERNAL_URL || process.env.VERITAS_APP_URL,
-            ),
+            // Reports the same variable the pinger resolves, via the same helper.
+            // It used to accept VERITAS_APP_URL as well, so it kept answering
+            // true while the pinger was pointed at the dashboard and 404ing.
+            keepAliveUrlConfigured: Boolean(resolvePublicApiUrl()),
             keepAlivePingerEnabled: (process.env.KEEP_ALIVE_PINGER ?? 'true').toLowerCase() !== 'false',
             telebirrRelays: (process.env.FALLBACK_PROXIES || '').split(',').map(v => v.trim()).filter(Boolean).length,
             primaryVerificationSkipped: process.env.SKIP_PRIMARY_VERIFICATION === 'true',

@@ -8,6 +8,7 @@ dotenv.config();
 
 import CBERouter from './routes/verifyCBERoute';
 import { closeCBEBrowser, getChromeExecutablePath } from './services/verifyCBE';
+import { resolvePublicApiUrl } from './config/publicApiUrl';
 import telebirrRouter from './routes/verifyTelebirrRoute';
 import dashenRouter from './routes/verifyDashenRoute';
 import abyssiniaRouter from './routes/verifyAbyssiniaRoute';
@@ -60,8 +61,11 @@ const startupState = {
 
 const KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000;
 const KEEP_ALIVE_TIMEOUT_MS = 15 * 1000;
-const keepAliveUrl =
-    process.env.RENDER_EXTERNAL_URL || process.env.VERITAS_APP_URL || '';
+// Only RENDER_EXTERNAL_URL identifies this API, and resolvePublicApiUrl() is the
+// single place that decides so. A missing URL is strictly better than the wrong
+// one: the pinger disables itself below rather than reporting a keep-alive that
+// never reaches Render.
+const keepAliveUrl = resolvePublicApiUrl();
 let keepAliveTimer: NodeJS.Timeout | null = null;
 
 const KEEP_ALIVE_PINGER_ENABLED = (process.env.KEEP_ALIVE_PINGER ?? 'true').toLowerCase() !== 'false';
@@ -76,7 +80,7 @@ function startKeepAlivePinger(): void {
         return;
     }
     if (!keepAliveUrl) {
-        logger.warn('Keep-alive pinger disabled — set RENDER_EXTERNAL_URL or VERITAS_APP_URL to enable it.');
+        logger.warn('Keep-alive pinger disabled — set RENDER_EXTERNAL_URL to this API’s public URL to enable it.');
         return;
     }
     const ping = async (): Promise<void> => {

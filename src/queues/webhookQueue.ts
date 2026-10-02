@@ -7,6 +7,7 @@ import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { emitWorkspaceEvent } from '../utils/workspaceEvents';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
+import { createRedisConnectionOptions } from './redisConnection';
 
 const QUEUE_NAME = 'webhook-deliveries';
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -75,29 +76,16 @@ function isWebhookQueueConfigured(): boolean {
   return Boolean(getRedisUrl());
 }
 
-function createRedisConnection(): ConnectionOptions {
-  const redisUrl = getRedisUrl();
-  if (!redisUrl) {
-    throw new Error('REDIS_URL is required to use the webhook queue.');
-  }
-
-  return {
-    url: redisUrl,
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-  };
-}
-
 function getQueueConnection(): ConnectionOptions {
   if (!queueConnection) {
-    queueConnection = createRedisConnection();
+    queueConnection = createRedisConnectionOptions('webhook');
   }
   return queueConnection;
 }
 
 function getWorkerConnection(): ConnectionOptions {
   if (!workerConnection) {
-    workerConnection = createRedisConnection();
+    workerConnection = createRedisConnectionOptions('webhook');
   }
   return workerConnection;
 }

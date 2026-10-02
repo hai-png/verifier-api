@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { escapeHtml } from '../utils/purchaseEmail';
+import { createRedisConnectionOptions } from './redisConnection';
 
 const QUEUE_NAME = 'workspace-notifications';
 const RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
@@ -78,29 +79,16 @@ function isNotificationQueueConfigured(): boolean {
   return Boolean(getRedisUrl());
 }
 
-function createRedisConnection(): ConnectionOptions {
-  const redisUrl = getRedisUrl();
-  if (!redisUrl) {
-    throw new Error('REDIS_URL is required to use the notification queue.');
-  }
-
-  return {
-    url: redisUrl,
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-  };
-}
-
 function getQueueConnection(): ConnectionOptions {
   if (!queueConnection) {
-    queueConnection = createRedisConnection();
+    queueConnection = createRedisConnectionOptions('notification');
   }
   return queueConnection;
 }
 
 function getWorkerConnection(): ConnectionOptions {
   if (!workerConnection) {
-    workerConnection = createRedisConnection();
+    workerConnection = createRedisConnectionOptions('notification');
   }
   return workerConnection;
 }
