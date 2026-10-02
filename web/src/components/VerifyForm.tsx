@@ -27,6 +27,13 @@ interface VerifyResult {
   error?: string
   details?: unknown
   data?: unknown
+  reason?: string
+  expectedAccount?: string
+  recipientChecked?: boolean
+  amountChecked?: boolean
+  matchedOn?: string
+  payoutAccountId?: string
+  payoutAccountLabel?: string
 }
 
 /** Shape of GET /dashboard/:workspaceId/payouts */
@@ -70,6 +77,8 @@ interface ImageResult {
 
 const RECIPIENT_REASON_COPY: Record<string, string> = {
   RECIPIENT_MISMATCH: "Paid to a different account than the one selected.",
+  RECIPIENT_UNREADABLE:
+    "This receipt shows no destination account or receiver name we can match. Some banks don't print one — set the account holder name on your payout account to allow a name check.",
   RECIPIENT_NOT_VERIFIABLE:
     "This receipt shows no destination account or receiver name we can match. Some banks don't print one — set the account holder name on your payout account to allow a name check.",
   PROVIDER_NOT_ALLOWED: "The selected payout account does not accept this provider.",
@@ -78,6 +87,49 @@ const RECIPIENT_REASON_COPY: Record<string, string> = {
 interface VerifyFormProps {
   workspaceId: string
   token: string
+}
+
+/**
+ * Shared by both tabs. "Do not check the recipient" is the first option and is
+ * never preselected away — an account is a deliberate choice, so leaving it to
+ * the default account silently would enable a check the operator never asked for
+ * and could start refusing receipts.
+ */
+function PayoutSelect({
+  id,
+  payouts,
+  value,
+  onChange,
+}: {
+  id: string
+  payouts: PayoutOption[]
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>Expected payout account</Label>
+      <select
+        id={id}
+        value={value}
+        onChange={event => onChange(event.target.value)}
+        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none focus:ring-2 focus:ring-ring"
+      >
+        <option value="">Do not check the recipient</option>
+        {payouts.map(account => (
+          <option key={account.id} value={account.id}>
+            {account.label} — {account.account}
+          </option>
+        ))}
+      </select>
+      <p className="text-xs text-muted-foreground">
+        {value
+          ? "The receipt must name this account. The amount is still not checked."
+          : "With no account selected the receipt is verified on the provider's word alone, including for whom it was paid."}
+        {payouts.length === 0 ? " No payout accounts yet — add one under Payouts." : ""}
+      </p>
+    </div>
+  )
 }
 
 export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
@@ -95,16 +147,17 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
   const [file, setFile] = useState<File | null>(null)
   const [autoVerify, setAutoVerify] = useState(true)
   const [payouts, setPayouts] = useState<PayoutOption[]>([])
-  const [payoutAccountId, setPayoutAccountId] = useState("")
-  const [imageResult, setImageResult] = useState<ImageResult | null>(null)
+const [payoutAccountId, setPayoutAccountId] = useState("")
+const [imageResult, setImageResult] = useState<ImageResult | null>(null)
 
   const selectedProvider = VERIFICATION_PROVIDERS.find(item => item.id === provider)
   const showSuffix = provider === "auto" || provider === "cbe" || provider === "abyssinia"
   const showPhone = provider === "auto" || provider === "cbebirr"
 
-  // Only needed for the image flow, and only once that tab is opened.
+  // Needed by both tabs now: the reference form can name a payout account too,
+  // and the image form always offers the selector.
   useEffect(() => {
-    if (mode !== "image" || payouts.length > 0) return
+    if (payouts.length > 0) return
     let cancelled = false
     fetch(`${API_BASE}/dashboard/${workspaceId}/payouts`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -114,17 +167,14 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
         if (cancelled) return
         const rows = body.payouts ?? []
         setPayouts(rows)
-        // Preselect the default account, since that is the common case.
         const preferred = rows.find(row => row.isDefault) ?? rows[0]
         if (preferred) setPayoutAccountId(preferred.id)
       })
       .catch(() => {
-        // Not fatal: the flow still works with no account selected, which simply
-        // means the platform cannot check the recipient.
         if (!cancelled) setPayouts([])
       })
     return () => { cancelled = true }
-  }, [mode, payouts.length, workspaceId, token])
+  }, [payouts.length, workspaceId, token])
 
   const resetOutcome = useCallback(() => {
     setError(null)
@@ -190,6 +240,7 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
           provider: provider === "auto" ? undefined : provider,
           suffix: showSuffix ? suffix.trim() || undefined : undefined,
           phoneNumber: showPhone ? phoneNumber.trim() || undefined : undefined,
+          payoutAccountId: payoutAccountId || undefined,
         }),
       })
       const body = (await response.json()) as VerifyResult
@@ -300,6 +351,13 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
               </div>
             )}
 
+            <PayoutSelect
+              id="verify-payout"
+              payouts={payouts}
+              value={payoutAccountId}
+              onChange={setPayoutAccountId}
+            />
+
             {error && (
               <div className="flex items-center gap-2 text-sm text-destructive">
                 <AlertCircle className="w-4 h-4" />
@@ -337,32 +395,12 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
               <p className="text-xs text-muted-foreground">JPEG, PNG or WebP, up to 8 MB.</p>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="verify-image-payout">Expected payout account</Label>
-              <select
-                id="verify-image-payout"
-                value={payoutAccountId}
-                onChange={event => setPayoutAccountId(event.target.value)}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="">Do not check the recipient</option>
-                {payouts.map(account => (
-                  <option key={account.id} value={account.id}>
-                    {account.label} — {account.account}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-muted-foreground">
-                {payoutAccountId
-                  ? "The receipt must name this account. A mismatch is rejected, and so is a receipt whose account cannot be read."
-                  : "Without an account the platform cannot confirm who was paid, and says so in the result. Select one to enforce it."}
-              </p>
-              {payouts.length === 0 && (
-                <p className="text-xs text-muted-foreground">
-                  No payout accounts yet. Add one under Payouts to enable recipient checking.
-                </p>
-              )}
-            </div>
+            <PayoutSelect
+              id="verify-image-payout"
+              payouts={payouts}
+              value={payoutAccountId}
+              onChange={setPayoutAccountId}
+            />
 
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -490,6 +528,10 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
                   <span className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> VERIFIED</span>
                 ) : "FAILED"}
               </Badge>
+              {result.recipientChecked && <Badge variant="outline">recipient checked</Badge>}
+              {result.recipientChecked && result.success && (
+                <Badge variant="outline" className="border-amber-500 text-amber-600">amount not checked</Badge>
+              )}
             </CardTitle>
             {measurement && (
               <div className="text-sm text-muted-foreground" aria-live="polite">
@@ -504,7 +546,13 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
                 )}
               </div>
             )}
-            {!result.success && result.error && <CardDescription>{result.error}</CardDescription>}
+            {!result.success && result.error && (
+              <CardDescription>
+                {result.reason
+                  ? `${RECIPIENT_REASON_COPY[result.reason] ?? result.error} Expected ${result.expectedAccount}.`
+                  : result.error}
+              </CardDescription>
+            )}
           </CardHeader>
           <CardContent>
             <pre className="bg-muted rounded-md p-4 overflow-auto text-xs max-h-96 whitespace-pre-wrap break-words">

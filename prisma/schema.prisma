@@ -182,11 +182,22 @@ model ApiKey {
     usageCount   Int           @default(0)
     isActive     Boolean       @default(true)
     UsageLog     UsageLog[]
-    permissions  Json          @default("[\"verify\"]")
-    paymentLinks PaymentLink[]
+permissions  Json          @default("[\"verify\"]")
+  paymentLinks PaymentLink[]
 
-    @@index([key])
-    @@index([workspaceId])
+  // The account this key's verifications are checked against when a request does
+  // not name one. A merchant integration normally collects into a single account,
+  // so binding it once beats making every caller pass an id forever. A request may
+  // still override it for a one-off.
+  //
+  // onDelete SetNull, so retiring a payout account disables the check rather than
+  // deleting the key that depends on it.
+  defaultPayoutAccountId String?
+  defaultPayoutAccount   PayoutAccount? @relation("ApiKeyDefaultPayoutAccount", fields: [defaultPayoutAccountId], references: [id], onDelete: SetNull)
+
+  @@index([key])
+  @@index([workspaceId])
+  @@index([defaultPayoutAccountId])
 }
 
 model UsageLog {
@@ -390,6 +401,7 @@ model PayoutAccount {
     createdAt         DateTime          @default(now())
     products          Product[]         @relation("ProductPayoutAccounts")
     paymentLinks      PaymentLink[]     @relation("PaymentLinkPayoutAccounts")
+    defaultForApiKeys ApiKey[]          @relation("ApiKeyDefaultPayoutAccount")
 
     @@index([workspaceId])
 }

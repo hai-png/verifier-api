@@ -72,6 +72,11 @@ router.get('/:workspaceId/api-keys', async (req: Request, res: Response): Promis
                 isActive: true,
                 createdAt: true,
                 permissions: true,
+                // So the dashboard can show which key is bound to which account
+                // and offer to change it, instead of the binding being invisible
+                // until a verification is refused.
+                defaultPayoutAccountId: true,
+                defaultPayoutAccount: { select: { id: true, label: true, account: true } },
             },
             orderBy: { createdAt: 'desc' },
         });
@@ -86,13 +91,32 @@ router.get('/:workspaceId/api-keys', async (req: Request, res: Response): Promis
 router.post('/:workspaceId/api-keys', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
     const { workspaceId } = req.params as { workspaceId: string };
-    const { label } = req.body as { label?: string };
+    const { label, defaultPayoutAccountId } = req.body as {
+        label?: string;
+        defaultPayoutAccountId?: string;
+    };
 
     try {
         const membership = await verifyWorkspaceAccess(userId, workspaceId);
         if (!membership) {
             res.status(403).json({ success: false, error: 'Access denied.' });
             return;
+        }
+
+        // Scoped to this workspace, so binding an account cannot point a key at
+        // another tenant's. An unknown id is reported rather than silently
+        // ignored: a key that looks bound but checks nothing is worse than none.
+        let payoutAccountId: string | null = null;
+        if (typeof defaultPayoutAccountId === 'string' && defaultPayoutAccountId.trim() !== '') {
+            const account = await prisma.payoutAccount.findFirst({
+                where: { id: defaultPayoutAccountId.trim(), workspaceId, active: true },
+                select: { id: true },
+            });
+            if (!account) {
+                res.status(400).json({ success: false, error: 'Payout account not found in this workspace.' });
+                return;
+            }
+            payoutAccountId = account.id;
         }
 
         // Generate a new API key directly attached to this workspace
@@ -109,7 +133,9 @@ router.post('/:workspaceId/api-keys', async (req: Request, res: Response): Promi
                 usageCount: 0,
                 isActive: true,
                 permissions: ['verify', 'webhooks'],
+                ...(payoutAccountId ? { defaultPayoutAccountId: payoutAccountId } : {}),
             },
+            include: { defaultPayoutAccount: { select: { id: true, label: true, account: true } } },
         });
 
         logger.info(`New API key created for workspace ${workspaceId}`);
@@ -122,11 +148,69 @@ router.post('/:workspaceId/api-keys', async (req: Request, res: Response): Promi
                 key: rawKey,
                 prefix: apiKey.prefix,
                 createdAt: apiKey.createdAt,
+                defaultPayoutAccountId: apiKey.defaultPayoutAccountId,
+                defaultPayoutAccount: apiKey.defaultPayoutAccount,
             },
         });
     } catch (err) {
         logger.error('Create API key error:', err);
         res.status(500).json({ success: false, error: 'Failed to create API key.' });
+    }
+});
+
+// Bind or unbind the payout account this key's verifications are checked against.
+// Keys are long-lived, so the binding has to be changeable after creation — and
+// clearable, because turning the check off must be as easy as turning it on.
+// `null` or "" clears it.
+router.patch('/:workspaceId/api-keys/:keyId/payout-account', async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).userId as string;
+    const { workspaceId, keyId } = req.params as { workspaceId: string; keyId: string };
+    const { payoutAccountId } = req.body as { payoutAccountId?: string | null };
+
+    try {
+        const membership = await verifyWorkspaceAccess(userId, workspaceId);
+        if (!membership) {
+            res.status(403).json({ success: false, error: 'Access denied.' });
+            return;
+        }
+
+        // Both sides of the key are scoped to this workspace, so a key id from
+        // another tenant cannot be reached by guessing.
+        const key = await prisma.apiKey.findFirst({
+            where: { id: keyId, workspaceId },
+            select: { id: true },
+        });
+        if (!key) {
+            res.status(404).json({ success: false, error: 'API key not found.' });
+            return;
+        }
+
+        const wantsBinding = typeof payoutAccountId === 'string' && payoutAccountId.trim() !== '';
+        if (wantsBinding) {
+            const account = await prisma.payoutAccount.findFirst({
+                where: { id: (payoutAccountId as string).trim(), workspaceId, active: true },
+                select: { id: true },
+            });
+            if (!account) {
+                res.status(400).json({ success: false, error: 'Payout account not found in this workspace.' });
+                return;
+            }
+        }
+
+        const updated = await prisma.apiKey.update({
+            where: { id: keyId },
+            data: { defaultPayoutAccountId: wantsBinding ? (payoutAccountId as string).trim() : null },
+            select: {
+                id: true,
+                defaultPayoutAccountId: true,
+                defaultPayoutAccount: { select: { id: true, label: true, account: true } },
+            },
+        });
+
+        res.json({ success: true, apiKey: updated });
+    } catch (err) {
+        logger.error('Update API key payout account error:', err);
+        res.status(500).json({ success: false, error: 'Failed to update API key.' });
     }
 });
 

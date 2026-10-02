@@ -2,6 +2,7 @@ import { RequestHandler } from 'express';
 import { performance } from 'perf_hooks';
 import { prepareVerification, executeVerification, SmartVerifyResult, VerificationPlan } from '../services/verifyUniversal';
 import { verificationResultCache } from './verifyResultCache';
+import { applyRecipientCheck, resolveRecipientPayoutAccount } from '../utils/verifyRecipient';
 import { rateLimiter } from './rateLimiter';
 import { permissionGate, verifyQuotaGate } from './tierGate';
 import { verifyWebhookHook } from './verifyWebhookHook';
@@ -99,6 +100,16 @@ export function createVerificationPipeline(options: PipelineOptions = {}, overri
     if (!prepared.ok) { res.status(400).json({ success: false, error: prepared.result.error }); return; }
     res.locals.verificationPlan = prepared.plan;
     (req as any).verificationPlan = prepared.plan;
+    // Kept out of the plan on purpose. The plan is what the result cache keys on,
+    // and the provider's answer does not depend on who the receipt was checked
+    // against — so one cached lookup serves every payout account. Captured here
+    // and applied after the cache instead.
+    const requestedPayoutAccountId = input && typeof input === 'object' && !Array.isArray(input)
+      ? (input as Record<string, unknown>).payoutAccountId
+      : undefined;
+    res.locals.requestedPayoutAccountId = typeof requestedPayoutAccountId === 'string' && requestedPayoutAccountId.trim() !== ''
+      ? requestedPayoutAccountId.trim()
+      : null;
     // Existing quota/webhook middleware consumes reference, including legacy
     // receiptNumber and GET callers. It now always sees normalized fields.
     req.body = { reference: prepared.plan.reference, suffix: prepared.plan.suffix, phoneNumber: prepared.plan.phoneNumber };
@@ -114,7 +125,20 @@ export function createVerificationPipeline(options: PipelineOptions = {}, overri
       res.locals.verificationResult = outcome.result;
       res.setHeader('X-Verify-Cache', outcome.cache);
       if (outcome.result.httpStatus === 503) res.setHeader('Retry-After', '1');
-      const response = verificationResponse(outcome.result, options.envelope ?? 'universal', options.provider);
+
+      // Applied after the cache so a receipt already verified for one customer
+      // can be re-checked against another account without a second provider call.
+      const providerSlug = (options.provider ?? outcome.result.provider ?? '').toString();
+      const payoutAccount = await resolveRecipientPayoutAccount(req, res.locals.requestedPayoutAccountId);
+      const checked = applyRecipientCheck({
+        result: outcome.result as unknown as Record<string, unknown>,
+        payoutAccount,
+        provider: providerSlug,
+      });
+      res.locals.verificationResult = checked.result as unknown as typeof outcome.result;
+      if (checked.checked) res.locals.recipientChecked = true;
+
+      const response = verificationResponse(checked.result as unknown as typeof outcome.result, options.envelope ?? 'universal', options.provider);
       res.status(response.status).json(response.body);
     } catch (error) { next(error); }
   };

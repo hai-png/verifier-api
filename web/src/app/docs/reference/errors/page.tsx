@@ -43,6 +43,34 @@ export default function Errors() {
         </table>
       </div>
 
+      <DocH2>Recipient reasons</DocH2>
+      <DocP>
+        When a payout account applies — passed as <Code code="payoutAccountId" inline />, or bound to
+        the API key — a verification can confirm the receipt and still refuse it. On reference
+        verification that comes back as <Code code="200" inline /> with <Code code="success:false" inline />{' '}
+        and a <Code code="reason" inline />, because the lookup itself succeeded; only image
+        verification uses <Code code="422" inline />.
+      </DocP>
+      <table className="w-full text-sm">
+        <tbody>
+          {[
+            ['RECIPIENT_MISMATCH', 'The receipt names a different account or payee. Do not issue.'],
+            ['RECIPIENT_NOT_VERIFIABLE', 'The receipt shows no destination account or receiver name that can be matched, so it cannot be confirmed either way. Do not issue.'],
+            ['PROVIDER_NOT_ALLOWED', 'The selected payout account does not accept that provider. Choose another account or omit it.'],
+          ].map(([code, desc]) => (
+            <tr key={code} className="border-t">
+              <td className="p-2 font-mono text-xs align-top whitespace-nowrap">{code}</td>
+              <td className="p-2">{desc}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <DocP>
+        A verified response also carries <Code code="amountChecked: false" inline />. The recipient
+        check says <em>who</em> was paid, never <em>how much</em> — compare the amount yourself
+        before issuing.
+      </DocP>
+
       <DocH2>Retry strategy</DocH2>
       <DocP>Retry 429 / 502 / 500 with exponential backoff + jitter (1s → 2s → 4s, max ~3 tries).</DocP>
       <DocP>
