@@ -11,7 +11,12 @@ import { verifyImageHandler } from '../services/verifyImage';
 
 // The upload middleware and its error translator, without the handler that
 // needs a workspace and image credits.
-const [uploadMiddleware, uploadErrorHandler] = verifyImageHandler as any[];
+// Positional, because the handler is exported as a middleware array. Element 0
+// is the Server-Timing wrapper; multer's upload and its error translator follow.
+// Taking [1] and [2] matters: leaving the wrapper out is fine, but pairing the
+// error translator with the wrong middleware turns every rejected upload into a
+// 500 instead of the 415 it is.
+const [, uploadMiddleware, uploadErrorHandler] = verifyImageHandler as any[];
 
 async function post(url: string, filename: string, type: string, bytes: number) {
   const form = new FormData();

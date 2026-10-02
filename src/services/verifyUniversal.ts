@@ -9,7 +9,7 @@ import { verifyCBEBirr } from './verifyCBEBirr';
 import { verifyAwash } from './verifyAwash';
 import { verifyZemen } from './verifyZemen';
 import { verifyMpesa } from './verifyMpesa';
-import { extractLegacyCbeUrlData, extractNewCbeToken, isLegacyCbeReference } from '../utils/cbeReference';
+import { extractLegacyCbeUrlData, extractNewCbeToken, isLegacyCbeReference, splitLegacyCbeCombinedId } from '../utils/cbeReference';
 import logger from '../utils/logger';
 
 export interface SmartVerifyInput {
@@ -79,6 +79,28 @@ export function prepareVerification(input: unknown): VerificationPreparation {
     if (requested && requested !== 'auto' && !explicit) return bad('Unsupported verification provider.');
     const legacyLink = extractLegacyCbeUrlData(reference);
     const newCbe = extractNewCbeToken(reference);
+
+    // Normalise a pasted reference-and-tail pair before anything else looks at
+    // it. Done here so both auto-detection and an explicit provider see the same
+    // 12-character reference, and so a combined paste stops being mistaken for a
+    // long Awash/Zemen reference.
+    let combined: ReturnType<typeof splitLegacyCbeCombinedId> = null;
+    if (!legacyLink && !newCbe) {
+      combined = splitLegacyCbeCombinedId(reference);
+      if (combined) {
+        if (suffix !== undefined && suffix !== combined.suffix) {
+          // The pasted string already carries the tail, so a second value has to
+          // agree with it or we would be verifying one receipt against another.
+          return bad(
+            'That reference already includes an account suffix, and it does not match the suffix you supplied. ' +
+            'Send the reference on its own, or clear the suffix field.',
+          );
+        }
+        reference = combined.reference;
+        suffix = combined.suffix;
+      }
+    }
+
     let provider = explicit;
     if (!provider) {
       if (reference.length === 16 && /^\d{3}/.test(reference)) provider = 'DASHEN';
@@ -103,7 +125,28 @@ export function prepareVerification(input: unknown): VerificationPreparation {
         reference = newCbe; // Preserve case: new tokens can be case-sensitive.
       } else if (!isLegacyCbeReference(reference)) return bad('Invalid CBE reference format.');
       if (!newCbe) reference = reference.toUpperCase();
-      if (!newCbe && !/^\d{8}$/.test(suffix ?? '')) return bad('Legacy CBE verification requires exactly 8 suffix digits.');
+      if (!newCbe && suffix === undefined && combined === null) {
+        return bad(
+          'This looks like a legacy CBE reference (FT plus 10 characters), which needs the payer\'s ' +
+          '8-digit account suffix — the digits printed after 1000 on the receipt. You can also paste ' +
+          'the whole receipt URL, or the reference and suffix run together, and it will be read from those.',
+        );
+      }
+      if (!newCbe && !/^\d{8}$/.test(suffix ?? '')) {
+        // A 5-digit tail on an FT reference is an Abyssinia receipt, not a
+        // mistyped CBE one, and saying so saves a round of guessing.
+        if (/^\d{5}$/.test(suffix ?? '')) {
+          return bad(
+            'That is a 5-digit suffix, which is an Abyssinia reference rather than a legacy CBE one. ' +
+            'Verify it as Abyssinia, or paste a full CBE receipt URL.',
+          );
+        }
+        return bad(
+          'Legacy CBE verification requires exactly 8 suffix digits — the digits printed after 1000 on ' +
+          'the receipt. You can also paste the whole receipt URL, or the reference and suffix run ' +
+          'together, and it will be read from those.',
+        );
+      }
     } else if (provider === 'ABYSSINIA') {
       if (!/^\d{5}$/.test(suffix ?? '') || phoneNumber) return bad('Abyssinia requires a 5-digit suffix and no phoneNumber.');
     } else if (provider === 'CBE_BIRR') {
