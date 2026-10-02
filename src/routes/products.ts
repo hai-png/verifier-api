@@ -635,7 +635,12 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
           fixedAmount: nextPrice,
           name: nextName,
           acceptedProviders,
-          ...(nextActive === false ? { status: 'INACTIVE' } : {}),
+          // Symmetric with the deactivation branch. Reactivating a product used
+          // to leave every one of its links INACTIVE, so the product showed as
+          // active while its checkout pages answered 400 — and nothing anywhere
+          // restored ACTIVE, so recovery meant a per-link PATCH the dashboard
+          // does not expose.
+          ...(nextActive === false ? { status: 'INACTIVE' } : { status: 'ACTIVE' }),
         },
       });
 

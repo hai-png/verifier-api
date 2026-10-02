@@ -68,13 +68,23 @@ export async function emitWorkspaceEvent(
     workspaceId: string,
     event: WorkspaceEventName,
     payload: Record<string, unknown>,
+    /**
+     * A webhook to leave out of this fan-out.
+     *
+     * A webhook that has just dead-lettered is, by definition, subscribed to
+     * webhook.dead_letter. Handing it its own failure means it fails again,
+     * dead-letters and emits again — so N subscribers produce up to N new
+     * deliveries per dead letter, per cycle, with nothing damping it. The event
+     * still reaches every other subscriber.
+     */
+    excludeWebhookId: string | null = null,
 ): Promise<void> {
     try {
         // Fast path: this workspace had no webhooks or channels a moment ago,
         // so there is nothing to fan out to.
         if (hasNoTargets(workspaceId)) return;
 
-        const [webhooks, notificationChannels] = await Promise.all([
+        const [allWebhooks, notificationChannels] = await Promise.all([
             prisma.webhook.findMany({
                 where: { workspaceId, active: true },
                 select: { id: true, url: true, signingSecret: true, events: true },
@@ -84,6 +94,9 @@ export async function emitWorkspaceEvent(
                 select: { id: true, events: true },
             }),
         ]);
+        const webhooks = excludeWebhookId === null
+            ? allWebhooks
+            : allWebhooks.filter((webhook) => webhook.id !== excludeWebhookId);
 
         const eventPayload: WorkspaceEventPayload = {
             event,

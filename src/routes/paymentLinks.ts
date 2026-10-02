@@ -714,7 +714,40 @@ router.get('/:id/public', async (req: Request, res: Response): Promise<void> => 
     }
 
     const [withStatus] = materialiseLinkStatus([paymentLink]);
-    res.json({ success: true, paymentLink: withStatus });
+
+    // This route is unauthenticated, so the response is assembled field by field
+    // rather than by handing the row back. It previously returned the whole
+    // record, which published the merchant's full payout account number, their
+    // workspaceId, createdByKeyId and workspace name to anyone who had a link id
+    // — and link ids turn up in browser history, Referer headers and anything a
+    // buyer was sent. The checkout page reads only name, status, fixedAmount,
+    // acceptedProviders, expiresAt and the product block, so nothing else was
+    // ever needed.
+    const product = paymentLink.product;
+    res.json({
+      success: true,
+      paymentLink: {
+        id: paymentLink.id,
+        name: paymentLink.name,
+        mode: paymentLink.mode,
+        status: withStatus.status,
+        fixedAmount: paymentLink.fixedAmount,
+        acceptedProviders: paymentLink.acceptedProviders,
+        expiresAt: paymentLink.expiresAt,
+        redirectUrl: paymentLink.redirectUrl,
+        product: product
+          ? {
+              id: product.id,
+              name: product.name,
+              description: product.description,
+              imageUrl: product.imageUrl,
+              price: product.price,
+              successMessage: product.successMessage,
+              deliveryUrl: product.deliveryUrl,
+            }
+          : null,
+      },
+    });
   } catch (error) {
     logger.error('Failed to get public payment link:', error);
     res.status(500).json({ success: false, error: 'Failed to retrieve payment link.' });

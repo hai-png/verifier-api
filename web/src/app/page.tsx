@@ -105,6 +105,8 @@ interface PaymentLink {
   acceptedProviders: string[]
   status: string
   redirectUrl: string | null
+  /** The server sends this and the local shape dropped it, so expiry never rendered. */
+  expiresAt?: string | null
   createdAt: string
   _count?: { orders: number }
 }
@@ -1067,16 +1069,19 @@ function ApiKeysTab({ workspaceId }: { workspaceId: string }) {
 
 // ─── Payouts Tab ────────────────────────────────────────────────────────────
 
-const PROVIDERS = [
-  { id: 'telebirr', label: 'Telebirr', type: 'PHONE' },
-  { id: 'cbe', label: 'CBE Bank', type: 'BANK' },
-  { id: 'cbebirr', label: 'CBE Birr', type: 'PHONE' },
-  { id: 'dashen', label: 'Dashen Bank', type: 'BANK' },
-  { id: 'abyssinia', label: 'Bank of Abyssinia', type: 'BANK' },
-  { id: 'awash', label: 'Awash Bank', type: 'BANK' },
-  { id: 'zemen', label: 'Zemen Bank', type: 'BANK' },
-  { id: 'mpesa', label: 'M-Pesa', type: 'PHONE' },
-]
+  // Kept in step with the server's allowlists (payoutInput.ts PHONE_PROVIDERS /
+  // BANK_PROVIDERS, and VALID_PROVIDERS in products.ts / paymentLinks.ts). Awash
+  // and Zemen used to appear here and were rejected by every route that
+  // validates: "Bank accounts cannot accept: awash" — a hard 400 from a picker
+  // the user could see.
+  const PROVIDERS = [
+    { id: 'telebirr', label: 'Telebirr', type: 'PHONE' },
+    { id: 'cbe', label: 'CBE Bank', type: 'BANK' },
+    { id: 'cbebirr', label: 'CBE Birr', type: 'PHONE' },
+    { id: 'dashen', label: 'Dashen Bank', type: 'BANK' },
+    { id: 'abyssinia', label: 'Bank of Abyssinia', type: 'BANK' },
+    { id: 'mpesa', label: 'M-Pesa', type: 'PHONE' },
+  ]
 
 function PayoutsTab({ workspaceId }: { workspaceId: string }) {
   const { token } = useAuth()
@@ -1444,11 +1449,17 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
   const [links, setLinks] = useState<PaymentLink[]>([])
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
+  const [payouts, setPayouts] = useState<PayoutAccount[]>([])
   const [form, setForm] = useState({
     name: '',
     fixedAmount: 299,
     acceptedProviders: ['telebirr'] as string[],
     redirectUrl: '',
+    // A link with no payout account cannot accept a payment: confirm resolves an
+    // account per provider and requires exactly one match. This form never sent
+    // the field at all, so every link made here was shareable but permanently
+    // unpayable — buyers got 422 while the UI still showed a copy button.
+    payoutAccountIds: [] as string[],
   })
 
   const load = useCallback(() => {
@@ -1458,9 +1469,19 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
         if (data.success) setLinks(data.paymentLinks)
       })
       .finally(() => setLoading(false))
+    apiFetch(`/dashboard/${workspaceId}/payouts`, token)
+      .then(res => res.json())
+      .then(data => { if (data.success) setPayouts(data.payouts ?? []) })
+      .catch(() => setPayouts([]))
   }, [token, workspaceId])
 
   useEffect(() => { load() }, [load])
+
+  // Only accounts that can actually receive one of the chosen providers, so the
+  // "exactly one account per provider" rule cannot be violated by the picker.
+  const eligiblePayouts = payouts.filter(p =>
+    form.acceptedProviders.some(pr => (p.providersAllowed as string[]).includes(pr)),
+  )
 
   const create = async () => {
     const res = await apiFetch(`/dashboard/${workspaceId}/payment-links`, token, {
@@ -1474,7 +1495,7 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
     if (data.success) {
       toast({ title: 'Payment link created!' })
       setCreateOpen(false)
-      setForm({ name: '', fixedAmount: 299, acceptedProviders: ['telebirr'], redirectUrl: '' })
+      setForm({ name: '', fixedAmount: 299, acceptedProviders: ['telebirr'], redirectUrl: '', payoutAccountIds: [] })
       load()
     } else {
       toast({ title: 'Error', description: data.error, variant: 'destructive' })
@@ -1525,10 +1546,21 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <code className="text-xs text-muted-foreground hidden md:block">
-                    {typeof window !== 'undefined' ? `${window.location.origin}/pl/${link.id}` : `/pl/${link.id}`}
-                  </code>
+                  <div className="flex items-center gap-2">
+                    {/* Show the real status and expiry. A link that had expired was
+                        indistinguishable from a live one, because the dashboard
+                        list never materialises the lazy EXPIRED transition. */}
+                    {link.status && link.status !== 'ACTIVE' && (
+                      <Badge variant="outline" className="border-amber-500 text-amber-600 capitalize">{link.status}</Badge>
+                    )}
+                    {link.expiresAt && (
+                      <span className="text-xs text-muted-foreground hidden md:block">
+                        expires {new Date(link.expiresAt).toLocaleDateString()}
+                      </span>
+                    )}
+                    <code className="text-xs text-muted-foreground hidden md:block">
+                      {typeof window !== 'undefined' ? `${window.location.origin}/pl/${link.id}` : `/pl/${link.id}`}
+                    </code>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -1584,13 +1616,46 @@ function PaymentLinksTab({ workspaceId }: { workspaceId: string }) {
               </div>
             </div>
             <div className="space-y-2">
+              <Label>Payout accounts</Label>
+              {eligiblePayouts.length === 0 ? (
+                <p className="text-xs text-amber-600">
+                  No payout account covers {form.acceptedProviders.join(', ')}. Create one under
+                  Payouts first — a link with no matching account cannot take a payment.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {eligiblePayouts.map(p => (
+                    <Badge
+                      key={p.id}
+                      variant={form.payoutAccountIds.includes(p.id) ? 'default' : 'outline'}
+                      className="cursor-pointer"
+                      title={`${p.accountHolderName || ''} ${p.account}`}
+                      onClick={() => setForm({
+                        ...form,
+                        payoutAccountIds: form.payoutAccountIds.includes(p.id)
+                          ? form.payoutAccountIds.filter(x => x !== p.id)
+                          : [...form.payoutAccountIds, p.id],
+                      })}
+                    >
+                      {p.label} — {p.account}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Exactly one account per accepted provider. The link verifies that the payment reached
+                the account you pick here.
+              </p>
+            </div>
+
+            <div className="space-y-2">
               <Label>Redirect URL (optional)</Label>
               <Input value={form.redirectUrl} onChange={e => setForm({ ...form, redirectUrl: e.target.value })} placeholder="https://yourapp.com/thank-you" />
             </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button onClick={create} disabled={!form.name || form.fixedAmount <= 0}>
+            <Button onClick={create} disabled={!form.name || form.fixedAmount <= 0 || form.payoutAccountIds.length === 0}>
               Create
             </Button>
           </DialogFooter>

@@ -41,6 +41,10 @@ import {
     resolvePositiveInteger,
 } from './products';
 
+// MySQL String columns are VARCHAR(191); a longer value is a 500 from Prisma rather
+// than a 400, so the common free-text fields are capped before they reach it.
+const MAX_LINK_NAME_LENGTH = 191;
+
 const router = Router();
 
 // All dashboard routes require session auth
@@ -474,10 +478,42 @@ router.post('/:workspaceId/payment-links', async (req: Request, res: Response): 
         payoutAccountIds?: string[];
     };
 
-    if (!name || !fixedAmount || !acceptedProviders || acceptedProviders.length === 0) {
-        res.status(400).json({ success: false, error: 'name, fixedAmount, and acceptedProviders are required.' });
+    // `!fixedAmount` is a truthiness check, so -500 passed and was stored on a
+    // Float column. Confirm compares `verifiedAmount < fixedAmount`, so a
+    // negative amount made every payment pass the gate. Mirrors the API-key
+    // route's `customAmount > 0`.
+    const trimmedName = typeof name === 'string' ? name.trim() : '';
+    const amount = typeof fixedAmount === 'number' ? fixedAmount : Number.NaN;
+    // From ./products, so it returns null for anything outside the provider
+    // allowlist rather than passing an arbitrary string list straight through.
+    const providers = normaliseProviders(acceptedProviders);
+    const requestedIds = normaliseIdList(payoutAccountIds);
+
+    if (!trimmedName || !Number.isFinite(amount) || amount <= 0 || !providers || providers.length === 0) {
+        res.status(400).json({
+            success: false,
+            error: 'name, a positive fixedAmount, and at least one accepted provider are required.',
+        });
         return;
     }
+    if (trimmedName.length > MAX_LINK_NAME_LENGTH) {
+        res.status(400).json({ success: false, error: `name must be ${MAX_LINK_NAME_LENGTH} characters or fewer.` });
+        return;
+    }
+
+    // A CUSTOM link with no payout account can never accept a payment:
+    // pickPayoutAccountForProvider requires exactly one match, so confirm
+    // answers 422 for every buyer. The API-key route has required this since the
+    // start; here it was optional and the UI never sent it, so every link made
+    // through this route was permanently unpayable while still being shareable.
+    if (requestedIds.length === 0) {
+        res.status(400).json({
+            success: false,
+            error: 'Select at least one payout account — without one the link cannot accept a payment.',
+        });
+        return;
+    }
+
     // This route stored redirectUrl verbatim, while the API-key route validated
     // it. The value is rendered as an href on the buyer's checkout page, so
     // reject anything that is not http(s) rather than silently storing a
@@ -502,49 +538,44 @@ router.post('/:workspaceId/payment-links', async (req: Request, res: Response): 
             return;
         }
 
-        // Verify payout accounts cover all accepted providers
-        if (payoutAccountIds && payoutAccountIds.length > 0) {
-            const payouts = await prisma.payoutAccount.findMany({
-                where: { id: { in: payoutAccountIds }, workspaceId, active: true },
-                select: { providersAllowed: true },
-            });
-            const coveredProviders = new Set(
-                payouts.flatMap((p) => p.providersAllowed as string[])
-            );
-            const uncovered = acceptedProviders.filter((p) => !coveredProviders.has(p));
-            if (uncovered.length > 0) {
-                res.status(400).json({
-                    success: false,
-                    error: `No payout account covers these providers: ${uncovered.join(', ')}. Create a payout account for them first.`,
-                });
-                return;
-            }
+        // Verify every requested account is ours before connecting any of them.
+        // A partial list used to pass the coverage check — the query only saw
+        // this workspace's rows — and the foreign ids were then written into the
+        // join table, which GET /payment-links/:id/public serves unauthenticated.
+        const payoutAccounts = await getWorkspacePayoutAccounts(workspaceId, requestedIds);
+        if (payoutAccounts.length !== requestedIds.length) {
+            res.status(400).json({ success: false, error: 'One or more payout accounts were not found in this workspace.' });
+            return;
+        }
+
+        // The shared check, not a hand-rolled copy. The copy dropped the
+        // "exactly one account per provider" rule, so a link could be created
+        // that could never resolve an account at confirm time.
+        const coverage = ensureProviderCoverage(providers, payoutAccounts);
+        if (coverage) {
+            res.status(400).json({ success: false, error: coverage });
+            return;
         }
 
         const link = await prisma.paymentLink.create({
             data: {
                 workspaceId,
-                name,
+                name: trimmedName,
                 mode: 'CUSTOM',
-                fixedAmount,
-                acceptedProviders,
+                fixedAmount: amount,
+                acceptedProviders: providers,
                 redirectUrl: safeRedirectUrl,
                 status: 'ACTIVE',
                 creatorType: 'DASHBOARD',
-            },
-        });
-
-        // Link payout accounts if provided
-        if (payoutAccountIds && payoutAccountIds.length > 0) {
-            await prisma.paymentLink.update({
-                where: { id: link.id },
-                data: {
-                    payoutAccounts: {
-                        connect: payoutAccountIds.map((id) => ({ id })),
-                    },
+                payoutAccounts: {
+                    connect: payoutAccounts.map((account) => ({ id: account.id })),
                 },
-            });
-        }
+            },
+            // The connect now happens in the same statement as the create. Two
+            // writes meant a failure between them left a link that exists, is
+            // listed in the UI, and cannot take a payment.
+            include: { payoutAccounts: { select: { id: true, label: true, account: true } } },
+        });
 
         res.status(201).json({ success: true, paymentLink: link });
     } catch (err) {
@@ -745,7 +776,16 @@ router.post('/:workspaceId/products', async (req: Request, res: Response): Promi
         res.status(400).json({ success: false, error: 'At least one payout account is required.' });
         return;
     }
+    // normaliseOptionalText returns the sentinel string 'invalid' for a
+    // non-string. The API-key route checks for it (products.ts) and this one did
+    // not, so the literal "invalid" was stored in the description column — and
+    // TypeScript cannot catch it, because 'invalid' is a valid member of the
+    // return type.
     const cleanDescription = normaliseOptionalText(description);
+    if (cleanDescription === 'invalid') {
+        res.status(400).json({ success: false, error: 'description must be a string when provided.' });
+        return;
+    }
     const buyers = resolvePositiveInteger(maxBuyers);
     if (buyers === 'invalid') {
         res.status(400).json({ success: false, error: 'maxBuyers must be a positive integer when provided.' });

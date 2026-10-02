@@ -265,6 +265,38 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
       : null;
     const message = error instanceof Error ? error.message : 'Unknown webhook delivery error';
 
+    // An SSRF rejection is terminal, not a transient failure. The URL will not
+    // become safe by trying again, so retrying it only spent four attempts —
+    // and the delay between them — re-resolving a destination we already
+    // refused. The error type was imported for exactly this and never used.
+    if (error instanceof UnsafeOutboundUrlError) {
+      logger.warn(
+        `Webhook ${deliveryId} refused by outbound URL policy: ${message}. Not retrying.`,
+      );
+      await prisma.webhookDelivery.update({
+        where: { id: deliveryId },
+        data: {
+          status: 'DEAD_LETTER',
+          success: false,
+          attempts: attemptNumber,
+          lastError: `Refused by outbound URL policy: ${message}`,
+        },
+      });
+      await emitWorkspaceEvent(
+        delivery.webhook.workspaceId,
+        'webhook.dead_letter',
+        {
+          webhookId: delivery.webhook.id,
+          webhookUrl: delivery.webhook.url,
+          deliveryId,
+          attempts: attemptNumber,
+          lastError: `Refused by outbound URL policy: ${message}`,
+        },
+        delivery.webhook.id,
+      );
+      return;
+    }
+
     if (attemptNumber < MAX_ATTEMPTS) {
       const delayMs = RETRY_DELAYS_MS[attemptNumber - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
       const nextRetryAt = new Date(Date.now() + delayMs);
@@ -307,13 +339,17 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
       `Webhook delivery dead-lettered [delivery=${deliveryId} attempt=${attemptNumber}] ${message}`,
     );
 
-    await emitWorkspaceEvent(delivery.webhook.workspaceId, 'webhook.dead_letter', {
-      webhookId: delivery.webhook.id,
-      webhookUrl: delivery.webhook.url,
-      deliveryId,
-      attempts: attemptNumber,
-      lastError: message,
-    });
+      await emitWorkspaceEvent(delivery.webhook.workspaceId, 'webhook.dead_letter', {
+        webhookId: delivery.webhook.id,
+        webhookUrl: delivery.webhook.url,
+        deliveryId,
+        attempts: attemptNumber,
+        lastError: message,
+      },
+      // Not to this webhook: it is subscribed to its own dead letter, so
+      // including it turns one failure into an unbounded retry cascade.
+      delivery.webhook.id,
+      );
   }
 }
 
