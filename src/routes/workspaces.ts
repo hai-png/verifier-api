@@ -146,6 +146,8 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
                 verificationCreditsMonthly: true,
                 imageCredits: true,
                 imageCreditsMonthly: true,
+                verificationCreditsUnlimited: true,
+                imageCreditsUnlimited: true,
                 paidUntil: true,
                 createdAt: true,
                 _count: {

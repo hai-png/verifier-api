@@ -21,6 +21,10 @@ export interface WorkspaceContext {
         imageCredits: number;
         imageCreditsMonthly: number;
         imageCreditsResetAt: Date | null;
+        // Admin-granted "never runs out". Defaults to false so a workspace loaded
+        // from a select that predates the columns still behaves as metered.
+        verificationCreditsUnlimited?: boolean;
+        imageCreditsUnlimited?: boolean;
     };
     source: 'dashboard' | 'api_key';
 }

@@ -46,6 +46,10 @@ services:
       # Admin + dashboard secrets (generate with: openssl rand -hex 32)
       - key: ADMIN_SECRET
         sync: false
+      #   Also grants unlimited credits per workspace:
+      #     node scripts/grant-unlimited.mjs <workspace-id> [more ids...]
+      #   Those are booleans on Workspace, not large credit balances, so they
+      #   survive the monthly reset and a plan downgrade.
       - key: DASHBOARD_SECRET
         sync: false
       # Mistral AI (for /verify-image OCR)

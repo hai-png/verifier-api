@@ -15,10 +15,16 @@ dotenv.config();
 
 // ─── Credit refund helper ─────────────────────────────────────────────────────
 
-type ResolvedAccount = { creditHolder: 'workspace'; creditHolderId: string } | undefined;
+type ResolvedAccount = {
+    creditHolder: 'workspace';
+    creditHolderId: string;
+    imageCreditsUnlimited?: boolean;
+} | undefined;
 
 async function refundCredit(account: ResolvedAccount): Promise<void> {
-    if (!account?.creditHolderId) return;
+    // Nothing was taken from an unlimited workspace, so there is nothing to
+    // give back. Crediting it anyway would inflate a balance nothing reads.
+    if (!account?.creditHolderId || account.imageCreditsUnlimited) return;
     await prisma.workspace.update({
         where: { id: account.creditHolderId },
         data: { imageCredits: { increment: 1 } },
@@ -251,7 +257,7 @@ export const verifyImageHandler = [
             // owning workspace where image credits now live.
             const resolvedAccount = (req as any).resolvedAccount as ResolvedAccount;
 
-            if (resolvedAccount?.creditHolderId) {
+            if (resolvedAccount?.creditHolderId && !resolvedAccount.imageCreditsUnlimited) {
                 const result = await prisma.workspace.updateMany({
                     where: { id: resolvedAccount.creditHolderId, imageCredits: { gt: 0 } },
                     data: { imageCredits: { decrement: 1 } },

@@ -330,6 +330,8 @@ router.get('/me', async (req: Request, res: Response): Promise<void> => {
                         verificationCreditsMonthly: true,
                         imageCredits: true,
                         imageCreditsMonthly: true,
+                        verificationCreditsUnlimited: true,
+                        imageCreditsUnlimited: true,
                     },
                 },
             },

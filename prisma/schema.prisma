@@ -79,6 +79,21 @@ model Workspace {
     imageCreditsResetAt        DateTime?
     grandfathered              Boolean   @default(false)
 
+    // Admin-granted "never runs out", set per workspace rather than per plan.
+    //
+    // Deliberately a boolean and not a large number in the credit columns: the
+    // monthly reset overwrites imageCredits with the plan allotment, and an
+    // expired plan downgrades the workspace and does the same, so a sentinel
+    // like 999999 would be silently wiped every 30 days. A flag is untouched by
+    // both paths, so an unlimited grant persists the way a deliberate admin
+    // decision should.
+    //
+    // It also means the credits are not merely set very high — the gates and the
+    // decrements are skipped outright, so there is no counter to exhaust and no
+    // balance left to read as a real number in an API response.
+    verificationCreditsUnlimited Boolean @default(false)
+    imageCreditsUnlimited        Boolean @default(false)
+
     memberships          Membership[]
     invitations          Invitation[]
     apiKeys              ApiKey[]

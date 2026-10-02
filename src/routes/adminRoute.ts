@@ -264,20 +264,43 @@ router.post('/workspaces/plan', checkAdminAuth as RequestHandler, async (req: Re
         tier,
         addVerificationCredits,
         addImageCredits,
+        unlimitedVerifications,
+        unlimitedImages,
         planTermMonths,
         note,
+        workspaceIds,
     } = req.body as {
         workspaceId?: string;
         tier?: string;
         addVerificationCredits?: number;
         addImageCredits?: number;
+        unlimitedVerifications?: boolean;
+        unlimitedImages?: boolean;
         planTermMonths?: number;
         note?: string;
+        /** Grant the same thing to several workspaces in one call. */
+        workspaceIds?: string[];
     };
 
-    if (!workspaceId || typeof workspaceId !== 'string') {
-        res.status(400).json({ success: false, error: 'workspaceId is required.' });
+    // Bulk form: a list of workspaces, each getting exactly the same grant.
+    // Accepting a list is the difference between granting unlimited to your own
+    // account plus five customers being one command and six.
+    const targets = Array.isArray(workspaceIds) && workspaceIds.length > 0
+        ? [...new Set(workspaceIds.map(id => (typeof id === 'string' ? id.trim() : '')).filter(Boolean))]
+        : typeof workspaceId === 'string' && workspaceId.trim() !== ''
+            ? [workspaceId.trim()]
+            : [];
+
+    if (targets.length === 0) {
+        res.status(400).json({ success: false, error: 'workspaceId or workspaceIds is required.' });
         return;
+    }
+    for (const label of ['unlimitedVerifications', 'unlimitedImages'] as const) {
+        const value = req.body[label];
+        if (value !== undefined && typeof value !== 'boolean') {
+            res.status(400).json({ success: false, error: `${label} must be a boolean.` });
+            return;
+        }
     }
     if (tier !== undefined && !VALID_PLAN_TIERS.includes(tier as PlanTier)) {
         res.status(400).json({ success: false, error: `Invalid tier. Must be one of: ${VALID_PLAN_TIERS.join(', ')}` });
@@ -309,6 +332,9 @@ router.post('/workspaces/plan', checkAdminAuth as RequestHandler, async (req: Re
     if (tier !== undefined) data.tier = tier;
     if (addVerificationCredits !== undefined) data.verificationCredits = { increment: addVerificationCredits };
     if (addImageCredits !== undefined) data.imageCredits = { increment: addImageCredits };
+    // Explicit false revokes, so the flag is not write-once by omission.
+    if (unlimitedVerifications !== undefined) data.verificationCreditsUnlimited = unlimitedVerifications;
+    if (unlimitedImages !== undefined) data.imageCreditsUnlimited = unlimitedImages;
     if (planTermMonths !== undefined) {
         data.planTermMonths = planTermMonths;
         if (planTermMonths > 0) {
@@ -325,28 +351,52 @@ router.post('/workspaces/plan', checkAdminAuth as RequestHandler, async (req: Re
     data.imageCreditsResetAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
     try {
-        const updated = await prisma.workspace.update({
-            where: { id: workspaceId },
-            data,
-            select: {
-                id: true, name: true, tier: true,
-                verificationCredits: true, verificationCreditsMonthly: true,
-                imageCredits: true, imageCreditsMonthly: true,
-                paidUntil: true, planTermMonths: true,
-            },
+        // updateMany so one missing id in a bulk grant cannot roll back the ones
+        // that exist — a partial grant is reported per workspace rather than
+        // failing the whole call, which is what an operator granting access to
+        // several customers at once needs to see.
+        const found = await prisma.workspace.findMany({
+            where: { id: { in: targets } },
+            select: { id: true, name: true },
         });
+        const foundIds = new Set(found.map(w => w.id));
+        const missing = targets.filter(id => !foundIds.has(id));
+
+        const updated = await prisma.workspace.updateMany({
+            where: { id: { in: found.map(w => w.id) } },
+            data,
+        });
+
         // Plan limits are read through a cached billing config; drop it so the
         // new tier takes effect on the workspace's next request.
         invalidateBillingConfigCache();
-        logger.info(`[admin] plan grant for workspace ${workspaceId}: ${JSON.stringify({
-            tier, addVerificationCredits, addImageCredits, planTermMonths, note: note.trim(),
+        logger.info(`[admin] plan grant for workspaces ${targets.join(', ')}: ${JSON.stringify({
+            tier, addVerificationCredits, addImageCredits,
+            unlimitedVerifications, unlimitedImages, planTermMonths, note: note.trim(),
+            granted: updated.count, missing,
         })}`);
-        res.json({ success: true, data: updated });
+
+        const results = await prisma.workspace.findMany({
+            where: { id: { in: found.map(w => w.id) } },
+            select: {
+                id: true, name: true, tier: true,
+                verificationCredits: true, verificationCreditsMonthly: true,
+                verificationCreditsUnlimited: true,
+                imageCredits: true, imageCreditsMonthly: true,
+                imageCreditsUnlimited: true,
+                paidUntil: true, planTermMonths: true,
+            },
+        });
+
+        res.json({
+            success: missing.length === 0,
+            granted: updated.count,
+            workspaces: results,
+            ...(missing.length > 0 ? { missing, error: `${missing.length} workspace id(s) not found.` } : {}),
+        });
     } catch (err: any) {
-        if (err.code === 'P2025') {
-            res.status(404).json({ success: false, error: 'Workspace not found.' });
-            return;
-        }
+        // No P2025 branch: updateMany/findMany do not raise it, and a missing id
+        // is reported in `missing` above rather than thrown.
         logger.error('Error granting workspace plan:', err);
         res.status(500).json({ success: false, error: 'Failed to grant plan.' });
     }

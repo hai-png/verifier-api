@@ -33,6 +33,8 @@ function resolveAccount(req: Request): {
   imageCredits: number;
   imageCreditsMonthly: number;
   imageCreditsResetAt: Date | null;
+  verificationCreditsUnlimited: boolean;
+  imageCreditsUnlimited: boolean;
   creditHolder: 'workspace';
   creditHolderId: string;
 } {
@@ -49,6 +51,8 @@ function resolveAccount(req: Request): {
       imageCredits: context.workspace.imageCredits,
       imageCreditsMonthly: context.workspace.imageCreditsMonthly,
       imageCreditsResetAt: context.workspace.imageCreditsResetAt,
+      verificationCreditsUnlimited: context.workspace.verificationCreditsUnlimited ?? false,
+      imageCreditsUnlimited: context.workspace.imageCreditsUnlimited ?? false,
       creditHolder: 'workspace',
       creditHolderId: context.workspace.id,
     };
@@ -68,6 +72,8 @@ function resolveAccount(req: Request): {
     imageCredits: ws?.imageCredits ?? 0,
     imageCreditsMonthly: ws?.imageCreditsMonthly ?? 0,
     imageCreditsResetAt: ws?.imageCreditsResetAt ?? null,
+    verificationCreditsUnlimited: ws?.verificationCreditsUnlimited ?? false,
+    imageCreditsUnlimited: ws?.imageCreditsUnlimited ?? false,
     creditHolder: 'workspace',
     creditHolderId: ws?.id ?? apiKeyData?.workspaceId ?? '',
   };
@@ -159,6 +165,10 @@ async function syncWorkspacePlanState(
   }
 
   const monthlyImageCredits = getMonthlyImageCredits(account.tier, billingConfig);
+  // Note what this whole block does NOT touch: imageCreditsUnlimited. It resets
+  // the counters to the plan allowance, which is correct — an unlimited
+  // workspace simply ignores those counters — and must not clear the flag,
+  // because a deliberate admin grant should outlive a billing cycle.
   if (!account.imageCreditsResetAt) {
     // Guard the write on the row still being uninitialised. A plain
     // `imageCredits: { increment }` is a read-modify-write against a snapshot
@@ -362,7 +372,7 @@ export const verifyImageGate = async (
 
   // ── 1. Tier ceiling ────────────────────────────────────────────────────────
   // A zero configured allocation disables image verification for the plan.
-  if (account.imageCreditsMonthly <= 0) {
+  if (!account.imageCreditsUnlimited && account.imageCreditsMonthly <= 0) {
     res.status(402).json({
       success: false,
       error: 'Image verification is not included in this plan.',
@@ -384,7 +394,7 @@ export const verifyImageGate = async (
   }
 
   // ── 3. Credit balance check ────────────────────────────────────────────────
-  if (account.imageCredits <= 0) {
+  if (!account.imageCreditsUnlimited && account.imageCredits <= 0) {
     res.status(402).json({
       success: false,
       error: 'Out of image credits. Top up at veritas.et/dashboard/billing',
@@ -435,6 +445,14 @@ export const verifyQuotaGate = async (
   }
 
   if (account.tier === 'BUSINESS' && billingConfig.businessUnlimitedVerifications) {
+    next();
+    return;
+  }
+
+  // Admin-granted unlimited, independent of tier: a FREE workspace can verify
+  // without limit and nothing is decremented, so there is no balance to read
+  // back as a misleading "credits remaining" number.
+  if (account.verificationCreditsUnlimited) {
     next();
     return;
   }
