@@ -17,12 +17,63 @@
 // this module never inherits the skip.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { prepareVerification } from '../services/verifyUniversal';
 import {
   checkReceiptRecipient,
   maskedAccountMatches,
   payoutAccountAllowsProvider,
   receiverNameMatches,
 } from '../utils/recipientCheck';
+
+// ─── Optional-field shape ────────────────────────────────────────────────────
+// A client building the body from nullable columns sends `suffix: null` for
+// every provider that does not use one, and Telebirr was rejected for it with
+// "suffix must be a string" — a complaint about a field the caller believed they
+// had not sent. null means "not supplied" in JSON, so it is treated as absent.
+
+test('null optional fields are treated as absent', () => {
+  const result = prepareVerification({
+    reference: 'DI10CLDXTM',
+    suffix: null,
+    phoneNumber: null,
+    provider: null,
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.plan.provider, 'TELEBIRR');
+    assert.equal(result.plan.suffix, undefined);
+  }
+});
+
+test('a null reference is still rejected, as missing rather than mistyped', () => {
+  // The required field must not slip through, but the message should point at
+  // the field the caller actually has to fix.
+  const result = prepareVerification({ reference: null });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.result.httpStatus, 400);
+    assert.match(result.result.error!, /Missing or invalid reference/);
+  }
+});
+
+test('a genuinely mistyped field names the type that arrived', () => {
+  const result = prepareVerification({ reference: 'DI10CLDXTM', suffix: 123 });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.result.error!, /suffix must be a string \(received number\)/);
+  }
+
+  const array = prepareVerification({ reference: 'DI10CLDXTM', suffix: ['1'] });
+  assert.equal(array.ok, false);
+  if (!array.ok) assert.match(array.result.error!, /received array/);
+});
+
+test('conflicting aliases are still refused', () => {
+  const result = prepareVerification({ reference: 'DI10CLDXTM', suffix: '111', accountSuffix: '222' });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.result.error!, /Conflicting suffix aliases/);
+});
 
 test('a receipt naming another account is rejected', () => {
   const result = checkReceiptRecipient({ foundAccount: '9999999999', expectedAccount: '0911223344' });

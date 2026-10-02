@@ -49,9 +49,21 @@ export function prepareVerification(input: unknown): VerificationPreparation {
   const body = input as Record<string, unknown>;
   // Legacy aliases converge here, including GET query parameters. Reject
   // conflicting aliases rather than billing/caching a different receipt.
+  //
+  // null is treated as absent. It is the ordinary JSON way of saying "not
+  // supplied" — a client building this body from nullable columns sends it
+  // routinely — and rejecting it produced "suffix must be a string" for a field
+  // the caller believed they had not mentioned at all. A required field sent as
+  // null still fails, and now fails as missing rather than as the wrong type.
   const read = (key: string, alias?: string): string | undefined => {
-    const values = [body[key], ...(alias ? [body[alias]] : [])].filter((v) => v !== undefined);
-    if (values.some((v) => typeof v !== 'string')) throw new Error(`${key} must be a string.`);
+    const values = [body[key], ...(alias ? [body[alias]] : [])]
+      .filter((v) => v !== undefined && v !== null);
+    if (values.some((v) => typeof v !== 'string')) {
+      // Name the type actually received: "must be a string" alone sends people
+      // looking for the wrong field when a number or object was the culprit.
+      const offender = values.find((v) => typeof v !== 'string');
+      throw new Error(`${key} must be a string (received ${Array.isArray(offender) ? 'array' : typeof offender}).`);
+    }
     const strings = (values as string[]).map((v) => v.trim());
     if (strings.some((v) => v !== strings[0])) throw new Error(`Conflicting ${key} aliases.`);
     return strings[0] || undefined;
