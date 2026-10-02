@@ -56,6 +56,25 @@ Unlimited grants persist across the monthly credit reset and a plan downgrade.
 To confirm afterwards, read the flags from GET /workspaces/<id>.`);
 }
 
+/**
+ * fetch with a timeout.
+ *
+ * Deliberately not AbortSignal.timeout(): that leaves a timer pending, and an
+ * explicit process.exit() after a fetch tears down a live libuv handle and
+ * asserts on Windows — "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING),
+ * file src\win\async.c". So: clear the timer in finally, and set exitCode
+ * instead of exiting.
+ */
+async function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function main() {
   let options;
   try {
@@ -63,23 +82,27 @@ async function main() {
   } catch (err) {
     console.error(err.message);
     usage();
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   if (options.help) { usage(); return; }
   if (!ADMIN_SECRET) {
     console.error('ADMIN_SECRET is not set. Nothing was sent.');
     console.error('PowerShell:  $env:ADMIN_SECRET = "..."');
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   if (options.ids.length === 0) {
     console.error('At least one workspace id is required.');
     usage();
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   if (options.revoke && !(options.verifications && options.images)) {
     console.error('--revoke cannot be combined with --verify-only or --images-only.');
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   const value = !options.revoke;
@@ -106,18 +129,18 @@ async function main() {
 
   let response;
   try {
-    response = await fetch(`${API_URL}/admin/workspaces/plan`, {
+    response = await fetchWithTimeout(`${API_URL}/admin/workspaces/plan`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-admin-key': ADMIN_SECRET,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
-    });
+    }, 30_000);
   } catch (err) {
     console.error(`Request failed: ${err.message}`);
-    process.exit(3);
+    process.exitCode = 3;
+    return;
   }
 
   let payload;
@@ -125,12 +148,14 @@ async function main() {
     payload = await response.json();
   } catch {
     console.error(`Unreadable response (HTTP ${response.status}).`);
-    process.exit(3);
+    process.exitCode = 3;
+    return;
   }
 
   if (!response.ok) {
     console.error(`HTTP ${response.status}: ${payload.error ?? 'request rejected'}`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   console.log(`\nGranted to ${payload.granted} workspace(s):`);
@@ -146,11 +171,11 @@ async function main() {
     // Exit non-zero so a script that granted several accounts cannot report
     // success while quietly skipping one.
     console.error(`\nNot found: ${payload.missing.join(', ')}`);
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
 main().catch(err => {
   console.error(err);
-  process.exit(3);
+  process.exitCode = 3;
 });

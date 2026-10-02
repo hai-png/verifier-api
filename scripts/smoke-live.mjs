@@ -60,6 +60,24 @@ const PROVIDERS = [
 // check. A 5xx or a transport error is not: that is the service breaking.
 const EXPECTED_FAILURE_STATUSES = new Set([200, 400, 404, 422, 429, 502]);
 
+/**
+ * fetch with a timeout, and a cleared timer.
+ *
+ * Not AbortSignal.timeout(): that leaves a timer pending, and this script ends
+ * by setting process.exitCode. Any explicit process.exit() after a fetch tears
+ * down a live libuv handle and asserts on Windows —
+ * "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c".
+ */
+async function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const results = [];
 
 function record(state, name, detail) {
@@ -307,12 +325,11 @@ async function checkImageValidation() {
 
   try {
     const form = new FormData();
-    const res = await fetch(`${API_URL}/verify-image`, {
+    const res = await fetchWithTimeout(`${API_URL}/verify-image`, {
       method: 'POST',
       headers: { 'x-api-key': API_KEY },
       body: form,
-      signal: AbortSignal.timeout(45_000),
-    });
+    }, 45_000);
     await res.text();
     if (res.status === 400) record('PASS', 'a missing file is rejected with 400');
     else record('FAIL', 'a missing file is rejected with 400', `got ${res.status}`);
@@ -326,12 +343,11 @@ async function checkImageValidation() {
     const form = new FormData();
     form.append('file', new Blob([TINY_PNG], { type: 'image/png' }), 'receipt.png');
     form.append('payoutAccountId', 'definitely-not-a-real-account-id');
-    const res = await fetch(`${API_URL}/verify-image`, {
+    const res = await fetchWithTimeout(`${API_URL}/verify-image`, {
       method: 'POST',
       headers: { 'x-api-key': API_KEY },
       body: form,
-      signal: AbortSignal.timeout(45_000),
-    });
+    }, 45_000);
     const text = await res.text();
     if (res.status === 404) {
       record('PASS', 'an unknown payoutAccountId is rejected with 404 before any credit is spent', text.slice(0, 90));
@@ -347,12 +363,11 @@ async function checkImageValidation() {
     try {
       const form = new FormData();
       form.append('file', new Blob([TINY_PNG], { type: 'image/png' }), 'receipt.png');
-      const res = await fetch(`${API_URL}/verify-image`, {
+      const res = await fetchWithTimeout(`${API_URL}/verify-image`, {
         method: 'POST',
         headers: { 'x-api-key': API_KEY },
         body: form,
-        signal: AbortSignal.timeout(120_000),
-      });
+      }, 120_000);
       const text = await res.text();
       // A 1x1 pixel is not a receipt, so 422 "unrecognised" is the correct answer
       // and proves the OCR path ran end to end.
@@ -375,7 +390,8 @@ async function main() {
   console.log(`Live smoke test against ${API_URL}`);
   if (!API_KEY) {
     console.error('\nSMOKE_API_KEY is required. Nothing was sent.');
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   if (/localhost|127\.0\.0\.1/.test(API_URL)) {
     console.log('\nTarget is local, so the "this is live" warning does not apply.');
@@ -417,10 +433,13 @@ async function main() {
   console.log('They do NOT prove any payment exists — nothing was verified by them.');
   if (skipped > 0) console.log(`${skipped} check(s) were skipped; see SKIP lines above.`);
 
-  process.exit(failed.length > 0 ? 1 : 0);
+  // Set exitCode rather than calling process.exit(): this run has just made live
+// HTTPS requests, and tearing down an open libuv handle mid-shutdown asserts on
+// Windows. Letting the event loop drain finishes cleanly with the same status.
+process.exitCode = failed.length > 0 ? 1 : 0;
 }
 
 main().catch(err => {
   console.error('\nSmoke run crashed:', err);
-  process.exit(3);
+  process.exitCode = 3;
 });
