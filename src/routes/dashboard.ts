@@ -13,7 +13,7 @@
  * /dashboard/webhooks     — list, create, update webhooks
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
@@ -21,6 +21,8 @@ import { requireSession } from './auth';
 import { generateApiKey } from '../middleware/apiKeyAuth';
 import { createVerificationPipeline, dashboardVerificationAccess } from '../middleware/verificationPipeline';
 import { verifyImageGate } from '../middleware/tierGate';
+import { getBillingConfig } from '../config/billingConfig';
+import { getWebhookLimit, type WorkspaceTier } from '../config/plans';
 import { rateLimiter } from '../middleware/rateLimiter';
 import { verifyImageHandler } from '../services/verifyImage';
 import {
@@ -49,6 +51,72 @@ const router = Router();
 
 // All dashboard routes require session auth
 router.use(requireSession);
+
+// ─── Privilege boundary ──────────────────────────────────────────────────────
+//
+// Membership alone was the only check on every mutating route in this file, so an
+// invited MEMBER had an owner's powers: mint API keys that keep working after
+// they are removed, redirect where payments land, register a URL the server then
+// calls on their behalf, rewrite where a buyer is redirected, and read every
+// buyer's name and email. workspaces.ts guarded one route; nothing else did.
+//
+// Enforced by method here rather than per route, so a route added later cannot
+// forget the check — which is exactly how the per-route version would have gone
+// wrong. The line is "does this change money, credentials or destinations".
+//
+// Reads stay open to every member, because support needs order history and buyer
+// details, and pushing people to share an owner's session to get that access
+// would be worse than the exposure it removes.
+// Paths relative to the workspace, since the workspace id is stripped below.
+const MEMBER_WRITE_EXEMPT = new Set(['/verify', '/verify-image']);
+
+router.use(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (req.method === 'GET' || req.method === 'HEAD') {
+        next();
+        return;
+    }
+    // Express has already stripped the mount prefix, so req.path is
+    // "/<workspaceId>/<rest>": the workspace is the FIRST segment and the route
+    // is what follows it. Getting this backwards reads the wrong id and turns
+    // every write into a 403.
+    const segments = req.path.split('/').filter(Boolean);
+    const workspaceId = segments[0];
+
+    // Verifying is the product. A member exists to use it.
+    const routePath = '/' + segments.slice(1).join('/');
+    if (MEMBER_WRITE_EXEMPT.has(routePath)) {
+        next();
+        return;
+    }
+
+    const userId = (req as any).userId as string;
+    if (!userId || !workspaceId) {
+        res.status(400).json({ success: false, error: 'A workspace id is required.' });
+        return;
+    }
+
+    try {
+        const membership = await prisma.membership.findUnique({
+            where: { userId_workspaceId: { userId, workspaceId } },
+        });
+        if (!membership) {
+            res.status(403).json({ success: false, error: 'Access denied.' });
+            return;
+        }
+        if (membership.role === 'MEMBER') {
+            res.status(403).json({
+                success: false,
+                error: 'Only a workspace owner or admin can change this. Ask an owner for access.',
+            });
+            return;
+        }
+    } catch (err) {
+        logger.error('Dashboard privilege check failed:', err);
+        res.status(500).json({ success: false, error: 'Internal server error.' });
+        return;
+    }
+    next();
+});
 
 // ─── Helper: verify workspace access ─────────────────────────────────────────
 
@@ -657,6 +725,28 @@ router.post('/:workspaceId/webhooks', async (req: Request, res: Response): Promi
         }
 
         const signingSecret = crypto.randomBytes(32).toString('hex');
+
+        // The per-workspace cap, which the dashboard route did not apply at all.
+        // With freeWebhookLimit at 0 a FREE workspace could register unlimited
+        // webhooks through the UI, each of which makes this server issue outbound
+        // HTTP with four attempts. The cap is the product's pricing decision, so
+        // it is read from the same billing config rather than hardcoded — raise
+        // freeWebhookLimit via PATCH /admin/billing-config to allow it.
+        const tier = (((req as any).apiKeyData?.workspace?.tier ?? (await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { tier: true } }))?.tier) ?? 'FREE') as WorkspaceTier;
+
+        const billingConfig = await getBillingConfig();
+        const limit = getWebhookLimit(tier, billingConfig);
+        const activeCount = await prisma.webhook.count({ where: { workspaceId, active: true } });
+        if (activeCount >= limit) {
+            res.status(400).json({
+                success: false,
+                error: limit === 0
+                    ? 'Webhooks are not included in this plan. Upgrade, or ask an administrator to raise the webhook limit.'
+                    : `Maximum of ${limit} active webhooks per workspace.`,
+                limit,
+            });
+            return;
+        }
 
         const webhook = await prisma.webhook.create({
             data: {
