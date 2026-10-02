@@ -54,6 +54,17 @@ interface ImageResult {
   payoutAccountLabel?: string
   note?: string
   forward_to?: string
+  /** Echoed back on a rejection so a failed check can be adjudicated. */
+  details?: {
+    payerName?: string | null
+    payerAccount?: string | null
+    payerPhone?: string | null
+    receiverName?: string | null
+    receiverAccount?: string | null
+    amount?: number | null
+    date?: string | null
+    reference?: string | null
+  }
 }
 
 const RECIPIENT_REASON_COPY: Record<string, string> = {
@@ -417,6 +428,33 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
               <CardDescription>
                 {RECIPIENT_REASON_COPY[imageResult.reason] ?? imageResult.error}
               </CardDescription>
+            )}
+            {/* A rejection with no extracted fields is a dead end: you cannot tell
+                a receipt that prints no account from one the OCR misread. */}
+            {imageResult.reason && imageResult.details && (
+              <div className="rounded-md border border-border p-3 text-sm">
+                <p className="font-medium mb-1">What was read from the receipt</p>
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                  {imageResult.details.amount != null && (
+                    <><dt className="text-muted-foreground">Amount</dt><dd>{imageResult.details.amount} ETB</dd></>
+                  )}
+                  {imageResult.details.reference && (
+                    <><dt className="text-muted-foreground">Reference</dt><dd className="break-all">{imageResult.details.reference}</dd></>
+                  )}
+                  {imageResult.details.receiverName && (
+                    <><dt className="text-muted-foreground">Receiver</dt><dd>{imageResult.details.receiverName}</dd></>
+                  )}
+                  {imageResult.details.receiverAccount && (
+                    <><dt className="text-muted-foreground">Receiver account</dt><dd className="break-all">{imageResult.details.receiverAccount}</dd></>
+                  )}
+                  {imageResult.details.payerName && (
+                    <><dt className="text-muted-foreground">Payer</dt><dd>{imageResult.details.payerName}</dd></>
+                  )}
+                  {imageResult.details.date && (
+                    <><dt className="text-muted-foreground">Date</dt><dd>{imageResult.details.date}</dd></>
+                  )}
+                </dl>
+              </div>
             )}
             {!imageResult.reason && !imageResult.verified && imageResult.error && (
               <CardDescription>{imageResult.error}</CardDescription>

@@ -115,6 +115,12 @@ function extractCreditedAccount(data: unknown): string | null {
  * A mismatch does not refund the credit: the OCR ran and the answer is
  * definitive, so the merchant got what they paid for. Refunds stay reserved for
  * the case where we could not produce an answer at all.
+ *
+ * `details` is echoed back on failure. Without it a RECIPIENT_UNREADABLE is
+ * indistinguishable from a receipt that genuinely has no account printed on it:
+ * both look like "no account", and the operator cannot tell whether the receipt
+ * is at fault or the OCR is. The extracted amount, names and reference are what
+ * make that call.
  */
 function enforceRecipient(params: {
     res: Response;
@@ -122,8 +128,9 @@ function enforceRecipient(params: {
     providerType: string;
     foundAccount: string | null;
     useCbeAccountRule?: boolean;
+    details?: Record<string, unknown>;
 }): boolean {
-    const { res, payoutAccount, providerType, foundAccount, useCbeAccountRule = false } = params;
+    const { res, payoutAccount, providerType, foundAccount, useCbeAccountRule = false, details } = params;
     if (!payoutAccount) return true;
 
     const outcome = checkReceiptRecipient({
@@ -146,6 +153,7 @@ function enforceRecipient(params: {
         type: providerType,
         expectedAccount: outcome.expectedAccount,
         foundAccount: outcome.foundAccount,
+        ...(details ? { details } : {}),
     });
     return false;
 }
@@ -286,26 +294,26 @@ Recognized providers:
 1. **Telebirr** (Ethio Telecom) — green receipt, 10-char alphanumeric reference. Extract transaction_number.
 2. **CBE** (Commercial Bank of Ethiopia) — purple header, reference starts with 'FT'. Extract transaction_id (FTxxxx) + account_suffix (8 digits for legacy, or token for new format).
 3. **CBE Birr** — mobile money receipt, 10-char alphanumeric + phone number. Extract transaction_number + payer_phone (251xxxxxxxxx).
-4. **Dashen Bank** — 16-char reference starting with 3 digits. Extract transaction_id.
-5. **Bank of Abyssinia** — 12-char reference starting with 'FT' + 5-digit suffix. Extract transaction_id + account_suffix.
-6. **Awash Bank** — receipt from awashpay.awashbank.com. Extract transaction_id.
-7. **Zemen Bank** — receipt from share.zemenbank.com. Extract transaction_id.
-8. **M-Pesa** (Safaricom ET) — receipt from m-pesabusiness.safaricom.et. Extract transaction_id.
-9. **Cooperative Bank of Oromia** — receipt from CoopApp or coopbankoromia.com.et. Extract transaction_id + payer_name + amount + date.
-10. **Oromia Bank** — receipt from oromiabank.com.et. Extract transaction_id + payer_name + amount + date.
-11. **Hijra Bank** (formerly ZamZam) — receipt from hijrabank.com. Extract transaction_id + payer_name + amount + date.
-12. **Amhara Bank** — receipt from amharabank.com.et. Extract transaction_id + payer_name + amount + date.
-13. **Wegagen Bank** — receipt from wegagenbank.com.et. Extract transaction_id + payer_name + amount + date.
-14. **Berhan Bank** — receipt from berhanbank.com. Extract transaction_id + payer_name + amount + date.
-15. **Abay Bank** — receipt from abaybank.com. Extract transaction_id + payer_name + amount + date.
-16. **Lion Bank** — receipt from lionbank.com.et. Extract transaction_id + payer_name + amount + date.
-17. **Bunna Bank** — receipt from bunnabank.com. Extract transaction_id + payer_name + amount + date.
-18. **Enat Bank** — receipt from enatbank.com.et. Extract transaction_id + payer_name + amount + date.
-19. **Gadaa Bank** — receipt from gadaabank.com. Extract transaction_id + payer_name + amount + date.
-20. **Tsehay Bank** — receipt from tsehaybank.com. Extract transaction_id + payer_name + amount + date.
-21. **Orbit Bank** — receipt from orbitbank.com.et. Extract transaction_id + payer_name + amount + date.
-22. **Shabelle Bank** — receipt from shabellebank.com. Extract transaction_id + payer_name + amount + date.
-23. **Sinqee Bank** — receipt from sinqeebank.com. Extract transaction_id + payer_name + amount + date.
+4. **Dashen Bank** — 16-char reference starting with 3 digits. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+5. **Bank of Abyssinia** — 12-char reference starting with 'FT' + 5-digit suffix. Extract transaction_id + account_suffix + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+6. **Awash Bank** — receipt from awashpay.awashbank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+7. **Zemen Bank** — receipt from share.zemenbank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+8. **M-Pesa** (Safaricom ET) — receipt from m-pesabusiness.safaricom.et. Extract transaction_id + payer_name + payer_phone + receiver_name + receiver_account + amount + date.
+9. **Cooperative Bank of Oromia** — receipt from CoopApp or coopbankoromia.com.et. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+10. **Oromia Bank** — receipt from oromiabank.com.et. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+11. **Hijra Bank** (formerly ZamZam) — receipt from hijrabank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+12. **Amhara Bank** — receipt from amharabank.com.et. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+13. **Wegagen Bank** — receipt from wegagenbank.com.et. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+14. **Berhan Bank** — receipt from berhanbank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+15. **Abay Bank** — receipt from abaybank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+16. **Lion Bank** — receipt from lionbank.com.et. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+17. **Bunna Bank** — receipt from bunnabank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+18. **Enat Bank** — receipt from enatbank.com.et. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+19. **Gadaa Bank** — receipt from gadaabank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+20. **Tsehay Bank** — receipt from tsehaybank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+21. **Orbit Bank** — receipt from orbitbank.com.et. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+22. **Shabelle Bank** — receipt from shabellebank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
+23. **Sinqee Bank** — receipt from sinqeebank.com. Extract transaction_id + payer_name + payer_account + receiver_name + receiver_account + amount + date.
 
 Rules:
 - Identify the bank/provider from the receipt header, logo, URL, or text content.
@@ -487,6 +495,20 @@ Return this JSON format exactly, with no extra prose:
             ];
 
             if (ocrVerifiedTypes.includes(result.type)) {
+                // Built once and reused by both outcomes, so a rejected receipt
+                // reports exactly the fields a successful one would have.
+                const ocrDetails = {
+                    payerName: result.payer_name,
+                    payerAccount: result.payer_account,
+                    payerPhone: result.payer_phone,
+                    receiverName: result.receiver_name,
+                    receiverAccount: result.receiver_account,
+                    amount: result.amount,
+                    date: result.date,
+                    reference: result.reference || result.transaction_id || result.transaction_number,
+                    paymentReason: result.payment_reason,
+                };
+
                 // A payout account is optional, but when one is supplied the
                 // platform can finally enforce what the note below used to
                 // delegate to the caller. Reject up front if this account cannot
@@ -502,6 +524,7 @@ Return this JSON format exactly, with no extra prose:
                         error: `The selected payout account does not accept ${result.type} payments. Choose an account that accepts this provider, or omit the account.`,
                         reason: 'PROVIDER_NOT_ALLOWED',
                         type: result.type,
+                        details: ocrDetails,
                     });
                     return;
                 }
@@ -512,6 +535,7 @@ Return this JSON format exactly, with no extra prose:
                     providerType: result.type,
                     foundAccount: result.receiver_account,
                     useCbeAccountRule: normaliseProviderForPayout(result.type) === 'cbe',
+                    details: ocrDetails,
                 })) {
                     return;
                 }
@@ -520,17 +544,7 @@ Return this JSON format exactly, with no extra prose:
                     verified: true,
                     type: result.type,
                     reference: result.transaction_id || result.transaction_number || result.reference,
-                    details: {
-                        payerName: result.payer_name,
-                        payerAccount: result.payer_account,
-                        payerPhone: result.payer_phone,
-                        receiverName: result.receiver_name,
-                        receiverAccount: result.receiver_account,
-                        amount: result.amount,
-                        date: result.date,
-                        reference: result.reference || result.transaction_id || result.transaction_number,
-                        paymentReason: result.payment_reason,
-                    },
+                    details: ocrDetails,
                     // Only meaningful when no payout account was supplied, which is
                     // the one case where the platform cannot check it.
                     note: payoutAccount
