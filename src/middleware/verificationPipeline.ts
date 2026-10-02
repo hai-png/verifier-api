@@ -2,7 +2,8 @@ import { RequestHandler } from 'express';
 import { performance } from 'perf_hooks';
 import { prepareVerification, executeVerification, SmartVerifyResult, VerificationPlan } from '../services/verifyUniversal';
 import { verificationResultCache } from './verifyResultCache';
-import { applyRecipientCheck, resolveRecipientPayoutAccount } from '../utils/verifyRecipient';
+import { applyRecipientCheck, providerSlug, resolveRecipientPayoutAccount } from '../utils/verifyRecipient';
+import { checkAmount, noteSuccessfulVerification } from '../utils/verificationGuards';
 import { rateLimiter } from './rateLimiter';
 import { permissionGate, verifyQuotaGate } from './tierGate';
 import { verifyWebhookHook } from './verifyWebhookHook';
@@ -110,6 +111,12 @@ export function createVerificationPipeline(options: PipelineOptions = {}, overri
     res.locals.requestedPayoutAccountId = typeof requestedPayoutAccountId === 'string' && requestedPayoutAccountId.trim() !== ''
       ? requestedPayoutAccountId.trim()
       : null;
+    // Opt-in for the same reason: an absent expectedAmount means no amount check,
+    // and a silent pass would read as a verified one.
+    const expectedAmount = input && typeof input === 'object' && !Array.isArray(input)
+      ? (input as Record<string, unknown>).expectedAmount
+      : undefined;
+    res.locals.expectedAmount = expectedAmount;
     // Existing quota/webhook middleware consumes reference, including legacy
     // receiptNumber and GET callers. It now always sees normalized fields.
     req.body = { reference: prepared.plan.reference, suffix: prepared.plan.suffix, phoneNumber: prepared.plan.phoneNumber };
@@ -128,17 +135,57 @@ export function createVerificationPipeline(options: PipelineOptions = {}, overri
 
       // Applied after the cache so a receipt already verified for one customer
       // can be re-checked against another account without a second provider call.
-      const providerSlug = (options.provider ?? outcome.result.provider ?? '').toString();
+      const rawProvider = (options.provider ?? outcome.result.provider ?? '').toString();
+      const slug = providerSlug(rawProvider);
       const payoutAccount = await resolveRecipientPayoutAccount(req, res.locals.requestedPayoutAccountId);
-      const checked = applyRecipientCheck({
+      let result = applyRecipientCheck({
         result: outcome.result as unknown as Record<string, unknown>,
         payoutAccount,
-        provider: providerSlug,
-      });
-      res.locals.verificationResult = checked.result as unknown as typeof outcome.result;
-      if (checked.checked) res.locals.recipientChecked = true;
+        provider: slug,
+      }).result;
 
-      const response = verificationResponse(checked.result as unknown as typeof outcome.result, options.envelope ?? 'universal', options.provider);
+      // Then the amount, then the replay flag. That order matters: a receipt that
+      // failed the recipient or amount check was never accepted, so it must not
+      // be recorded as something this workspace has already seen.
+      const amount = checkAmount({
+        result,
+        expectedAmount: res.locals.expectedAmount,
+        provider: slug,
+      });
+      if (amount.checked) {
+        result = amount.ok
+          ? { ...result, amountChecked: true, verifiedAmount: amount.foundAmount }
+          : {
+              ...result,
+              success: false,
+              verified: false,
+              reason: amount.reason,
+              error: amount.error,
+              amountChecked: false,
+              expectedAmount: amount.expectedAmount,
+              verifiedAmount: amount.foundAmount,
+            };
+      }
+
+      if (result.success === true) {
+        const replay = await noteSuccessfulVerification({
+          workspaceId: tenant,
+          provider: slug,
+          reference: res.locals.verificationPlan.reference,
+          amount: amount.foundAmount ?? null,
+        });
+        if (replay.replayed) {
+          result = {
+            ...result,
+            replayed: true,
+            firstVerifiedAt: replay.firstSeenAt?.toISOString(),
+            timesSeen: replay.seenCount,
+          };
+        }
+      }
+
+      res.locals.verificationResult = result as unknown as typeof outcome.result;
+      const response = verificationResponse(result as unknown as typeof outcome.result, options.envelope ?? 'universal', options.provider);
       res.status(response.status).json(response.body);
     } catch (error) { next(error); }
   };

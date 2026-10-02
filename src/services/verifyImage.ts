@@ -10,6 +10,7 @@ import {
     checkReceiptRecipient,
     payoutAccountAllowsProvider,
 } from "../utils/recipientCheck";
+import { checkAmount } from "../utils/verificationGuards";
 
 dotenv.config();
 
@@ -141,6 +142,31 @@ function extractCreditedName(data: unknown): string | null {
  * is at fault or the OCR is. The extracted amount, names and reference are what
  * make that call.
  */
+// Amount arrives from the OCR, and a receipt can be reused: the same payer,
+// receiver and amount twice. Both guards apply here for the same reason and in
+// the same order as the reference path.
+async function enforceAmount(params: {
+    res: Response;
+    result: Record<string, unknown>;
+    providerType: string;
+    expectedAmount: unknown;
+}): Promise<boolean> {
+    const { res, result, providerType, expectedAmount } = params;
+    const outcome = checkAmount({ result: { success: true, data: result }, expectedAmount, provider: providerType });
+    if (!outcome.checked || outcome.ok) return true;
+
+    logger.warn('Image verification amount check failed', { providerType, reason: outcome.reason });
+    res.status(422).json({
+        verified: false,
+        error: outcome.error,
+        reason: outcome.reason,
+        type: providerType,
+        expectedAmount: outcome.expectedAmount,
+        foundAmount: outcome.foundAmount,
+    });
+    return false;
+}
+
 function enforceRecipient(params: {
     res: Response;
     payoutAccount: PayoutAccountLike | null;
@@ -560,6 +586,15 @@ Return this JSON format exactly, with no extra prose:
                     foundAccount: result.receiver_account,
                     foundName: result.receiver_name,
                     details: ocrDetails,
+                })) {
+                    return;
+                }
+
+                if (!await enforceAmount({
+                    res,
+                    result: ocrDetails,
+                    providerType: result.type,
+                    expectedAmount: req.body?.expectedAmount,
                 })) {
                     return;
                 }

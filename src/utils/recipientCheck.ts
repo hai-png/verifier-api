@@ -1,4 +1,4 @@
-import { accountMatches, cbeAccountMatches } from './paymentMatch';
+import { accountMatches, cbeAccountMatches, normalisePhone } from './paymentMatch';
 
 /**
  * Enforcing "this receipt was paid into MY account" on a receipt image.
@@ -87,19 +87,43 @@ function stripSeparators(value: string): string {
  * This is deliberately weaker than a full comparison, because the bank chose to
  * hide those digits. It is still far better than comparing names alone.
  */
+/**
+ * The notations the same Ethiopian phone number is written in.
+ *
+ * A Telebirr receipt prints the international form ("2519****2230"); a payout
+ * account is usually stored local ("0906422230"), though isValidPhone accepts
+ * either. Comparing raw digit strings therefore rejected correct receipts — the
+ * leading 2519 matched nothing in a 0906… target. Every equivalent spelling is
+ * tried instead, which is notation equivalence rather than a looser match: all of
+ * these are the same number.
+ */
+function phoneNotations(value: string): string[] {
+    const digits = stripSeparators(value).replace(/\D/g, '');
+    const forms = new Set<string>();
+    if (digits) forms.add(digits);
+
+    const international = normalisePhone(value);
+    if (international && international !== digits) forms.add(international);
+
+    // 251 + 9 digits back to the local form, when it is one.
+    if (/^251[97]\d{8}$/.test(international)) {
+        const local = `0${international.slice(3)}`;
+        if (local !== digits && local !== international) forms.add(local);
+    }
+    return [...forms];
+}
+
 export function maskedAccountMatches(found: string, expected: string): boolean {
     const runs = found.match(/\d+/g);
     if (!runs || runs.length === 0) return false;
-    const target = stripSeparators(expected).replace(/\D/g, '');
-    if (target === '') return false;
 
-    if (runs.length >= 2) {
-        const prefix = runs[0];
-        const suffix = runs[runs.length - 1];
-        return target.startsWith(prefix) && target.endsWith(suffix);
-    }
-    const only = runs[0];
-    return target.startsWith(only) || target.endsWith(only);
+    return phoneNotations(expected).some((target) => {
+        if (target === '') return false;
+        if (runs.length >= 2) {
+            return target.startsWith(runs[0]) && target.endsWith(runs[runs.length - 1]);
+        }
+        return target.startsWith(runs[0]) || target.endsWith(runs[0]);
+    });
 }
 
 /**

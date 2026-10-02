@@ -31,6 +31,11 @@ interface VerifyResult {
   expectedAccount?: string
   recipientChecked?: boolean
   amountChecked?: boolean
+  expectedAmount?: number
+  verifiedAmount?: number | null
+  replayed?: boolean
+  firstVerifiedAt?: string
+  timesSeen?: number
   matchedOn?: string
   payoutAccountId?: string
   payoutAccountLabel?: string
@@ -56,8 +61,13 @@ interface ImageResult {
   reason?: string
   expectedAccount?: string
   foundAccount?: string | null
+  expectedAmount?: number
+  foundAmount?: number | null
   recipientChecked?: boolean
   amountChecked?: boolean
+  replayed?: boolean
+  firstVerifiedAt?: string
+  timesSeen?: number
   payoutAccountId?: string
   payoutAccountLabel?: string
   note?: string
@@ -132,6 +142,40 @@ function PayoutSelect({
   )
 }
 
+/**
+ * Opt-in: leaving it blank checks nothing, which is reported as
+ * amountChecked:false rather than passing silently.
+ */
+function AmountField({
+  id,
+  value,
+  onChange,
+}: {
+  id: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>Expected amount (Birr)</Label>
+      <Input
+        id={id}
+        type="number"
+        inputMode="decimal"
+        min="0"
+        step="0.01"
+        value={value}
+        onChange={event => onChange(event.target.value)}
+        placeholder="Leave blank to skip the amount check"
+      />
+      <p className="text-xs text-muted-foreground">
+        With an amount set, a receipt for a different figure is refused. Providers that do not
+        report one (M-Pesa, Awash, Zemen) are refused as unverifiable rather than assumed.
+      </p>
+    </div>
+  )
+}
+
 export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
   const [provider, setProvider] = useState("auto")
   const [reference, setReference] = useState("")
@@ -148,6 +192,7 @@ export default function VerifyForm({ workspaceId, token }: VerifyFormProps) {
   const [autoVerify, setAutoVerify] = useState(true)
   const [payouts, setPayouts] = useState<PayoutOption[]>([])
 const [payoutAccountId, setPayoutAccountId] = useState("")
+const [expectedAmount, setExpectedAmount] = useState("")
 const [imageResult, setImageResult] = useState<ImageResult | null>(null)
 
   const selectedProvider = VERIFICATION_PROVIDERS.find(item => item.id === provider)
@@ -200,6 +245,7 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
       body.append("file", file)
       if (payoutAccountId) body.append("payoutAccountId", payoutAccountId)
       if (suffix.trim()) body.append("suffix", suffix.trim())
+      if (expectedAmount.trim()) body.append("expectedAmount", expectedAmount.trim())
 
       const response = await fetch(
         `${API_BASE}/dashboard/${workspaceId}/verify-image?autoVerify=${autoVerify ? "true" : "false"}`,
@@ -241,6 +287,8 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
           suffix: showSuffix ? suffix.trim() || undefined : undefined,
           phoneNumber: showPhone ? phoneNumber.trim() || undefined : undefined,
           payoutAccountId: payoutAccountId || undefined,
+
+          expectedAmount: expectedAmount ? Number(expectedAmount) : undefined,
         }),
       })
       const body = (await response.json()) as VerifyResult
@@ -358,6 +406,8 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
               onChange={setPayoutAccountId}
             />
 
+            <AmountField id="verify-amount" value={expectedAmount} onChange={setExpectedAmount} />
+
             {error && (
               <div className="flex items-center gap-2 text-sm text-destructive">
                 <AlertCircle className="w-4 h-4" />
@@ -401,6 +451,8 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
               value={payoutAccountId}
               onChange={setPayoutAccountId}
             />
+
+            <AmountField id="verify-image-amount" value={expectedAmount} onChange={setExpectedAmount} />
 
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -532,6 +584,11 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
               {result.recipientChecked && result.success && (
                 <Badge variant="outline" className="border-amber-500 text-amber-600">amount not checked</Badge>
               )}
+              {result.replayed && (
+                <Badge variant="outline" className="border-amber-500 text-amber-600">
+                  seen {result.timesSeen ?? 2}× before
+                </Badge>
+              )}
             </CardTitle>
             {measurement && (
               <div className="text-sm text-muted-foreground" aria-live="polite">
@@ -545,6 +602,14 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
                   </details>
                 )}
               </div>
+            )}
+            {result.replayed && (
+              <p className="text-sm text-amber-600">
+                This receipt has been verified here before
+                {result.firstVerifiedAt ? ` (first on ${new Date(result.firstVerifiedAt).toLocaleString()})` : ""}.
+                That may be a legitimate re-check, or the same receipt being reused. Confirm before
+                issuing anything.
+              </p>
             )}
             {!result.success && result.error && (
               <CardDescription>

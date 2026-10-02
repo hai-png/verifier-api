@@ -91,8 +91,14 @@ model Workspace {
     // It also means the credits are not merely set very high — the gates and the
     // decrements are skipped outright, so there is no counter to exhaust and no
     // balance left to read as a real number in an API response.
-    verificationCreditsUnlimited Boolean @default(false)
+        verificationCreditsUnlimited Boolean @default(false)
     imageCreditsUnlimited        Boolean @default(false)
+
+    // Every verification this workspace has been shown, so a receipt that has
+    // already been used can be recognised when it comes round again. The result
+    // cache cannot do this: it is in memory, expires in 60s, and is not shared
+    // across instances.
+    verifiedTransactions VerifiedTransaction[]
 
     memberships          Membership[]
     invitations          Invitation[]
@@ -565,6 +571,32 @@ enum BetaAccessRequestStatus {
 enum AnnouncementSurface {
     LANDING
     DASHBOARD
+}
+
+// One row per (workspace, provider, reference) this workspace has been shown a
+// successful verification for.
+//
+// A receipt can be replayed: the same payer, receiver and amount arriving twice.
+// Neither the recipient check nor the amount check can tell that apart from a
+// legitimate second look-up — support re-checking after a customer query looks
+// identical — so the fact is recorded and reported rather than refused. A caller
+// that is about to grant something can refuse a repeat itself.
+//
+// firstSeenAt is never moved, so it stays the moment the receipt was first
+// accepted. seenCount and lastSeenAt are diagnostics.
+model VerifiedTransaction {
+    id          String    @id @default(cuid())
+    workspaceId String
+    workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+    provider    String
+    reference   String
+    amount      Float?
+    firstSeenAt DateTime  @default(now())
+    lastSeenAt  DateTime  @default(now())
+    seenCount   Int       @default(1)
+
+    @@unique([workspaceId, provider, reference])
+    @@index([workspaceId, lastSeenAt])
 }
 
 enum AnnouncementPlacement {
