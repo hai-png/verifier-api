@@ -14,7 +14,17 @@ import { Prisma } from '@prisma/client';
 import { resolveAppUrl } from '../config/appUrl';
 import { Router, Request, Response, NextFunction } from 'express';
 import { runSmartVerify } from '../services/verifyUniversal';
-import { accountMatches, cbeAccountMatches, extractPaymentDetails, maskCbeAccount } from '../utils/paymentMatch';
+import { extractPaymentDetails, extractPayerAccount, maskCbeAccount, payerMatches } from '../utils/paymentMatch';
+import { checkReceiptRecipient } from '../utils/recipientCheck';
+import { creditedPartyFromData } from '../utils/verifyRecipient';
+import {
+  isEnumValue,
+  isValidPaymentAmount,
+  isWithinByteLimit,
+  MAX_PAYMENT_AMOUNT_ETB,
+  MIN_PAYMENT_AMOUNT_ETB,
+  MYSQL_VARCHAR_BYTES,
+} from '../utils/fieldLimits';
 import { sendBuyerPurchaseEmail } from '../utils/purchaseEmail';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
@@ -137,6 +147,9 @@ function normaliseBuyerEmail(value: unknown): string | null | 'invalid' {
 
   const trimmed = value.trim().toLowerCase();
   if (!trimmed) return null;
+  // Order.buyerEmail is a VARCHAR(191); longer is a 500 from the driver, and this
+  // is an unauthenticated endpoint.
+  if (!isWithinByteLimit(trimmed)) return 'invalid';
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed) ? trimmed : 'invalid';
 }
 
@@ -144,7 +157,8 @@ function normaliseBuyerName(value: unknown): string | null | 'invalid' {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string') return 'invalid';
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : 'invalid';
+  if (trimmed.length === 0) return 'invalid';
+  return isWithinByteLimit(trimmed) ? trimmed : 'invalid';
 }
 
 function normaliseBuyerPhone(value: unknown): string | null | 'invalid' {
@@ -159,10 +173,19 @@ async function findOrderByReferenceCaseInsensitive(reference: string): Promise<{
   id: string;
   paymentLinkId: string;
 } | null> {
+  // Sargable on purpose. `Order.reference` is @unique, so an index exists — but
+  // wrapping the column in UPPER() makes the predicate non-sargable and MySQL/TiDB
+  // full-scans the whole Order table. This runs on the unauthenticated confirm
+  // endpoint, which is the hottest public route in the service, and Order grows
+  // without bound.
+  //
+  // The lookup is exact rather than case-insensitive because every writer already
+  // stores it uppercased through normaliseOrderReference(). The unique index
+  // therefore both matches and enforces the case the code expects.
   const rows = await prisma.$queryRaw<Array<{ id: string; paymentLinkId: string }>>`
     SELECT id, paymentLinkId
     FROM \`Order\`
-    WHERE UPPER(reference) = UPPER(${reference})
+    WHERE reference = ${normaliseOrderReference(reference)}
     LIMIT 1
   `;
 
@@ -300,10 +323,26 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   };
 
   const hasProduct = typeof productId === 'string' && productId.trim() !== '';
-  const hasCustomAmount = typeof customAmount === 'number' && Number.isFinite(customAmount) && customAmount > 0;
+  // Bounded, not just `> 0`. The confirm path compares with a bare `<` and no
+  // epsilon, so a link priced at 1e-300 was satisfied by any positive payment,
+  // and 1e400 parses to Infinity and passed the old check.
+  const hasCustomAmount = isValidPaymentAmount(customAmount);
 
   if (hasProduct === hasCustomAmount) {
     res.status(400).json({ success: false, error: 'Provide exactly one of productId or customAmount.' });
+    return;
+  }
+
+  if (customAmount !== undefined && !hasCustomAmount) {
+    res.status(400).json({
+      success: false,
+      error: `customAmount must be a finite number between ${MIN_PAYMENT_AMOUNT_ETB} and ${MAX_PAYMENT_AMOUNT_ETB}.`,
+    });
+    return;
+  }
+
+  if (name !== undefined && !isWithinByteLimit(name)) {
+    res.status(400).json({ success: false, error: `name must be at most ${MYSQL_VARCHAR_BYTES} bytes.` });
     return;
   }
 
@@ -632,6 +671,22 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  if (status !== undefined && !isEnumValue(['ACTIVE', 'INACTIVE'], status)) {
+    res.status(400).json({ success: false, error: "status must be either 'ACTIVE' or 'INACTIVE'." });
+    return;
+  }
+  if (typeof name === 'string' && !isWithinByteLimit(name)) {
+    res.status(400).json({ success: false, error: `name must be at most ${MYSQL_VARCHAR_BYTES} bytes.` });
+    return;
+  }
+  if (customAmount !== undefined && !isValidPaymentAmount(customAmount)) {
+    res.status(400).json({
+      success: false,
+      error: `customAmount must be a finite number between ${MIN_PAYMENT_AMOUNT_ETB} and ${MAX_PAYMENT_AMOUNT_ETB}.`,
+    });
+    return;
+  }
+
   if (existing.isDefaultForProduct && status === 'INACTIVE') {
     res.status(400).json({ success: false, error: 'The default product payment link cannot be deactivated.' });
     return;
@@ -642,7 +697,7 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
       where: { id: existing.id },
       data: {
         ...(existing.mode === 'CUSTOM' && typeof name === 'string' ? { name: name.trim() || existing.name } : {}),
-        ...(existing.mode === 'CUSTOM' && typeof customAmount === 'number' && customAmount > 0 ? { fixedAmount: customAmount } : {}),
+        ...(existing.mode === 'CUSTOM' && typeof customAmount === 'number' ? { fixedAmount: customAmount } : {}),
         acceptedProviders,
         redirectUrl,
         expiresAt: expiresAt as Date | null,
@@ -715,6 +770,25 @@ router.get('/:id/public', async (req: Request, res: Response): Promise<void> => 
 
     const [withStatus] = materialiseLinkStatus([paymentLink]);
 
+    // A link that is not ACTIVE has stopped selling, so this is a 409 rather than
+    // a payload the checkout page renders as still-buyable. The status was
+    // computed and returned but never acted on.
+    //
+    // `successMessage` and `deliveryUrl` are also withheld here. They are the
+    // fulfilment artefacts — the course link, the credential, the download — and
+    // a merchant who deactivates a link or lets it expire has explicitly stopped
+    // selling. They are returned by the confirm response, which is the only point
+    // at which a buyer is entitled to them, and by the authenticated
+    // recent-order route.
+    if (withStatus.status !== 'ACTIVE') {
+      res.status(409).json({
+        success: false,
+        error: 'This payment link is no longer available.',
+        status: withStatus.status,
+      });
+      return;
+    }
+
     // This route is unauthenticated, so the response is assembled field by field
     // rather than by handing the row back. It previously returned the whole
     // record, which published the merchant's full payout account number, their
@@ -742,8 +816,6 @@ router.get('/:id/public', async (req: Request, res: Response): Promise<void> => 
               description: product.description,
               imageUrl: product.imageUrl,
               price: product.price,
-              successMessage: product.successMessage,
-              deliveryUrl: product.deliveryUrl,
             }
           : null,
       },
@@ -924,6 +996,14 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
         },
       },
       payoutAccounts: {
+        // `active: true` here, and this is load-bearing. Deactivating a payout
+        // account does not disconnect it from products or links, so without the
+        // filter a merchant who retires the old number and adds a new one leaves
+        // every live link with two accounts for the same provider —
+        // pickPayoutAccountForProvider returns null for 0 or 2 matches — and every
+        // one of those links answers 422 forever on a payment the buyer already
+        // made. There is no repair path from the API.
+        where: { active: true },
         select: { id: true, label: true, accountHolderName: true, account: true, type: true, providersAllowed: true },
       },
     },
@@ -965,6 +1045,7 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
       select: {
         id: true,
         workspaceId: true,
+        paymentLinkId: true,
         buyerName: true,
         buyerEmail: true,
         buyerPhone: true,
@@ -976,7 +1057,14 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
     });
 
     const belongsToCurrentBuyer =
+      // Same link, not merely same workspace. Gating on the workspace plus a
+      // known email address let anyone holding a leaked reference *and* a leaked
+      // email read another tenant's order — buyer name, phone, amount, reference —
+      // from an unauthenticated endpoint. The buyer's own receipt is still
+      // returned for the link they actually paid through, which is the only case
+      // the checkout page uses it for.
       duplicateOrder?.workspaceId === paymentLink.workspaceId &&
+      duplicateOrder.paymentLinkId === paymentLink.id &&
       typeof duplicateOrder.buyerEmail === 'string' &&
       duplicateOrder.buyerEmail.trim().toLowerCase() === normalizedBuyerEmail;
 
@@ -1077,17 +1165,36 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
     });
     return;
   }
-  const recipientMatches =
-    trimmedProvider === 'cbe'
-      ? cbeAccountMatches(verifiedAccount, payoutAccount.account)
-      : accountMatches(verifiedAccount, payoutAccount.account);
 
-  if (!recipientMatches) {
+  // The recipient check, fail-closed.
+  //
+  // This used to be `cbeAccountMatches(...)` or `accountMatches(...)`, both of
+  // which return true for a null verified account. For Dashen that is not an
+  // edge case: Dashen's API returns a receiver *name* and no account number at
+  // all, so the branch was unconditionally true and every Dashen confirmation
+  // credited an order for a payment into any account in the country.
+  //
+  // checkReceiptRecipient() is the same function the reference-verification path
+  // uses. It cascades through the evidence a receipt can actually carry —
+  // full account, masked account, receiver name — and refuses with
+  // RECIPIENT_NOT_VERIFIABLE when the receipt names nobody, which is the correct
+  // answer for a receipt that cannot be attributed.
+  const recipientOutcome = checkReceiptRecipient({
+    foundAccount: verifiedAccount,
+    foundName: creditedPartyFromData(verifyResult.data, trimmedProvider).name,
+    expectedAccount: payoutAccount.account,
+    expectedHolderName: payoutAccount.accountHolderName,
+    useCbeAccountRule: trimmedProvider === 'cbe',
+  });
+
+  if (!recipientOutcome.ok) {
     const verifiedRecord = verifyResult.data as Record<string, unknown> | undefined;
     logger.warn('payment-link confirm recipient mismatch', {
       paymentLinkId: paymentLink.id,
       provider: trimmedProvider,
       reference: trimmedReference,
+      reason: recipientOutcome.reason,
+      matchedOn: recipientOutcome.matchedOn,
       verifiedAmount,
       expectedAmount: paymentLink.fixedAmount,
       verifiedAccount,
@@ -1102,61 +1209,113 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
 
     res.status(422).json({
       success: false,
-      error: 'The payment was not sent to the expected payout account.',
+      error: recipientOutcome.error ?? 'The payment was not sent to the expected payout account.',
+      reason: recipientOutcome.reason,
     });
     return;
   }
 
-  // Claim the slot with a single conditional UPDATE. The capacity test lives
-  // inside the WHERE clause, so the database decides the winner — the loser gets
-  // count 0 and is told it is sold out. Placed here, after verification
-  // succeeds, so a buyer who fails verification never consumes a slot and the
-  // release path below is the only compensation needed.
-  const productId = paymentLink.productId;
-  const maxBuyers = linkedProduct?.maxBuyers ?? null;
-  if (productId && maxBuyers !== null) {
-    const claim = await prisma.product.updateMany({
-      where: { id: productId, soldCount: { lt: maxBuyers } },
-      data: { soldCount: { increment: 1 } },
-    });
-    if (claim.count === 0) {
-      res.status(409).json({
+  // ── Payer binding ──────────────────────────────────────────────────────────
+  //
+  // Everything above proves a payment into this merchant's account for this
+  // reference. Nothing proved that the caller is the person who made it. The
+  // reference alone is the only thing standing between a buyer and anyone who
+  // saw it — a screenshot, a shared thread, a Referer header, browser history —
+  // and that caller could name any `buyerEmail`, which is where the delivery
+  // link and success message are sent.
+  //
+  // The provider always knows who paid. So when the caller supplies a
+  // `buyerPhone`, it must be the number the receipt says sent the money. This
+  // is the field that makes the reference useless to a third party.
+  //
+  // cbebirr and dashen do not report a payer, so no comparison is possible there
+  // and the check is skipped rather than faked — those two are covered by the
+  // recipient check above. Logged when it happens so the gap is visible.
+  const payerAccount = extractPayerAccount(verifyResult.data, trimmedProvider);
+  if (payerAccount) {
+    if (!normalizedBuyerPhone) {
+      res.status(422).json({
         success: false,
-        code: 'SOLD_OUT',
-        error: 'Sold out. Another buyer completed this purchase a moment ago.',
+        error: 'buyerPhone is required so we can confirm the payment was made by you. ' +
+          'Enter the phone number that sent this payment.',
+        reason: 'BUYER_PHONE_REQUIRED',
       });
       return;
     }
+    if (!payerMatches(normalizedBuyerPhone, payerAccount)) {
+      logger.warn('payment-link confirm payer mismatch', {
+        paymentLinkId: paymentLink.id,
+        provider: trimmedProvider,
+        reference: trimmedReference,
+      });
+      res.status(422).json({
+        success: false,
+        error: 'The phone number you entered is not the number that made this payment.',
+        reason: 'BUYER_PHONE_MISMATCH',
+      });
+      return;
+    }
+  } else {
+    logger.info('payment-link confirm cannot bind the payer for this provider', {
+      paymentLinkId: paymentLink.id,
+      provider: trimmedProvider,
+    });
   }
 
-  let order: Awaited<ReturnType<typeof prisma.order.create>>;
+  // Claim the slot and create the order in ONE transaction.
+  //
+  // The capacity test lives inside the WHERE clause of a single conditional
+  // UPDATE, so the database decides the winner — the loser gets count 0 and is
+  // told it is sold out. That part was always right. What was wrong is that the
+  // claim and the insert were separate statements with a compensating
+  // decrement: a process kill or a dropped connection between them left
+  // `soldCount` permanently inflated, and the compensation itself was only
+  // logged on failure, so a product silently lost stock it still had. Wrapping
+  // both in one transaction means the database rolls the claim back itself.
+  //
+  // Placed after verification succeeds, so a buyer who fails verification never
+  // consumes a slot at all.
+  const productId = paymentLink.productId;
+  const maxBuyers = linkedProduct?.maxBuyers ?? null;
+  const orderData = {
+    paymentLinkId: paymentLink.id,
+    productId: paymentLink.productId,
+    workspaceId: paymentLink.workspaceId,
+    buyerName: normalizedBuyerName,
+    buyerPhone: normalizedBuyerPhone,
+    buyerEmail: normalizedBuyerEmail,
+    reference: normalizedReference,
+    provider: trimmedProvider,
+    amountPaid: verifiedAmount,
+    payoutAccount: payoutAccount.account,
+    status: 'PAID' as const,
+  };
+
+  let order: Awaited<ReturnType<typeof prisma.order.create>> | null;
   try {
-    order = await prisma.order.create({
-      data: {
-        paymentLinkId: paymentLink.id,
-        productId: paymentLink.productId,
-        workspaceId: paymentLink.workspaceId,
-        buyerName: normalizedBuyerName,
-        buyerPhone: normalizedBuyerPhone,
-        buyerEmail: normalizedBuyerEmail,
-        reference: normalizedReference,
-        provider: trimmedProvider,
-        amountPaid: verifiedAmount,
-        payoutAccount: payoutAccount.account,
-        status: 'PAID',
-      },
-    });
+    const capped = productId !== null && maxBuyers !== null;
+    order = capped
+      ? await prisma.$transaction(async (tx) => {
+        const claim = await tx.product.updateMany({
+          where: { id: productId!, soldCount: { lt: maxBuyers! } },
+          data: { soldCount: { increment: 1 } },
+        });
+        if (claim.count === 0) return null;
+        return tx.order.create({ data: orderData });
+      })
+      : await prisma.order.create({ data: orderData });
   } catch (orderError) {
-    // The slot was claimed but never became an order. Give it back, otherwise a
-    // failed write permanently shrinks the product.
-    if (productId && maxBuyers !== null) {
-      await prisma.product
-        .updateMany({ where: { id: productId }, data: { soldCount: { decrement: 1 } } })
-        .catch((releaseError) =>
-          logger.error('Failed to release a claimed sales slot:', releaseError),
-        );
-    }
+    // Nothing to compensate: the transaction rolled the claim back.
     throw orderError;
+  }
+
+  if (!order) {
+    res.status(409).json({
+      success: false,
+      code: 'SOLD_OUT',
+      error: 'Sold out. Another buyer completed this purchase a moment ago.',
+    });
+    return;
   }
 
   try {
@@ -1267,16 +1426,19 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
           workspaceId: true,
           buyerName: true,
           buyerEmail: true,
-          buyerPhone: true,
+buyerPhone: true,
           reference: true,
           provider: true,
           amountPaid: true,
+          paymentLinkId: true,
           createdAt: true,
         },
       });
 
+      // Same link, not merely same workspace — see the earlier duplicate check.
       const belongsToCurrentBuyer =
         duplicateOrder?.workspaceId === paymentLink.workspaceId &&
+        duplicateOrder.paymentLinkId === paymentLink.id &&
         typeof duplicateOrder.buyerEmail === 'string' &&
         duplicateOrder.buyerEmail.trim().toLowerCase() === normalizedBuyerEmail;
 

@@ -7,13 +7,44 @@ import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { emitWorkspaceEvent } from '../utils/workspaceEvents';
 import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
-import { createRedisConnectionOptions } from './redisConnection';
+import { createRedisConnectionOptions, withRedisDeadline } from './redisConnection';
 
 const QUEUE_NAME = 'webhook-deliveries';
 const REQUEST_TIMEOUT_MS = 10_000;
 // A webhook response is only stored as a short diagnostic snippet, so there is
 // no reason to buffer an arbitrary amount of attacker-influenced data in RAM.
 const MAX_RESPONSE_BYTES = 256 * 1024;
+// Separately: what we are willing to *send*. The largest legitimate payload is a
+// batch verification result, comfortably under a megabyte.
+const MAX_REQUEST_BYTES = 1024 * 1024;
+
+/**
+ * A tenant-supplied URL with its credentials and secret-bearing query parameters
+ * removed, for logging.
+ *
+ * `assertSafeOutboundUrl` rejects URL *userinfo*, so `https://user:pass@host` can
+ * never be stored — but it does not reject `?api_key=…`, `?token=…` or a signed
+ * path. The raw URL was interpolated into `logger.info("Webhook delivered to …")`
+ * and into several warn/error lines, so a receiver's own secret ended up in
+ * application logs. This is what those call sites log instead.
+ */
+export function scrubUrlForLog(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.username || url.password) {
+      url.username = '';
+      url.password = '';
+    }
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(api[-_]?key|token|access[-_]?token|secret|signature|sig|key|password|auth)$/i.test(key)) {
+        url.searchParams.set(key, '[redacted]');
+      }
+    }
+    return url.toString();
+  } catch {
+    return '[unparseable webhook url]';
+  }
+}
 const RETRY_DELAYS_MS = [5_000, 15_000, 45_000] as const;
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
 const COMPLETED_JOB_RETENTION = 500;
@@ -27,6 +58,32 @@ const ACTIVE_JOB_STATES = new Set([
   'waiting',
   'waiting-children',
 ]);
+
+/**
+ * `Math.max(1, parseInt(...))` is NaN when the variable is present but not a
+ * number — an empty `WEBHOOK_QUEUE_CONCURRENCY=` in a .env, a typo, a value of
+ * "auto". `Math.max(1, NaN)` is NaN, and BullMQ receives NaN as its concurrency
+ * at construction. Falls back to the default.
+ */
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
+/**
+ * Retry schedule.
+ *
+ * Jittered by ±25%. Fixed 5s/15s/45s delays meant that after any worker or Redis
+ * restart every RETRYING delivery in the fleet came due at the same instant —
+ * a self-inflicted thundering herd against an endpoint that was already the reason
+ * for the retries.
+ */
+function retryDelayMs(attemptIndex: number): number {
+  const base = RETRY_DELAYS_MS[Math.min(attemptIndex, RETRY_DELAYS_MS.length - 1)]!;
+  const jitter = base * 0.25 * (Math.random() * 2 - 1);
+  return Math.max(1_000, Math.round(base + jitter));
+}
 
 export interface WebhookPayload {
   event: string;
@@ -50,6 +107,8 @@ export interface WebhookQueueHealth {
   workerRunning: boolean;
   workerConnected: boolean;
   queueName: string;
+  /** Set when part of the health snapshot could not be read (e.g. Redis stalled). */
+  note?: string;
   counts: {
     waiting: number;
     active: number;
@@ -78,14 +137,14 @@ function isWebhookQueueConfigured(): boolean {
 
 function getQueueConnection(): ConnectionOptions {
   if (!queueConnection) {
-    queueConnection = createRedisConnectionOptions('webhook');
+    queueConnection = createRedisConnectionOptions('webhook', 'producer');
   }
   return queueConnection;
 }
 
 function getWorkerConnection(): ConnectionOptions {
   if (!workerConnection) {
-    workerConnection = createRedisConnectionOptions('webhook');
+    workerConnection = createRedisConnectionOptions('webhook', 'worker');
   }
   return workerConnection;
 }
@@ -131,6 +190,23 @@ export const WEBHOOK_SIGNATURE_VERSION = 'v1';
 export const WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 5 * 60;
 
 /**
+ * Emit the replayable pre-timestamp header at all?
+ *
+ * The doc block above argues that binding a timestamp is "what makes the scheme
+ * worth the trouble" — and then the same request ships `X-Veritas-Legacy-Signature`,
+ * which is HMAC(secret, body) with nothing else, forever. Any receiver that
+ * accepts that header has zero replay protection, and an observer of one delivery
+ * holds an oracle that never expires.
+ *
+ * Off by default. `WEBHOOK_LEGACY_SIGNATURE=true` re-enables it for a receiver
+ * mid-migration; set a removal date for that flag rather than leaving it. Until
+ * then the recommended path is the deprecated one — the dashboard's own webhook
+ * tester already verifies the timestamped form.
+ */
+const EMIT_LEGACY_SIGNATURE =
+  (process.env.WEBHOOK_LEGACY_SIGNATURE ?? 'false').toLowerCase() === 'true';
+
+/**
  * Serialise once and send these exact bytes. Previously the signature covered
  * `JSON.stringify(payload)` while axios serialised the object again on the way
  * out — two separate serialisations of the same value, which agree only while
@@ -169,15 +245,22 @@ async function enqueueAttempt(
   attemptNumber: number,
   delayMs: number,
 ): Promise<string | null> {
-  const job = await getWebhookQueue().add(
-    'deliver',
-    { deliveryId, attemptNumber },
-    {
-      delay: delayMs,
-      jobId: `${deliveryId}__${attemptNumber}`,
-      removeOnComplete: COMPLETED_JOB_RETENTION,
-      removeOnFail: FAILED_JOB_RETENTION,
-    },
+  // Deadline-bounded. `queue.add` runs on the request path (a verification's
+  // delivery hook, POST /webhooks/:id/retry, the reconciler), and an unbounded
+  // one pins the socket until the client gives up.
+  const job = await withRedisDeadline(
+    getWebhookQueue().add(
+      'deliver',
+      { deliveryId, attemptNumber },
+      {
+        delay: delayMs,
+        jobId: `${deliveryId}__${attemptNumber}`,
+        removeOnComplete: COMPLETED_JOB_RETENTION,
+        removeOnFail: FAILED_JOB_RETENTION,
+      },
+    ),
+    undefined,
+    `enqueueing webhook delivery ${deliveryId}`,
   );
 
   return job.id?.toString() ?? null;
@@ -269,15 +352,39 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
     const signature = buildWebhookSignature(body, signingSecret, timestamp);
     headers['X-Veritas-Timestamp'] = String(timestamp);
     headers['X-Veritas-Signature'] = `t=${timestamp},${WEBHOOK_SIGNATURE_VERSION}=${signature}`;
-    // Deprecated. Remove once every receiver is verifying the timestamped form.
-    headers['X-Veritas-Legacy-Signature'] = `sha256=${buildLegacySignature(body, signingSecret)}`;
+    if (EMIT_LEGACY_SIGNATURE) {
+      // Off by default — see EMIT_LEGACY_SIGNATURE. Logged whenever it is on, so
+      // "we still emit the replayable header" is visible in the logs rather than
+      // being a fact someone has to remember.
+      logger.warn('Emitting the deprecated replayable webhook signature header (WEBHOOK_LEGACY_SIGNATURE=true).');
+      headers['X-Veritas-Legacy-Signature'] = `sha256=${buildLegacySignature(body, signingSecret)}`;
+    }
   }
 
   try {
     // Re-validate on every delivery, not only at registration: a public hostname
     // can start resolving to a private address (DNS rebinding), and a stored URL
-    // may predate this check. Redirects are not followed, because each hop would
-    // be a fresh unvalidated destination.
+    // may predate this check.
+    //
+    // What this does *not* do is close the rebinding window. `assertSafeOutboundUrl`
+    // resolves the name with `dns.promises.lookup`; axios then performs a second,
+    // independent resolution when it opens the socket. An attacker with a TTL-0
+    // record can answer the validator with a public address and axios with
+    // 127.0.0.1, milliseconds later. Per-attempt re-validation shrinks the window
+    // from days to milliseconds — it does not remove it, and the previous comment
+    // here claimed it did.
+    //
+    // Closing it properly means resolving once and connecting to the pinned address
+    // (a custom `lookup` on an httpAgent, plus `servername` for SNI and a matching
+    // Host header). That is a real change and is not made here; until then, treat
+    // "re-validated every attempt" as what it is.
+    //
+    // Redirects are not followed. `maxRedirects: 0` makes axios use the raw http
+    // module and *reject* on a 3xx rather than following it, which is the safe
+    // choice but means any receiver that redirects (http→https, apex→www, a
+    // trailing slash) fails four times and dead-letters with statusCode 302. That
+    // is a deliberate trade: a manual redirect loop that re-validates each
+    // Location is the correct fix, and silently following them is not.
     await assertSafeOutboundUrl(delivery.webhook.url);
     // `body`, not `payload`: the string that was signed must be the string that
     // is transmitted.
@@ -285,8 +392,14 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
       headers,
       timeout: REQUEST_TIMEOUT_MS,
       maxRedirects: 0,
+      // Two distinct limits, not one constant reused. `MAX_RESPONSE_BYTES` bounds
+      // what the *receiver* sends back and is stored as a diagnostic snippet;
+      // using it as `maxBodyLength` too meant any payload over 256 KB — a large
+      // batch result, a verbose verification response — threw before a byte was
+      // sent, four times, and dead-lettered. The name and the comment above it
+      // described the response bound only.
       maxContentLength: MAX_RESPONSE_BYTES,
-      maxBodyLength: MAX_RESPONSE_BYTES,
+      maxBodyLength: MAX_REQUEST_BYTES,
     });
 
     const deliveredAt = new Date();
@@ -310,7 +423,7 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
     }
 
     logger.info(
-      `Webhook delivered to ${delivery.webhook.url} [delivery=${deliveryId} attempt=${attemptNumber}] status=${response.status}`,
+      `Webhook delivered to ${scrubUrlForLog(delivery.webhook.url)} [delivery=${deliveryId} attempt=${attemptNumber}] status=${response.status}`,
     );
   } catch (error: unknown) {
     const statusCode = axios.isAxiosError(error) ? (error.response?.status ?? null) : null;
@@ -341,7 +454,7 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
         'webhook.dead_letter',
         {
           webhookId: delivery.webhook.id,
-          webhookUrl: delivery.webhook.url,
+          webhookUrl: scrubUrlForLog(delivery.webhook.url),
           deliveryId,
           attempts: attemptNumber,
           lastError: `Refused by outbound URL policy: ${message}`,
@@ -352,7 +465,7 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
     }
 
     if (attemptNumber < MAX_ATTEMPTS) {
-      const delayMs = RETRY_DELAYS_MS[attemptNumber - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+      const delayMs = retryDelayMs(attemptNumber - 1);
       const nextRetryAt = new Date(Date.now() + delayMs);
       const nextJobId = await enqueueAttempt(deliveryId, attemptNumber + 1, delayMs);
 
@@ -393,17 +506,31 @@ async function processWebhookDelivery(job: Job<WebhookDeliveryJobData>): Promise
       `Webhook delivery dead-lettered [delivery=${deliveryId} attempt=${attemptNumber}] ${message}`,
     );
 
-      await emitWorkspaceEvent(delivery.webhook.workspaceId, 'webhook.dead_letter', {
-        webhookId: delivery.webhook.id,
-        webhookUrl: delivery.webhook.url,
-        deliveryId,
-        attempts: attemptNumber,
-        lastError: message,
-      },
-      // Not to this webhook: it is subscribed to its own dead letter, so
-      // including it turns one failure into an unbounded retry cascade.
-      delivery.webhook.id,
-      );
+      // Not fanned out to webhooks at all.
+    //
+    // The old call passed `delivery.webhook.id` as `excludeWebhookId` with a
+    // comment explaining that this stops "one failure becoming an unbounded retry
+    // cascade". Excluding self only stops self-recursion. It does nothing for
+    // mutual recursion: `webhook.dead_letter` is a valid event, so with two
+    // webhooks in one workspace both subscribed to it, A dead-letters → the event
+    // fires → B gets a delivery → B's URL is dead too → B dead-letters → the
+    // event fires again (excluding B) → A gets a delivery → A dead-letters → …
+    //
+    // Each cycle costs a delivery row, a BullMQ job, four HTTP attempts spread
+    // over ~65 s, and a group-by per list call, and it never terminates. There is
+    // no depth limit anywhere in the event path to stop it.
+    //
+    // The fix is to send dead-letter notifications to *notification channels*
+    // only — an email or a Telegram message is not itself a webhook and cannot
+    // recurse. A workspace that wants a webhook told about dead letters can read
+    // GET /webhooks/:id/deliveries, which is where an operator would look anyway.
+    await emitWorkspaceEvent(delivery.webhook.workspaceId, 'webhook.dead_letter', {
+      webhookId: delivery.webhook.id,
+      webhookUrl: scrubUrlForLog(delivery.webhook.url),
+      deliveryId,
+      attempts: attemptNumber,
+      lastError: message,
+    }, null, { excludeWebhooks: true });
   }
 }
 
@@ -577,14 +704,35 @@ export async function getWebhookQueueHealth(): Promise<WebhookQueueHealth> {
   }
 
   const queue = getWebhookQueue();
-  const counts = await queue.getJobCounts(
-    'waiting',
-    'active',
-    'delayed',
-    'completed',
-    'failed',
-    'paused',
-  );
+  // Bounded. `getJobCounts` was awaited without a deadline on GET /ready, so a
+  // stalled Redis meant the readiness probe never returned — Render never got its
+  // 503 and restarted a healthy instance rather than being told it was degraded.
+  const counts = await withRedisDeadline(
+    queue.getJobCounts(
+      'waiting',
+      'active',
+      'delayed',
+      'completed',
+      'failed',
+      'paused',
+    ),
+    undefined,
+    'reading webhook queue depth',
+  ).catch((error) => {
+    logger.warn(`Webhook queue depth unavailable: ${error instanceof Error ? error.message : error}`);
+    return null;
+  });
+
+  if (!counts) {
+    return {
+      configured: true,
+      workerRunning: Boolean(deliveryWorker),
+      workerConnected,
+      queueName: QUEUE_NAME,
+      counts: { waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0, paused: 0 },
+      note: 'queue depth unavailable — Redis did not answer within the deadline',
+    };
+  }
 
   return {
     configured: true,
@@ -615,7 +763,7 @@ export async function startWebhookQueueWorker(): Promise<void> {
       processWebhookDelivery,
       {
         connection: getWorkerConnection(),
-        concurrency: Math.max(1, parseInt(process.env.WEBHOOK_QUEUE_CONCURRENCY ?? '5', 10)),
+        concurrency: parsePositiveInt(process.env.WEBHOOK_QUEUE_CONCURRENCY, 5),
       },
     );
 

@@ -5,7 +5,7 @@ import { Prisma } from '@prisma/client';
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { escapeHtml } from '../utils/purchaseEmail';
-import { createRedisConnectionOptions } from './redisConnection';
+import { createRedisConnectionOptions, withRedisDeadline } from './redisConnection';
 
 const QUEUE_NAME = 'workspace-notifications';
 const RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
@@ -14,6 +14,8 @@ const COMPLETED_JOB_RETENTION = 500;
 const FAILED_JOB_RETENTION = 500;
 const RECONCILIATION_INTERVAL_MS = 60_000;
 const STALE_DELIVERY_AGE_MS = 60_000;
+/** Hard ceiling on one outbound email/Telegram request. See sendEmail(). */
+const OUTBOUND_TIMEOUT_MS = Number(process.env.NOTIFICATION_OUTBOUND_TIMEOUT_MS ?? 10_000);
 const ACTIVE_JOB_STATES = new Set([
   'active',
   'delayed',
@@ -21,6 +23,20 @@ const ACTIVE_JOB_STATES = new Set([
   'waiting',
   'waiting-children',
 ]);
+
+/** `Math.max(1, parseInt(undefined ?? '5'))` is fine; `Math.max(1, NaN)` is NaN. */
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
+/** Jittered ±25% — see the identical note in webhookQueue.ts. */
+function retryDelayMs(attemptIndex: number): number {
+  const base = RETRY_DELAYS_MS[Math.min(attemptIndex, RETRY_DELAYS_MS.length - 1)]!;
+  const jitter = base * 0.25 * (Math.random() * 2 - 1);
+  return Math.max(1_000, Math.round(base + jitter));
+}
 
 type NotificationChannelType = 'EMAIL' | 'TELEGRAM';
 export type NotificationEventName =
@@ -42,6 +58,8 @@ export interface NotificationQueueHealth {
   workerRunning: boolean;
   workerConnected: boolean;
   queueName: string;
+  /** Set when part of the health snapshot could not be read (e.g. Redis stalled). */
+  note?: string;
   counts: {
     waiting: number;
     active: number;
@@ -81,14 +99,14 @@ function isNotificationQueueConfigured(): boolean {
 
 function getQueueConnection(): ConnectionOptions {
   if (!queueConnection) {
-    queueConnection = createRedisConnectionOptions('notification');
+    queueConnection = createRedisConnectionOptions('notification', 'producer');
   }
   return queueConnection;
 }
 
 function getWorkerConnection(): ConnectionOptions {
   if (!workerConnection) {
-    workerConnection = createRedisConnectionOptions('notification');
+    workerConnection = createRedisConnectionOptions('notification', 'worker');
   }
   return workerConnection;
 }
@@ -217,6 +235,13 @@ async function sendEmail(destination: string, event: NotificationEventName, payl
       text: buildEventMessage(event, payload),
       html: buildEmailHtml(event, payload),
     }),
+    // Required, not optional. Neither fetch carried a signal, and undici's
+    // 300 s bodyTimeout *resets on every chunk* — so an endpoint that accepts the
+    // connection and then dribbles bytes holds the request open indefinitely.
+    // Worker concurrency is 5, so five slow responses stop the whole notification
+    // queue: no emails, no Telegram, no dead-letter notices, with no error and no
+    // change in `workerConnected` to show for it.
+    signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
   });
 
   const data = await response.json().catch(() => null);
@@ -241,6 +266,7 @@ async function sendTelegram(destination: string, event: NotificationEventName, p
       text: buildTelegramText(event, payload),
       disable_web_page_preview: true,
     }),
+    signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
   });
 
   const data = await response.json().catch(() => null);
@@ -270,15 +296,19 @@ async function enqueueAttempt(
   attemptNumber: number,
   delayMs: number,
 ): Promise<string | null> {
-  const job = await getNotificationQueue().add(
-    'deliver',
-    { deliveryId, attemptNumber },
-    {
-      delay: delayMs,
-      jobId: `${deliveryId}__${attemptNumber}`,
-      removeOnComplete: COMPLETED_JOB_RETENTION,
-      removeOnFail: FAILED_JOB_RETENTION,
-    },
+  const job = await withRedisDeadline(
+    getNotificationQueue().add(
+      'deliver',
+      { deliveryId, attemptNumber },
+      {
+        delay: delayMs,
+        jobId: `${deliveryId}__${attemptNumber}`,
+        removeOnComplete: COMPLETED_JOB_RETENTION,
+        removeOnFail: FAILED_JOB_RETENTION,
+      },
+    ),
+    undefined,
+    `enqueueing notification delivery ${deliveryId}`,
   );
 
   return job.id?.toString() ?? null;
@@ -368,7 +398,7 @@ async function processNotificationDelivery(job: Job<NotificationDeliveryJobData>
     const message = error instanceof Error ? error.message : 'Unknown notification delivery error';
 
     if (attemptNumber < MAX_ATTEMPTS) {
-      const delayMs = RETRY_DELAYS_MS[attemptNumber - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+      const delayMs = retryDelayMs(attemptNumber - 1);
       const nextRetryAt = new Date(Date.now() + delayMs);
       const nextJobId = await enqueueAttempt(deliveryId, attemptNumber + 1, delayMs);
 
@@ -545,7 +575,7 @@ export async function startNotificationQueueWorker(): Promise<void> {
       processNotificationDelivery,
       {
         connection: getWorkerConnection(),
-        concurrency: Math.max(1, parseInt(process.env.NOTIFICATION_QUEUE_CONCURRENCY ?? '5', 10)),
+        concurrency: parsePositiveInt(process.env.NOTIFICATION_QUEUE_CONCURRENCY, 5),
       },
     );
 
@@ -618,14 +648,33 @@ export async function getNotificationQueueHealth(): Promise<NotificationQueueHea
   }
 
   const queue = getNotificationQueue();
-  const counts = await queue.getJobCounts(
-    'waiting',
-    'active',
-    'delayed',
-    'completed',
-    'failed',
-    'paused',
-  );
+  // Bounded — see the identical note in webhookQueue.ts. GET /ready awaits this.
+  const counts = await withRedisDeadline(
+    queue.getJobCounts(
+      'waiting',
+      'active',
+      'delayed',
+      'completed',
+      'failed',
+      'paused',
+    ),
+    undefined,
+    'reading notification queue depth',
+  ).catch((error) => {
+    logger.warn(`Notification queue depth unavailable: ${error instanceof Error ? error.message : error}`);
+    return null;
+  });
+
+  if (!counts) {
+    return {
+      configured: true,
+      workerRunning: Boolean(notificationWorker),
+      workerConnected,
+      queueName: QUEUE_NAME,
+      counts: { waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0, paused: 0 },
+      note: 'queue depth unavailable — Redis did not answer within the deadline',
+    };
+  }
 
   return {
     configured: true,

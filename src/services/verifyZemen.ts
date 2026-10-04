@@ -1,6 +1,5 @@
 import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
-import https from 'https';
 import logger from '../utils/logger';
 
 export interface ZemenVerifyResult {
@@ -32,7 +31,15 @@ export async function verifyZemen(
     transactionReference: string
 ): Promise<ZemenVerifyResult> {
     const url = `https://share.zemenbank.com/rt/${encodeURIComponent(transactionReference)}/pdf`;
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    // No `rejectUnauthorized: false`, and deliberately none. The PDF below is
+    // regex-parsed and a successful parse reaches the merchant as a real
+    // receipt, so disabling certificate validation would let anyone with a
+    // network position against this host forge one. A receipt is one page and a
+    // few tens of kilobytes; these bounds stop a hostile 500 MB body or a
+    // thousand-page document from being buffered and rendered on a 512 MB
+    // instance.
+    const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+    const MAX_PDF_PAGES = 3;
     const maxRetries = 3;
     const retryDelay = 2000;
 
@@ -40,8 +47,9 @@ export async function verifyZemen(
         try {
             logger.info(`ðŸ”Ž Fetching Zemen receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
             const response: AxiosResponse<ArrayBuffer> = await axios.get(url, {
-                httpsAgent,
                 responseType: 'arraybuffer',
+                maxContentLength: MAX_RESPONSE_BYTES,
+                maxBodyLength: MAX_RESPONSE_BYTES,
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                     'Accept': 'application/pdf',
@@ -74,7 +82,10 @@ export async function verifyZemen(
 
 async function parseZemenReceipt(buffer: ArrayBuffer, reference: string): Promise<ZemenVerifyResult> {
     try {
-        const parsed = await pdf(Buffer.from(buffer));
+        // `max` bounds the render. Without it a crafted document with thousands
+        // of pages is fully rasterised in-process on the instance that is also
+        // serving customer traffic.
+        const parsed = await pdf(Buffer.from(buffer), { max: 3 });
         const text = parsed.text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
 
         logger.info(`ðŸ“„ Zemen PDF parsed, text length: ${text.length} chars`);

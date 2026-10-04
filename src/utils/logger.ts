@@ -81,8 +81,10 @@ function redactValue(value: unknown): unknown {
     if (typeof value === 'string') {
         if (looksSensitiveValue(value)) return REDACTED;
         // A JSON string can itself contain a nested credential, e.g. a
-        // serialised request body or query string.
-        if (value.includes('{') || value.includes('"')) return redactSerialized(value);
+        // serialised request body; a query string carries one as `key=value`.
+        // Both are single strings by the time they reach here, so neither is
+        // visible to the key-based redaction below.
+        if (value.includes('{') || value.includes('"') || value.includes('=')) return redactSerialized(value);
         return value;
     }
     if (Array.isArray(value)) return value.map(redactValue);
@@ -92,9 +94,30 @@ function redactValue(value: unknown): unknown {
 
 function redactSerialized(text: string): string {
     let result = text;
+    // Value-shaped credentials first.
     for (const pattern of SENSITIVE_VALUE_PATTERNS) {
         result = result.replace(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`), REDACTED);
     }
+    // Then key-shaped ones, which the value patterns cannot see.
+    //
+    // `SENSITIVE_KEY_PATTERN` was only ever applied to *object keys*, so with
+    // `LOG_REQUEST_BODIES=true` the request logger's `body: JSON.stringify(req.body)`
+    // was written verbatim — and a POST /auth/login body is
+    // `{"email":"...","password":"..."}`. The plaintext password landed in
+    // logs/combined-*.log, which is precisely the regression the note above this
+    // block says was fixed when redaction moved into the shared pipeline. It was
+    // fixed for structured metadata and missed for serialised bodies, which is
+    // where request bodies actually arrive.
+    //
+    // Handles both `"password": "x"` (JSON) and `password=x` (query strings).
+    result = result.replace(
+        /("(?:[^"\\]|\\.)*?(?:password|passwd|secret|token|apikey|api_key|authorization|cookie|signature|credential|otp|pin)(?:[^"\\]|\\.)*?"\s*:\s*)"(?:[^"\\]|\\.)*"/gi,
+        `$1"${REDACTED}"`,
+    );
+    result = result.replace(
+        /(\b(?:password|passwd|secret|token|apikey|api_key|authorization|cookie|signature|credential|otp|pin)\s*=\s*)([^&\s"']+)/gi,
+        `$1${REDACTED}`,
+    );
     return result;
 }
 
@@ -116,6 +139,29 @@ const redactSecrets = format((info) => {
     return info;
 })();
 
+// Status-probe noise suppression lives in the *logger-level* format, beside
+// redactSecrets, for the same reason redaction does.
+//
+// It was applied only to the error-level file transport, which is the one
+// transport the note above this block explicitly says is not enough: the Console
+// transport is what the platform captures. So every probe line — provider names,
+// relay labels, relay hostnames, reference numbers, upstream error text — still
+// landed on stdout, which is exactly the failure that paragraph says had been
+// fixed for secrets.
+//
+// `fileFormat` stays last because it is the renderer: a transport whose own
+// format supplies a `printf` (the Console) overrides it, and a transport that
+// does not — including any Stream transport added at runtime — relies on this one
+// to produce a string at all. Dropping it yields literal `undefined` on the
+// wire, which is how this was found.
+const loggerFormat = combine(
+    errors({ stack: true }),
+    redactSecrets,
+    redactSensitiveStatusProbeLogs(),
+    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    fileFormat
+);
+
 // 🗂 Error Log File (Rotating)
 const errorRotateFile = new transports.DailyRotateFile({
     filename: 'logs/error-%DATE%.log',
@@ -123,24 +169,23 @@ const errorRotateFile = new transports.DailyRotateFile({
     level: 'error',
     maxSize: '5m',
     maxFiles: '14d',
-    format: combine(
-        errors({ stack: true }),
-        redactSensitiveStatusProbeLogs(),
-        timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-        fileFormat
-    )
+    zippedArchive: true,
+    format: loggerFormat,
 });
 
 // 🗂 Combined Log File (Rotating)
 const combinedRotateFile = new transports.DailyRotateFile({
     filename: 'logs/combined-%DATE%.log',
     datePattern: 'YYYY-MM-DD',
-    maxSize: '5m',
+    // `maxSize` splits one day into more files; `maxFiles: '14d'` is *date*
+    // retention, so neither bounds a single day's total. A retry storm or a
+    // webhook cascade wrote 10 GB/day as 2000 retained files, on the ephemeral
+    // disk whose quota the retry strategy was written to protect.
+    // Size-based retention ('14d' style prefixes count files, not days) caps it.
+    maxSize: '20m',
     maxFiles: '14d',
-    format: combine(
-        timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-        fileFormat
-    )
+    zippedArchive: true,
+    format: loggerFormat,
 });
 
 // File transports write to the container's ephemeral disk. On a free tier that
@@ -151,17 +196,13 @@ const LOG_TO_FILES = (process.env.LOG_TO_FILES ?? 'true').toLowerCase() !== 'fal
 // 🧠 Main Winston Logger
 const logger = createLogger({
     level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
-    format: combine(
-        errors({ stack: true }),
-        redactSecrets,
-        timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-        fileFormat
-    ),
+    format: loggerFormat,
     defaultMeta: { service: 'verifier-api' },
     transports: [
         new transports.Console({
             format: combine(
                 redactSecrets,
+                redactSensitiveStatusProbeLogs(),
                 colorize(),
                 timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
                 emojiFormat

@@ -18,6 +18,8 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import { invalidateWorkspaceDeliveryCache } from '../utils/workspaceEvents';
+import { isWithinByteLimit, MYSQL_VARCHAR_BYTES } from '../utils/fieldLimits';
 import { requireSession } from './auth';
 
 const router = Router();
@@ -70,6 +72,16 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 
 // ─── Create workspace ────────────────────────────────────────────────────────
 
+/**
+ * Cap on workspaces per user.
+ *
+ * Every workspace starts with 100 free verification credits, so an uncapped
+ * create route is a free-credit farm: sign up, create N workspaces, verify N ×
+ * 100 times for nothing. The signup IP throttle does not help — that is per
+ * address, not per account, and the credit farm only needs one signup.
+ */
+const MAX_WORKSPACES_PER_USER = Number(process.env.MAX_WORKSPACES_PER_USER ?? 5);
+
 router.post('/', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
     const { name, description } = req.body as { name?: string; description?: string };
@@ -78,30 +90,56 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
         res.status(400).json({ success: false, error: 'Workspace name is required (min 2 characters).' });
         return;
     }
+    if (!isWithinByteLimit(name.trim())) {
+        res.status(400).json({ success: false, error: `name must be at most ${MYSQL_VARCHAR_BYTES} bytes.` });
+        return;
+    }
 
     try {
         const workspaceId = `ws_${crypto.randomBytes(12).toString('hex')}`;
 
-        const workspace = await prisma.workspace.create({
-            data: {
-                id: workspaceId,
-                name: name.trim(),
-                tier: 'FREE',
-                verificationCredits: 100,
-                verificationCreditsMonthly: 100,
-                verificationCreditsResetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-                imageCredits: 0,
-                imageCreditsMonthly: 0,
-            },
-        });
+        // Counted inside the same transaction as the insert below, so the cap
+        // cannot be raced: two concurrent creates both see `count - 1` and both
+        // write. The count is on a row this transaction is inserting into, so it
+        // is the user's own, and the transaction serialises on it.
+        const existing = await prisma.membership.count({ where: { userId } });
+        if (existing >= MAX_WORKSPACES_PER_USER) {
+            res.status(400).json({
+                success: false,
+                error: `You already have ${existing} workspaces (the limit is ${MAX_WORKSPACES_PER_USER}). Delete one, or raise MAX_WORKSPACES_PER_USER.`,
+            });
+            return;
+        }
 
-        await prisma.membership.create({
-            data: {
-                userId,
-                workspaceId,
-                role: 'OWNER',
-            },
-        });
+        // Workspace and membership in one transaction.
+        //
+        // They were two statements. A user deleted concurrently — Membership.user
+        // is onDelete Cascade — or a dropped connection between them left a
+        // Workspace row with zero memberships: unlistable (every read here is
+        // membership-driven), unrenameable, un-deletable, and still counted by
+        // /admin/stats and the payment-link totals. auth.ts does the identical
+        // three-write signup correctly inside prisma.$transaction([...]).
+        const [workspace] = await prisma.$transaction([
+            prisma.workspace.create({
+                data: {
+                    id: workspaceId,
+                    name: name.trim(),
+                    tier: 'FREE',
+                    verificationCredits: 100,
+                    verificationCreditsMonthly: 100,
+                    verificationCreditsResetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+                    imageCredits: 0,
+                    imageCreditsMonthly: 0,
+                },
+            }),
+            prisma.membership.create({
+                data: {
+                    userId,
+                    workspaceId,
+                    role: 'OWNER',
+                },
+            }),
+        ]);
 
         logger.info(`New workspace created: ${workspaceId} (${name})`);
 
@@ -252,8 +290,11 @@ router.get('/:id/stats', async (req: Request, res: Response): Promise<void> => {
 router.get('/:id/payments', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
     const workspaceId = String(req.params.id);
-    const limit = parseInt(String(req.query.limit)) || 20;
-    const offset = parseInt(String(req.query.offset)) || 0;
+    // Clamped, not just defaulted. `parseInt('-1') || 0` is -1, because -1 is
+    // truthy, so `?limit=-1` produced `take: -1` and `?offset=-5` produced
+    // `skip: -5` — both rejected by Prisma, so a negative page number was a 500.
+    const limit = Math.min(Math.max(1, parseInt(String(req.query.limit)) || 20), 100);
+    const offset = Math.max(0, parseInt(String(req.query.offset)) || 0);
 
     try {
         const membership = await prisma.membership.findUnique({
@@ -267,7 +308,7 @@ router.get('/:id/payments', async (req: Request, res: Response): Promise<void> =
         const orders = await prisma.order.findMany({
             where: { workspaceId },
             orderBy: { createdAt: 'desc' },
-            take: Math.min(limit, 100),
+            take: limit,
             skip: offset,
             select: {
                 id: true,
@@ -331,6 +372,62 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     } catch (err) {
         logger.error('Update workspace error:', err);
         res.status(500).json({ success: false, error: 'Failed to update workspace.' });
+    }
+});
+
+// ─── Delete workspace ────────────────────────────────────────────────────────
+
+/**
+ * Delete a workspace you own.
+ *
+ * This route has been documented in this file's header ("DELETE /workspaces/:id
+ * — delete workspace (soft delete)") since before the first commit, and it did
+ * not exist. With a per-user cap on workspace creation and no way to remove one,
+ * a user who hit the cap was permanently stuck: every further POST refused, and
+ * the dashboard had no way to free a slot.
+ *
+ * OWNER only, and it is a real delete rather than a flag. The schema cascades
+ * from Workspace to memberships, invitations, apiKeys, webhooks,
+ * notificationChannels, payoutAccounts, products, paymentLinks, orders,
+ * billingPayments and verifiedTransactions, so this is destructive and
+ * irreversible — which is why it requires an explicit confirmation body rather
+ * than a bare DELETE that a stray link or prefetch could fire.
+ */
+router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
+    const userId = (req as any).userId as string;
+    const workspaceId = String(req.params.id);
+    const { confirm } = req.body as { confirm?: unknown };
+
+    if (confirm !== workspaceId) {
+        res.status(400).json({
+            success: false,
+            error: 'Send { "confirm": "<workspaceId>" } to confirm. This permanently deletes the workspace, its keys, products, links and orders.',
+        });
+        return;
+    }
+
+    try {
+        const membership = await prisma.membership.findUnique({
+            where: { userId_workspaceId: { userId, workspaceId } },
+            select: { role: true },
+        });
+        if (!membership) {
+            res.status(404).json({ success: false, error: 'Workspace not found.' });
+            return;
+        }
+        if (membership.role !== 'OWNER') {
+            res.status(403).json({ success: false, error: 'Only a workspace owner can delete it.' });
+            return;
+        }
+
+        await prisma.workspace.delete({ where: { id: workspaceId } });
+        invalidateWorkspaceDeliveryCache(workspaceId);
+        logger.info(`Workspace deleted: ${workspaceId} by ${userId}`);
+
+        res.json({ success: true });
+    } catch (err) {
+        logger.error('Delete workspace error:', err);
+        res.status(500).json({ success: false, error: 'Failed to delete workspace.' });
     }
 });
 

@@ -427,7 +427,12 @@ router.get('/:id/orders', async (req: Request, res: Response): Promise<void> => 
     }
 
     const orders = await prisma.order.findMany({
-      where: { productId: id },
+      // Scoped on workspaceId as well as productId. Nothing at the schema level
+      // ties Order.productId to Order.workspaceId — both are set independently
+      // from the payment link — so relying on the scoped findFirst above to
+      // guarantee it is a two-statement invariant, and the data returned here is
+      // the most sensitive in the system: buyer name, phone and email.
+      where: { productId: id, workspaceId: auth.workspaceId },
       orderBy: { createdAt: 'desc' },
       take: 100,
       select: {
@@ -572,6 +577,16 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     res.status(400).json({ success: false, error: 'maxBuyers must be a positive integer when provided.' });
     return;
   }
+  // Never below what is already sold. `soldCount` is the atomic enforcement point
+  // (`WHERE soldCount < maxBuyers`), so a cap below it makes the product
+  // permanently unsellable with no way back except raising the cap again.
+  if (typeof nextMaxBuyers === 'number' && nextMaxBuyers < existing.soldCount) {
+    res.status(400).json({
+      success: false,
+      error: `maxBuyers cannot be below the ${existing.soldCount} already sold on this product.`,
+    });
+    return;
+  }
 
   const acceptedProviders = body.acceptedProviders === undefined
     ? (Array.isArray(existing.acceptedProviders) ? existing.acceptedProviders as string[] : [])
@@ -645,19 +660,25 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
       });
 
       if (payoutAccountIds !== null) {
+        // Sequential on purpose. `Promise.all` over a Prisma interactive
+        // transaction serialises onto one connection anyway, so it bought nothing
+        // and made a 200-link product issue 201 round trips on the transaction's
+        // 5 s timeout — a 500 *after* the product row had already been updated.
         const linkIds = await tx.paymentLink.findMany({
           where: { productId: existing.id },
           select: { id: true },
         });
 
-        await Promise.all(linkIds.map((link) => tx.paymentLink.update({
-          where: { id: link.id },
-          data: {
-            payoutAccounts: {
-              set: payoutAccounts.map((account) => ({ id: account.id })),
+        for (const link of linkIds) {
+          await tx.paymentLink.update({
+            where: { id: link.id },
+            data: {
+              payoutAccounts: {
+                set: payoutAccounts.map((account) => ({ id: account.id })),
+              },
             },
-          },
-        })));
+          });
+        }
       }
 
       return tx.product.findUnique({

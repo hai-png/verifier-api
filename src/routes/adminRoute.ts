@@ -5,10 +5,14 @@ import { resolveAppUrl } from '../config/appUrl';
 import { getUsageStats } from '../middleware/requestLogger';
 import { fireRegisteredWebhook } from '../utils/fireWebhook';
 import { getWebhookQueueHealth, replayWebhookDelivery } from '../queues/webhookQueue';
-import { accountMatches, extractPaymentDetails } from '../utils/paymentMatch';
+import { extractPaymentDetails } from '../utils/paymentMatch';
+import { checkReceiptRecipient } from '../utils/recipientCheck';
+import { creditedPartyFromData } from '../utils/verifyRecipient';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { safeSecretEquals } from '../utils/secretCompare';
+import { MemoryWindowCounter } from '../utils/expiringStore';
+import { getRequestIp } from '../utils/requestIp';
 import {
     BillingConfigValidationError,
     getBillingConfig,
@@ -23,13 +27,30 @@ const router = Router();
 // /admin/* reachable by anyone who can read the repository.
 const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
 
+// Failed-auth throttle.
+//
+// `safeSecretEquals` is constant-time so the secret cannot be recovered by
+// timing, but checkAdminAuth is the *only* gate on /admin/* and there was no rate
+// limit anywhere on the router, so `x-admin-key` was guessable at line rate. Ten
+// failures per IP per fifteen minutes; a correct key is never throttled.
+const ADMIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const ADMIN_MAX_FAILURES = 10;
+const adminFailures = new MemoryWindowCounter({ maxEntries: 5_000 });
+
 // Middleware to check admin authentication.
 // Header only: the key used to be accepted as ?adminKey=, which put it in
-// access logs, Referer headers and browser history.
+// access logs, Referer headers and browser history. The same mistake was later
+// reintroduced on GET /status/summary as ?secret= and has been removed there too.
 const checkAdminAuth = (req: Request, res: Response, next: NextFunction) => {
     const adminKey = req.headers['x-admin-key'];
 
     if (!safeSecretEquals(adminKey, ADMIN_SECRET)) {
+        const entry = adminFailures.increment(`admin:${getRequestIp(req)}`, ADMIN_FAIL_WINDOW_MS);
+        if (entry.count > ADMIN_MAX_FAILURES) {
+            res.set('Retry-After', String(Math.ceil((entry.windowStart + ADMIN_FAIL_WINDOW_MS - Date.now()) / 1000)));
+            res.status(429).json({ success: false, error: 'Too many failed admin attempts. Retry later.' });
+            return;
+        }
         return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
     }
 
@@ -81,31 +102,42 @@ router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, 
 
         if (!membership) {
             logger.info(`No workspace found for owner "${owner}" — auto-creating default workspace + user`);
-            const user = await prisma.user.create({
-                data: { id: owner, name: owner, email: `${owner}@selfhosted.local`, role: 'ADMIN' },
-            });
-            const workspace = await prisma.workspace.create({
-                data: {
-                    id: `ws-${owner}`,
-                    name: `${owner} Workspace`,
-                    tier: 'BUSINESS',
-                    verificationCredits: 100000,
-                    verificationCreditsMonthly: 100000,
-                    verificationCreditsResetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-                    paidUntil: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-                    planTermMonths: 12,
-                    imageCredits: 1000,
-                    imageCreditsMonthly: 1000,
-                    grandfathered: true,
-                },
-            });
-            membership = await prisma.membership.create({
-                data: {
-                    userId: user.id,
-                    workspaceId: workspace.id,
-                    role: 'OWNER',
-                },
-            });
+            // One transaction for all three writes.
+            //
+            // They were three separate awaits. A failure between them — the
+            // unique constraint on email if the user row already existed without
+            // a membership, a dropped connection, a process restart — left either
+            // a Workspace with no membership (unlistable, undeletable, still
+            // counted in /admin/stats) or a User with no way in. auth.ts does the
+            // identical three-write signup correctly inside $transaction([...]).
+            const [, workspace, createdMembership] = await prisma.$transaction([
+                prisma.user.create({
+                    data: { id: owner, name: owner, email: `${owner}@selfhosted.local`, role: 'ADMIN' },
+                }),
+                prisma.workspace.create({
+                    data: {
+                        id: `ws-${owner}`,
+                        name: `${owner} Workspace`,
+                        tier: 'BUSINESS',
+                        verificationCredits: 100000,
+                        verificationCreditsMonthly: 100000,
+                        verificationCreditsResetAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+                        paidUntil: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+                        planTermMonths: 12,
+                        imageCredits: 1000,
+                        imageCreditsMonthly: 1000,
+                        grandfathered: true,
+                    },
+                }),
+                prisma.membership.create({
+                    data: {
+                        userId: owner,
+                        workspaceId: `ws-${owner}`,
+                        role: 'OWNER',
+                    },
+                }),
+            ]);
+            membership = createdMembership;
             logger.info(`Auto-created workspace "${workspace.id}" for owner "${owner}"`);
         }
 
@@ -209,6 +241,24 @@ router.post('/api-keys/:id/credits', checkAdminAuth as RequestHandler, async (re
     if (addCredits === undefined && setMonthly === undefined) {
         res.status(400).json({ success: false, error: 'Provide addCredits and/or setMonthly.' });
         return;
+    }
+    // Presence was the only check. `1.5` and `1e30` reached
+    // `imageCredits: { increment }` and became a 500 from Prisma rather than a 400,
+    // and a fractional grant leaves a credit balance nothing can express.
+    if (addCredits !== undefined && !Number.isInteger(addCredits)) {
+        res.status(400).json({ success: false, error: 'addCredits must be an integer.' });
+        return;
+    }
+    if (setMonthly !== undefined && (!Number.isInteger(setMonthly) || setMonthly < 0)) {
+        res.status(400).json({ success: false, error: 'setMonthly must be an integer of 0 or more.' });
+        return;
+    }
+    if (resetAt !== undefined) {
+        const parsed = new Date(resetAt);
+        if (Number.isNaN(parsed.getTime())) {
+            res.status(400).json({ success: false, error: 'resetAt must be a valid ISO date.' });
+            return;
+        }
     }
 
     try {
@@ -410,7 +460,12 @@ router.get('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, r
         // Map over keys safely, supporting both new hashed keys and old legacy keys
         const keyList = apiKeys.map((k) => ({
             id: k.id,
-            key: k.prefix || (k.key ? `${k.key.substring(0, 8)}...` : 'Unknown'),
+            // Never the raw key. `ApiKey.key` is still a live credential — it is
+            // the fallback branch of validateApiKey — so eight characters of it in
+            // an admin response is eight characters of a usable secret in an admin
+            // response, an operator's terminal, and whatever logs that response
+            // reaches. New keys have `prefix`; legacy keys get a constant marker.
+            key: k.prefix || (k.key ? 'legacy-key-redacted' : 'Unknown'),
             workspaceId: k.workspaceId,
             tier: k.workspace?.tier || 'FREE',
             createdAt: k.createdAt,
@@ -730,18 +785,34 @@ router.post(
       });
       return;
     }
-    if (!accountMatches(account, expectedAccount)) {
+    // Fail-closed, via the same check the reference pipeline and the payment-link
+    // confirmation use.
+    //
+    // This was `accountMatches(account, expectedAccount)`, which returns true for
+    // a null account — and a null account is Dashen's *normal* case, because its
+    // API returns a receiver name and no account number. So `provider: 'dashen'`
+    // made this branch unconditionally pass: any Dashen transfer of at least
+    // `expectedAmount` to any account in the country was reported MATCH. That is
+    // the check a billing system calls before granting a subscription.
+    const recipient = checkReceiptRecipient({
+      foundAccount: account,
+      foundName: creditedPartyFromData(verifiedData, provider).name,
+      expectedAccount,
+      useCbeAccountRule: provider.toLowerCase() === 'cbe',
+    });
+    if (!recipient.ok) {
       res.status(422).json({
         success: false,
-        code: 'RECIPIENT_MISMATCH',
-        error: 'The payment was not sent to the expected merchant account.',
+        code: recipient.reason === 'RECIPIENT_NOT_VERIFIABLE' ? 'RECIPIENT_NOT_VERIFIABLE' : 'RECIPIENT_MISMATCH',
+        reason: recipient.reason,
+        error: recipient.error,
         amount,
         account,
       });
       return;
     }
 
-    res.json({ success: true, code: 'MATCH', amount, account });
+    res.json({ success: true, code: 'MATCH', amount, account, matchedOn: recipient.matchedOn });
   },
 );
 
@@ -782,10 +853,17 @@ router.post(
         const events = Array.isArray(wh.events) ? (wh.events as string[]) : [];
         if (!events.includes(event)) continue;
 
+        // Spread order is load-bearing. The event was spread *last*, so a body of
+        // `{"event":"payment_link.paid","payload":{"event":"verification.success"}}`
+        // was filtered against `payment_link.paid` (line 823) and then *signed and
+        // delivered* as `verification.success`. A receiver that switches on the
+        // event would act on the wrong one, and the signature would validate over
+        // the substituted value. `event` and `firedAt` are last, so a payload
+        // cannot override them.
         fireRegisteredWebhook(wh.id, wh.signingSecret, wh.url, {
+          ...payload,
           event,
           firedAt: new Date().toISOString(),
-          ...payload,
         });
         fired++;
       }

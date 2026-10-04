@@ -55,9 +55,49 @@ test('with no forwarded headers the socket address is used', async (t) => {
   assert.match(resolved, /^::ffff:127\.0\.0\.1$|^127\.0\.0\.1$/);
 });
 
-// Documented limitation, not an assertion of safety: the rightmost-entry rule is
-// only sound because a proxy in front of this process appends to
-// X-Forwarded-For. If the app were ever reached with no appending proxy, a
-// caller's own header would be the only value present. On Render the proxy
-// always appends, and Cloudflare supplies CF-Connecting-IP, so this cannot occur
-// in the deployed topology. Kept as a reminder if the deployment changes.
+// The regression. This file previously ended with a comment conceding that the
+// rightmost-entry rule "cannot occur in the deployed topology" and asserting only
+// that the limit "degrades". That was wrong: CF-Connecting-IP was preferred
+// unconditionally, and it is only written by Cloudflare for traffic that arrives
+// through Cloudflare. Reached directly, the header is the caller's — so rotating
+// it minted a fresh rate-limit bucket per request against every per-IP counter in
+// the service (public verify cap, anonymous rate limiter, login and signup IP
+// throttles, payment-link confirm throttle).
+test('a header from an untrusted peer is ignored entirely', async () => {
+  // No socket: exercise the resolver directly with a public peer address.
+  const withPublicPeer = {
+    socket: { remoteAddress: '203.0.113.9' },
+    headers: {
+      'cf-connecting-ip': '198.51.100.1',
+      'x-forwarded-for': '192.0.2.44',
+    },
+  } as any;
+
+  assert.equal(
+    getRequestIp(withPublicPeer),
+    '203.0.113.9',
+    'a public peer must not be able to choose the identity its own headers name',
+  );
+
+  // Two different forged headers, one identity: no fresh bucket.
+  const rotated = getRequestIp({
+    socket: { remoteAddress: '203.0.113.9' },
+    headers: { 'cf-connecting-ip': '198.51.100.2' },
+  } as any);
+  assert.equal(rotated, withPublicPeer.socket.remoteAddress);
+});
+
+test('a private peer is trusted, so the documented topology keeps working', async () => {
+  const viaPrivateProxy = {
+    socket: { remoteAddress: '10.0.0.7' },
+    headers: { 'cf-connecting-ip': '198.51.100.5' },
+  } as any;
+  assert.equal(getRequestIp(viaPrivateProxy), '198.51.100.5');
+
+  // ::ffff:10.0.0.7 is the same address in the form Node usually reports.
+  const viaMappedPrivate = {
+    socket: { remoteAddress: '::ffff:10.0.0.7' },
+    headers: { 'x-forwarded-for': '192.0.2.1, 198.51.100.6' },
+  } as any;
+  assert.equal(getRequestIp(viaMappedPrivate), '198.51.100.6', 'the rightmost entry is the one appended by the nearest hop');
+});

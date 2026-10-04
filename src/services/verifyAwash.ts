@@ -1,5 +1,4 @@
 import axios, { AxiosResponse } from 'axios';
-import https from 'https';
 import logger from '../utils/logger';
 
 export interface AwashVerifyResult {
@@ -31,7 +30,13 @@ export async function verifyAwash(
     transactionReference: string
 ): Promise<AwashVerifyResult> {
     const url = `https://awashpay.awashbank.com:8225/-${encodeURIComponent(transactionReference)}`;
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    // No `rejectUnauthorized: false`, and deliberately none. This response *is*
+    // the verification: the HTML below is regex-parsed, and a successful parse
+    // reaches the merchant as a real receipt. Disabling certificate validation
+    // means anyone with a network position against this host can mint one. A
+    // receipt page is far below this bound, so an oversized body is a hostile
+    // or broken response rather than a receipt.
+    const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
     const maxRetries = 3;
     const retryDelay = 2000;
 
@@ -39,8 +44,9 @@ export async function verifyAwash(
         try {
             logger.info(`ðŸ”Ž Fetching Awash receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
             const response: AxiosResponse<string> = await axios.get(url, {
-                httpsAgent,
                 responseType: 'text',
+                maxContentLength: MAX_RESPONSE_BYTES,
+                maxBodyLength: MAX_RESPONSE_BYTES,
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                     'Accept': 'text/html',

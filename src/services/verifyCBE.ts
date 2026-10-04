@@ -1,6 +1,5 @@
 import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
-import https from 'https';
 import fs from 'fs';
 import puppeteer, { Browser, HTTPResponse, Page } from 'puppeteer';
 import logger from '../utils/logger';
@@ -256,25 +255,25 @@ function releaseBrowserSlot(): void {
     if (next) next.resolve();
 }
 
-async function getBrowser(): Promise<Browser> {
-    if (browser && browser.isConnected()) {
-        return browser;
-    }
-
-    const executablePath = getChromeExecutablePath();
-    if (!executablePath) {
-        throw new Error(
-            'Chrome/Chromium is not installed. Deploy the Dockerfile or run "npx puppeteer browsers install chrome" during the Render build.'
-        );
-    }
-
-    const launchOptions = {
+/**
+ * Chromium launch options for the legacy CBE fallback.
+ *
+ * Exported so the arguments are assertable without a browser present. The
+ * security-relevant part is the absence of `--ignore-certificate-errors`: the
+ * page this drives serves the receipt, and that receipt is the verification, so
+ * ignoring certificate errors would let anyone with a network position against
+ * apps.cbe.com.et serve a forged one.
+ *
+ * `--no-sandbox` is still required — the Dockerfile installs Debian Chromium in
+ * a container with no user namespace — and does not weaken TLS.
+ */
+export function cbeChromeLaunchOptions(executablePath: string): Record<string, unknown> {
+    return {
         headless: true,
         executablePath,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--ignore-certificate-errors',
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
@@ -288,6 +287,21 @@ async function getBrowser(): Promise<Browser> {
             '--mute-audio',
         ],
     };
+}
+
+async function getBrowser(): Promise<Browser> {
+    if (browser && browser.isConnected()) {
+        return browser;
+    }
+
+    const executablePath = getChromeExecutablePath();
+    if (!executablePath) {
+        throw new Error(
+            'Chrome/Chromium is not installed. Deploy the Dockerfile or run "npx puppeteer browsers install chrome" during the Render build.'
+        );
+    }
+
+    const launchOptions = cbeChromeLaunchOptions(executablePath);
 
     logger.info(`🔧 Using Chrome at: ${executablePath}`);
     // @types/puppeteer 5 is also installed for legacy imports in this project
@@ -320,13 +334,20 @@ function validatePdfBuffer(
 
     // Do not trust Content-Type alone. CBE sometimes returns an HTML error page
     // with HTTP 200, which used to be passed to pdf-parse as if it were a PDF.
+    //
+    // The upstream body is logged, never returned. This function's message
+    // travels all the way out to the API caller (via verifyResult.error), and an
+    // HTML error page from a bank carries internal hostnames, request ids and
+    // sometimes infrastructure detail. The caller only needs to know it was not
+    // a PDF; an operator has the log.
     if (!isPdfBuffer(normalizedBuffer)) {
         const preview = normalizedBuffer
             .toString('utf8')
             .replace(/\s+/g, ' ')
             .slice(0, 180);
+        logger.warn(`CBE ${source} returned a non-PDF body (HTTP ${status}, ${contentType || 'unknown content type'}): ${preview}`);
         throw new Error(
-            `CBE ${source} response was not a PDF (HTTP ${status}, ${contentType || 'unknown content type'}${preview ? `: ${preview}` : ''})`
+            `CBE ${source} response was not a PDF (HTTP ${status}, ${contentType || 'unknown content type'})`
         );
     }
 
@@ -341,6 +362,18 @@ async function waitForPdfResponse(page: Page, timeoutMs: number): Promise<HTTPRe
         }, timeoutMs);
 
         const onResponse = (response: HTTPResponse) => {
+            // Pinned to CBE's own receipt host. Without this the listener
+            // accepted a PDF from *any* origin the page happened to contact, so
+            // a third-party resource on CBE's page — or anything the page was
+            // redirected to — could supply the document that parseCBEReceipt
+            // then reports as a verified payment.
+            let origin = '';
+            try {
+                origin = new URL(response.url()).hostname.toLowerCase();
+            } catch {
+                return;
+            }
+            if (origin !== 'apps.cbe.com.et') return;
             if (responseContentType(response).includes('pdf')) {
                 clearTimeout(timer);
                 page.off('response', onResponse);
@@ -359,7 +392,11 @@ async function fetchCBEReceiptWithPuppeteer(fullId: string): Promise<ArrayBuffer
     try {
         const b = await getBrowser();
         const page: Page = await b.newPage();
-        return await renderCBEReceiptPage(page, url);
+        const result = await renderCBEReceiptPage(page, url);
+        // Armed after the page closes, and re-armed by the next caller, so an
+        // idle Chromium is released without losing the warm-start benefit.
+        scheduleBrowserIdleClose();
+        return result;
     } finally {
         releaseBrowserSlot();
     }
@@ -416,12 +453,13 @@ async function renderCBEReceiptPage(page: Page, url: string): Promise<ArrayBuffe
         const contentType = navigationResponse
             ? responseContentType(navigationResponse)
             : 'no response';
+        // page.content() is the live DOM of CBE's error page. Logged, never
+        // returned — this message is surfaced to the API caller verbatim.
         const htmlPreview = (await page.content())
             .replace(/\s+/g, ' ')
             .slice(0, 180);
-        throw new Error(
-            `CBE Puppeteer response was not a PDF (${contentType}).${htmlPreview ? ` Page: ${htmlPreview}` : ''}`
-        );
+        logger.warn(`CBE Puppeteer response was not a PDF (${contentType}). Page: ${htmlPreview}`);
+        throw new Error(`CBE Puppeteer response was not a PDF (${contentType})`);
     } finally {
         await page.close();
     }
@@ -433,13 +471,21 @@ export async function verifyCBELegacy(
 ): Promise<VerifyResult> {
     const fullId = `${reference}${accountSuffix}`;
     const url = `https://apps.cbe.com.et:100/?id=${encodeURIComponent(fullId)}`;
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    // Certificate validation stays on. This endpoint serves the receipt itself,
+    // so `rejectUnauthorized: false` here means anyone able to intercept the
+    // connection can serve a forged PDF that parseCBEReceipt reports as a
+    // verified payment. If CBE's certificate chain is genuinely broken, pin
+    // its CA instead of turning the check off. The body bound stops a hostile
+    // or broken endpoint from buffering an unbounded response on a 512 MB
+    // instance; a CBE receipt is one page and tens of kilobytes.
+    const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
     try {
         logger.info(`🔎 Attempting direct CBE PDF fetch: ${url}`);
         const response: AxiosResponse<ArrayBuffer> = await axios.get(url, {
-            httpsAgent,
             responseType: 'arraybuffer',
+            maxContentLength: MAX_RESPONSE_BYTES,
+            maxBodyLength: MAX_RESPONSE_BYTES,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                 'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.1'
@@ -479,9 +525,14 @@ export async function verifyCBELegacy(
                 ? puppeteerErr.message
                 : String(puppeteerErr);
             logger.error(`❌ CBE direct and Puppeteer fetches failed. Direct: ${directMessage}. Puppeteer: ${puppeteerMessage}`);
+            // Both underlying messages stay in the log. Concatenated into the
+            // response they exposed the upstream host (`getaddrinfo ENOTFOUND
+            // apps.cbe.com.et`), the local Chrome path from getChromeExecutablePath()
+            // and whatever HTML the bank returned. The caller learns that the
+            // fetch failed and can retry; an operator has everything else.
             return {
                 success: false,
-                error: `CBE receipt could not be fetched. Direct: ${directMessage}. Puppeteer: ${puppeteerMessage}`,
+                error: 'CBE receipt could not be fetched. Please retry in a few seconds.',
                 statusCode: 502
             };
         }
@@ -489,8 +540,8 @@ export async function verifyCBELegacy(
 }
 
 export async function verifyCBENew(token: string): Promise<VerifyResult> {
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
     const url = `https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/${encodeURIComponent(token)}`;
+    const MAX_RESPONSE_BYTES = 1024 * 1024;
     const maxRetries = 4;
     const retryDelayMs = 1_800;
 
@@ -498,7 +549,8 @@ export async function verifyCBENew(token: string): Promise<VerifyResult> {
         try {
             logger.info(`🔎 Attempting new CBE JSON fetch (${attempt}/${maxRetries}): ${url}`);
             const response = await axios.get<CBETransactionResponse>(url, {
-                httpsAgent,
+                maxContentLength: MAX_RESPONSE_BYTES,
+                maxBodyLength: MAX_RESPONSE_BYTES,
                 headers: {
                     'Accept': 'application/json, text/plain, */*',
                     'Origin': 'https://mbreciept.cbe.com.et',
@@ -576,18 +628,30 @@ async function parseCBEReceipt(buffer: ArrayBuffer | Buffer): Promise<VerifyResu
         const pdfBuffer = Buffer.isBuffer(buffer)
             ? buffer
             : Buffer.from(new Uint8Array(buffer));
-        const parsed = await pdf(pdfBuffer);
+        // `max` bounds the render. A crafted document with thousands of pages
+        // would otherwise be fully rasterised in-process, on the instance that
+        // is also serving customer traffic. A CBE receipt is one page.
+        const parsed = await pdf(pdfBuffer, { max: 3 });
         const rawText = parsed.text.replace(/\s+/g, ' ').trim();
 
-        let payerName = rawText.match(/Payer\s*:?\s*(.*?)\s+Account/i)?.[1]?.trim();
-        let receiverName = rawText.match(/Receiver\s*:?\s*(.*?)\s+Account/i)?.[1]?.trim();
-        const accountMatches = [...rawText.matchAll(
-            /Account\s*:?\s*((?:[A-Z0-9]?\*{4}\s*\d{4}|[A-Z0-9][A-Z0-9*.-]{3,29}))/gi
-        )]
-            .map(match => match[1]?.replace(/\s+/g, '').trim())
-            .filter((value): value is string => Boolean(value));
-        const payerAccount = accountMatches[0];
-        const receiverAccount = accountMatches[1];
+        // Every field is matched against its own label. The accounts used to be
+        // collected by an unanchored /Account.../g and then assigned by document
+        // position — payer = [0], receiver = [1] — which meant any layout change
+        // could silently swap them, and a receipt reading "Account No: 1000123456"
+        // matched the word "Number" as the account. Swapping payer and receiver is
+        // not a cosmetic bug: receiverAccount is what the recipient check reads,
+        // so a swapped pair verifies a payment that went somewhere else.
+        const payerName = rawText.match(/Payer\s*:?\s*(.*?)\s+Account/i)?.[1]?.trim();
+        const receiverName = rawText.match(/Receiver\s*:?\s*(.*?)\s+Account/i)?.[1]?.trim();
+        const accountValue = '(?:[A-Z0-9]?\\*{4}\\s*\\d{4}|\\d[\\d*\\-]{5,29}|[A-Z0-9][A-Z0-9*]{5,29})';
+        const payerAccount = rawText
+            .match(new RegExp(`Payer\\s*:?\\s*(?:name\\s*:?\\s*.*?\\s*)?Account\\s*(?:no\\.?|number)?\\s*:?\\s*(${accountValue})`, 'i'))?.[1]
+            ?.replace(/\s+/g, '')
+            .trim();
+        const receiverAccount = rawText
+            .match(new RegExp(`Receiver\\s*:?\\s*(?:name\\s*:?\\s*.*?\\s*)?Account\\s*(?:no\\.?|number)?\\s*:?\\s*(${accountValue})`, 'i'))?.[1]
+            ?.replace(/\s+/g, '')
+            .trim();
 
         const reason = rawText.match(/Reason\s*\/\s*Type of service\s*:?\s*(.*?)\s+Transferred Amount/i)?.[1]?.trim();
         const amountText = rawText.match(/Transferred Amount\s*:?\s*([\d,]+(?:\.\d+)?)\s*ETB/i)?.[1];
@@ -597,15 +661,15 @@ async function parseCBEReceipt(buffer: ArrayBuffer | Buffer): Promise<VerifyResu
         const amount = parseAmount(amountText);
         const date = dateRaw ? validDate(dateRaw) : undefined;
 
-        payerName = payerName ? titleCase(payerName) : undefined;
-        receiverName = receiverName ? titleCase(receiverName) : undefined;
+        const payerNameTitled = payerName ? titleCase(payerName) : undefined;
+        const receiverNameTitled = receiverName ? titleCase(receiverName) : undefined;
 
-        if (payerName && payerAccount && receiverName && receiverAccount && amount !== undefined && date && referenceMatch) {
+        if (payerNameTitled && payerAccount && receiverNameTitled && receiverAccount && amount !== undefined && date && referenceMatch) {
             return {
                 success: true,
-                payer: payerName,
+                payer: payerNameTitled,
                 payerAccount,
-                receiver: receiverName,
+                receiver: receiverNameTitled,
                 receiverAccount,
                 amount,
                 date,
@@ -624,7 +688,32 @@ async function parseCBEReceipt(buffer: ArrayBuffer | Buffer): Promise<VerifyResu
     }
 }
 
+/**
+ * Chromium holds 150–300 MB once launched, on a 512 MB instance that is also
+ * serving every other request. It was previously closed only at process
+ * shutdown, so one legacy CBE verification pinned that memory for the lifetime
+ * of the deploy. Close it after an idle period instead: the fallback path is
+ * rare, so paying the launch cost again is cheaper than holding the browser.
+ */
+const BROWSER_IDLE_TIMEOUT_MS = Number(process.env.CBE_BROWSER_IDLE_MS ?? 120_000);
+let browserIdleTimer: NodeJS.Timeout | null = null;
+
+function scheduleBrowserIdleClose(): void {
+    if (browserIdleTimer) clearTimeout(browserIdleTimer);
+    browserIdleTimer = setTimeout(() => {
+        browserIdleTimer = null;
+        if (activeBrowserOps > 0) return;
+        void closeCBEBrowser().catch((error) =>
+            logger.warn(`Failed to close the idle CBE browser: ${error instanceof Error ? error.message : error}`));
+    }, BROWSER_IDLE_TIMEOUT_MS);
+    browserIdleTimer.unref?.();
+}
+
 export async function closeCBEBrowser(): Promise<void> {
+    if (browserIdleTimer) {
+        clearTimeout(browserIdleTimer);
+        browserIdleTimer = null;
+    }
     if (browser && browser.isConnected()) {
         await browser.close();
         browser = null;

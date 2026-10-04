@@ -20,6 +20,8 @@ import { billingConfigCacheState } from '../config/billingConfig';
 import { workspaceDeliveryCacheState } from '../utils/workspaceEvents';
 import { quotaRefundState } from '../utils/quotaCharge';
 import { safeSecretEquals } from '../utils/secretCompare';
+import { MemoryWindowCounter } from '../utils/expiringStore';
+import { getRequestIp } from '../utils/requestIp';
 import { dbMetricsSnapshot } from '../utils/dbMetrics';
 
 /**
@@ -100,20 +102,51 @@ const PROVIDERS = [
  * version, cache sizes, buffer depths, which secrets are configured, and real
  * SQL statement text. That is a free reconnaissance and memory-pressure oracle
  * for anyone who can reach the URL, so it is now gated on a secret.
+ *
+ * Headers only. `req.query.secret` used to be accepted, which put a secret that
+ * unlocks host memory, the PID, node version and buffer depths into every CDN
+ * and proxy access log, every `Referer` header and browser history — reintroducing
+ * exactly the pattern adminRoute.ts removed with the comment "Header only: the
+ * key used to be accepted as ?adminKey=, which put it in access logs, Referer
+ * headers and browser history."
+ *
+ * `x-admin-key` is also no longer accepted here. Using the admin secret as a
+ * second key for a public endpoint widens its blast radius for no benefit, and
+ * this route is unauthenticated and unrated.
  */
 function diagnosticsAuthorised(req: Request): boolean {
     const secret = process.env.STATUS_MONITOR_SECRET;
     if (!secret) return false;
-    const presented =
-        (req.headers['x-status-secret'] as string | undefined) ??
-        (req.query.secret as string | undefined) ??
-        (req.headers['x-admin-key'] as string | undefined);
-    return safeSecretEquals(presented, secret) || safeSecretEquals(presented, process.env.ADMIN_SECRET);
+    const presented = req.headers['x-status-secret'] as string | undefined;
+    return safeSecretEquals(presented, secret);
+}
+
+/**
+ * Brute-force guard for the diagnostics gate.
+ *
+ * `safeSecretEquals` is constant-time, so the secret cannot be recovered by
+ * timing — but an unrated endpoint still accepts unlimited guesses. Ten failures
+ * per IP per hour, on top of the constant-time compare.
+ */
+const DIAGNOSTICS_WINDOW_MS = 60 * 60 * 1000;
+const DIAGNOSTICS_MAX_FAILURES = 10;
+const diagnosticsFailures = new MemoryWindowCounter({ maxEntries: 5_000 });
+
+function diagnosticsThrottled(req: Request): boolean {
+    const entry = diagnosticsFailures.increment(`status:${getRequestIp(req)}`, DIAGNOSTICS_WINDOW_MS);
+    return entry.count > DIAGNOSTICS_MAX_FAILURES;
 }
 
 router.get('/summary', (req: Request, res: Response): void => {
     const capabilities = getStatusCapabilities();
     const authorised = diagnosticsAuthorised(req);
+
+    // Throttle only the unauthorised case: a monitoring agent that has the
+    // secret must never be locked out by someone else's guessing.
+    if (!authorised && diagnosticsThrottled(req)) {
+        res.status(429).json({ success: false, error: 'Too many status-secret attempts. Retry later.' });
+        return;
+    }
 
     res.json({
         status: 'operational',

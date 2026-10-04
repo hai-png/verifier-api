@@ -191,47 +191,69 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
       ? normaliseProviders(req.body?.providersAllowed)
       : (Array.isArray(current.providersAllowed) ? current.providersAllowed as string[] : []);
 
-    if (hasProvidersAllowed) {
-      const validationError = validatePayoutInput(current.type as PayoutType, current.account, providersAllowed);
-      if (validationError) {
-        res.status(400).json({ success: false, error: validationError });
-        return;
-      }
+    // `account` is now honoured.
+    //
+    // It was silently dropped: the handler read `label`, `accountHolderName`,
+    // `providersAllowed` and `isDefault` and never `account`, so a merchant
+    // rotating a compromised Telebirr number got `200 {"success": true}` with the
+    // OLD number and every subsequent confirmation matched against the account
+    // they believed they had retired. A false success on the one field where that
+    // is a security incident is worse than a rejection, so the alternative would
+    // have been to 400 on it — accepting it is better, but it must be real.
+    const hasAccount = req.body?.account !== undefined;
+    const accountInput = hasAccount ? normaliseAccount(req.body?.account) : null;
+    if (hasAccount && accountInput === 'invalid') {
+      res.status(400).json({ success: false, error: 'account must be a non-empty string.' });
+      return;
+    }
+    const nextAccount = hasAccount ? (accountInput as string) : current.account;
+
+    // The (type, account, providers) triple has to stay consistent, so validate
+    // against the account this edit actually results in rather than the stored one.
+    const validationError = validatePayoutInput(current.type as PayoutType, nextAccount, providersAllowed);
+    if (validationError) {
+      res.status(400).json({ success: false, error: validationError });
+      return;
     }
 
     const nextLabel = labelInput ?? current.label;
     const nextAccountHolderName = accountHolderNameInput ?? current.accountHolderName;
     const markDefault = req.body?.isDefault === true;
 
+    // Scoped to the caller's workspace in both branches. The earlier version used
+    // `update({ where: { id } })` with no tenant predicate, relying entirely on
+    // the scoped findFirst above never being refactored away.
     if (markDefault) {
       await prisma.$transaction([
         prisma.payoutAccount.updateMany({
           where: { workspaceId: auth.workspaceId, isDefault: true },
           data: { isDefault: false },
         }),
-        prisma.payoutAccount.update({
-          where: { id },
+        prisma.payoutAccount.updateMany({
+          where: { id, workspaceId: auth.workspaceId },
           data: {
             isDefault: true,
             label: nextLabel,
             accountHolderName: nextAccountHolderName,
+            ...(hasAccount ? { account: nextAccount } : {}),
             ...(hasProvidersAllowed ? { providersAllowed } : {}),
           },
         }),
       ]);
     } else {
-      await prisma.payoutAccount.update({
-        where: { id },
+      await prisma.payoutAccount.updateMany({
+        where: { id, workspaceId: auth.workspaceId },
         data: {
           label: nextLabel,
           accountHolderName: nextAccountHolderName,
+          ...(hasAccount ? { account: nextAccount } : {}),
           ...(hasProvidersAllowed ? { providersAllowed } : {}),
         },
       });
     }
 
-    const updated = await prisma.payoutAccount.findUnique({
-      where: { id },
+    const updated = await prisma.payoutAccount.findFirst({
+      where: { id, workspaceId: auth.workspaceId },
       select: payoutAccountSelect,
     });
 
@@ -270,13 +292,53 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
         })
       : null;
 
+    // Retiring an account also disconnects it from products and payment links.
+    //
+    // The relation rows were left behind, so a link bound to the old account kept
+    // it alongside the new one. pickPayoutAccountForProvider returns null when a
+    // provider matches zero or two or more accounts, so every one of those links
+    // answered "Could not resolve a unique payout account" on a payment the buyer
+    // had already made — permanently, with no repair path from the API. The
+    // confirm lookup now filters on `active: true` as well, which stops the
+    // deadlock from forming; this clears the bindings so the account does not
+    // silently reappear on every link if it is ever reactivated.
+    //
+    // `updateMany` cannot express a nested relation disconnect, so this is a
+    // per-row `update`. The fan-out is one account's products and links — a
+    // handful — and it only runs on an explicit retire.
+    const [boundProducts, boundLinks] = await Promise.all([
+      prisma.product.findMany({
+        where: { workspaceId: auth.workspaceId, payoutAccounts: { some: { id } } },
+        select: { id: true },
+      }),
+      prisma.paymentLink.findMany({
+        where: { workspaceId: auth.workspaceId, payoutAccounts: { some: { id } } },
+        select: { id: true },
+      }),
+    ]);
+
     await prisma.$transaction([
-      prisma.payoutAccount.update({
-        where: { id },
+      prisma.payoutAccount.updateMany({
+        where: { id, workspaceId: auth.workspaceId },
         data: { active: false, isDefault: false },
       }),
+      // A soft delete, so the row survives and onDelete SetNull never fires.
+      // Clear the binding explicitly or a reactivated account comes back
+      // attached to every key that used it.
+      prisma.apiKey.updateMany({
+        where: { workspaceId: auth.workspaceId, defaultPayoutAccountId: id },
+        data: { defaultPayoutAccountId: null },
+      }),
+      ...boundProducts.map((product) => prisma.product.update({
+        where: { id: product.id },
+        data: { payoutAccounts: { disconnect: { id } } },
+      })),
+      ...boundLinks.map((link) => prisma.paymentLink.update({
+        where: { id: link.id },
+        data: { payoutAccounts: { disconnect: { id } } },
+      })),
       ...(promote
-        ? [prisma.payoutAccount.update({ where: { id: promote.id }, data: { isDefault: true } })]
+        ? [prisma.payoutAccount.updateMany({ where: { id: promote.id, workspaceId: auth.workspaceId }, data: { isDefault: true } })]
         : []),
     ]);
 

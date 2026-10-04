@@ -236,16 +236,56 @@ async function initializeRuntime(): Promise<void> {
 // src/utils/requestIp.ts.
 app.set('trust proxy', 1);
 
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+//
+// `origin: true` reflected *any* Origin, which is only safe while every
+// authenticated route takes a bearer token and nothing reads a cookie. That is
+// now true by construction (auth.ts accepts Authorization only), but the
+// combination was one `CORS_CREDENTIALS=true` away from full cross-origin
+// account takeover on every dashboard route, and `origin: true` was what made
+// that setting dangerous in the first place.
+//
+// So: an explicit allow-list. Set CORS_ALLOWED_ORIGINS to a comma-separated list
+// (the dashboard's own origin(s)). Unset means same-origin only — the API and the
+// dashboard on one host — which is the correct default for a self-hosted deploy
+// and fails closed everywhere else.
+//
+// CORS_CREDENTIALS is refused outright. With an allow-list it is not needed: the
+// dashboard authenticates with a bearer token, which a cross-origin request cannot
+// read out of localStorage. If you have a genuine cookie-authenticated client,
+// that is a design change, not an environment variable.
+const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const corsCredentialsRequested = (process.env.CORS_CREDENTIALS ?? 'false').toLowerCase() === 'true';
+if (corsCredentialsRequested) {
+  logger.warn(
+    '⚠️ CORS_CREDENTIALS=true is ignored and should be removed from the environment. ' +
+    'The dashboard authenticates with a bearer token; credentialed CORS on this API ' +
+    'would expose every dashboard route to any origin.',
+  );
+}
+
 app.use(cors({
-    origin: true, // Allow all origins — the dashboard runs on a different domain
-    // Clients authenticate with an Authorization: Bearer token (or x-api-key),
-    // never with cookies, so reflecting credentials to every origin is not
-    // needed. Set CORS_CREDENTIALS=true only if you introduce cookie auth.
-    credentials: (process.env.CORS_CREDENTIALS ?? 'false').toLowerCase() === 'true',
+    // Reflect the request origin when it is on the allow-list, otherwise send
+    // nothing. `origin: []` is the cors package's way of omitting the header.
+    origin: CORS_ALLOWED_ORIGINS.length === 0
+        ? false
+        : (origin: string | undefined, callback: (err: Error | null, origin?: boolean | string) => void) =>
+            callback(null, origin && CORS_ALLOWED_ORIGINS.includes(origin) ? origin : false),
+    credentials: false,
     maxAge: 600, // Cache successful preflight, never receipt responses.
     exposedHeaders: ['Server-Timing', 'X-Verify-Cache', 'Retry-After'],
+    // Rate-limit and quota responses carry Retry-After; without this a browser
+    // cannot read it, so an integration cannot back off correctly.
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Dashboard-Key',
+        'X-Workspace-Id', 'X-Admin-Key', 'X-API-Key-Id', 'X-Veritas-Internal-Operation',
+        'X-Status-Secret'],
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS', 'HEAD'],
 }));
-app.use(express.json());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? '256kb' }));
 app.use(cookieParser());
 
 // Add request logging middleware

@@ -88,3 +88,41 @@ test('the shared pipeline redacts credential-shaped metadata on every transport'
   assert.ok(!output.includes('nvd_sess_user-1'), `session token leaked: ${output}`);
   assert.ok(output.includes('[redacted]'), 'expected redaction markers');
 });
+
+test('a credential inside a serialised string is redacted, not only object keys', async () => {
+  // The regression. `redactSerialized` ran the *value-shaped* patterns
+  // (`sk_live_…`, `nvd_sess_…`, `Bearer …`) over a string, but never the
+  // *key-shaped* one — and `SENSITIVE_KEY_PATTERN` only ever ran over object keys.
+  // requestLogger logs bodies as `body: JSON.stringify(req.body)`, so with
+  // LOG_REQUEST_BODIES on, a POST /auth/login body was written to
+  // logs/combined-*.log with the plaintext password intact. The note in
+  // logger.ts claiming redaction was fixed for request bodies was true for
+  // structured metadata and false for the serialised bodies bodies actually
+  // arrive as.
+  const { default: logger } = await import('../utils/logger');
+  const chunks: string[] = [];
+  const original = logger.transports.map((transport) => transport);
+  for (const transport of original) logger.remove(transport);
+  logger.add(new transports.Stream({
+    stream: new Writable({ write(chunk, _e, cb) { chunks.push(chunk.toString()); cb(); } }) as any,
+  }));
+  try {
+    logger.info('incoming', {
+      body: JSON.stringify({ email: 'victim@example.com', password: 'correct-horse-battery-staple' }),
+    });
+    logger.info('incoming', {
+      query: 'redirect=https%3A%2F%2Fx&token=abc123secret&api_key=sk_live_zzz',
+    });
+    await new Promise<void>((r) => setImmediate(r));
+  } finally {
+    for (const transport of logger.transports) logger.remove(transport);
+    for (const transport of original) logger.add(transport);
+  }
+
+  const output = chunks.join('\n');
+  assert.ok(!output.includes('correct-horse-battery-staple'), `password in a serialised body leaked: ${output}`);
+  assert.ok(!output.includes('abc123secret'), `token= in a query string leaked: ${output}`);
+  assert.ok(!output.includes('sk_live_zzz'), `api_key= in a query string leaked: ${output}`);
+  // Non-sensitive fields survive, or the log becomes useless for debugging.
+  assert.ok(output.includes('victim@example.com'), 'unrelated fields should still be logged');
+});

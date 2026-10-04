@@ -28,9 +28,17 @@ import { verifyImageHandler } from '../services/verifyImage';
 import {
     normaliseAccount,
     normaliseProviders as normalisePayoutProviders,
+    normalisePayoutType,
     validatePayoutEdit,
     validatePayoutInput,
 } from '../utils/payoutInput';
+import {
+    isValidPaymentAmount,
+    isWithinByteLimit,
+    MAX_PAYMENT_AMOUNT_ETB,
+    MIN_PAYMENT_AMOUNT_ETB,
+    MYSQL_VARCHAR_BYTES,
+} from '../utils/fieldLimits';
 import { assertBrowserNavigableUrl, assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 import { WORKSPACE_EVENTS } from '../utils/workspaceEvents';
 import {
@@ -43,9 +51,12 @@ import {
     resolvePositiveInteger,
 } from './products';
 
-// MySQL String columns are VARCHAR(191); a longer value is a 500 from Prisma rather
-// than a 400, so the common free-text fields are capped before they reach it.
-const MAX_LINK_NAME_LENGTH = 191;
+// MySQL String columns are VARCHAR(191); a longer value is a 500 from Prisma
+// rather than a 400, so free-text fields are capped before they reach it. The cap
+// itself lives in utils/fieldLimits.ts so the API routers apply the same number —
+// the comment here used to claim "the common free-text fields" were covered when
+// exactly one field was.
+const MAX_LINK_NAME_LENGTH = MYSQL_VARCHAR_BYTES;
 
 const router = Router();
 
@@ -366,8 +377,23 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
         providersAllowed?: string[];
     };
 
-        if (!label || !accountHolderName || !type || !account) {
-        res.status(400).json({ success: false, error: 'label, accountHolderName, type, and account are required.' });
+    // `type` is normalised rather than truthiness-checked. The old guard was
+    // `if (!label || !accountHolderName || !type || !account)`, so `"BANKX"`
+    // passed it, failed the `type === 'PHONE'` branch, satisfied
+    // validatePayoutInput as a bank account, and then reached
+    // prisma.payoutAccount.create({ data: { type } }) as an invalid enum — a 500
+    // where the caller could have been told 400, and a cheap way to fill the
+    // error log.
+    const payoutType = normalisePayoutType(type);
+    if (typeof label !== 'string' || !label.trim()
+        || typeof accountHolderName !== 'string' || !accountHolderName.trim()
+        || !payoutType || typeof account !== 'string' || !account.trim()) {
+        res.status(400).json({ success: false, error: 'label, accountHolderName, type (PHONE or BANK), and account are required.' });
+        return;
+    }
+    // VARCHAR(191) columns. Uncapped, an over-length value is a 500 from Prisma.
+    if (!isWithinByteLimit(label.trim()) || !isWithinByteLimit(accountHolderName.trim())) {
+        res.status(400).json({ success: false, error: `label and accountHolderName must be at most ${MYSQL_VARCHAR_BYTES} bytes.` });
         return;
     }
 
@@ -383,7 +409,7 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
         // then be offered as the expected recipient and quietly never match a
         // receipt. Same validation as POST /payouts now.
         const providers = normalisePayoutProviders(providersAllowed ?? ['telebirr']);
-        const problem = validatePayoutInput(type, normaliseAccount(account), providers);
+        const problem = validatePayoutInput(payoutType, normaliseAccount(account), providers);
         if (problem) {
             res.status(400).json({ success: false, error: problem });
             return;
@@ -395,9 +421,9 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
         const payout = await prisma.payoutAccount.create({
             data: {
                 workspaceId,
-                label,
-                accountHolderName,
-                type,
+                label: label.trim(),
+                accountHolderName: accountHolderName.trim(),
+                type: payoutType,
                 account: normaliseAccount(account),
                 providersAllowed: providers,
                 isDefault: existing === 0,
@@ -852,8 +878,15 @@ router.post('/:workspaceId/products', async (req: Request, res: Response): Promi
         res.status(400).json({ success: false, error: 'name is required.' });
         return;
     }
-    if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
-        res.status(400).json({ success: false, error: 'price must be a positive number.' });
+    if (!isWithinByteLimit(trimmedName)) {
+        res.status(400).json({ success: false, error: `name must be at most ${MYSQL_VARCHAR_BYTES} bytes.` });
+        return;
+    }
+    if (!isValidPaymentAmount(price)) {
+        res.status(400).json({
+            success: false,
+            error: `price must be a finite number between ${MIN_PAYMENT_AMOUNT_ETB} and ${MAX_PAYMENT_AMOUNT_ETB}.`,
+        });
         return;
     }
     const acceptedProviders = normaliseProviders(rawProviders);

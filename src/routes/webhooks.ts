@@ -229,9 +229,19 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     });
 
     res.status(201).json({
-      success: true,
+success: true,
       webhook,
-      // Secret shown exactly once — not stored in recoverable form
+      // "Shown exactly once" is true of the *API response* and false of the
+      // database. The secret is stored raw, in a column named `secretHash`, which
+      // tells every reader, auditor and backup that it is hashed — it is not. A
+      // read-only database compromise yields every tenant's webhook HMAC key,
+      // and a future migration that "helpfully" hashes this column silently
+      // breaks signing.
+      //
+      // This is deliberate: the server has to be able to sign outbound deliveries
+      // with the same value the customer received, which a one-way hash cannot
+      // support. `ApiKey` has the same problem and answers it with `key` + `keyHash`
+      // columns; this one has a misleading column name and a misleading comment.
       secret: rawSecret,
       note: 'Store this secret securely. It will not be shown again. Use it to verify the X-Veritas-Signature header on incoming webhook requests.',
     });

@@ -87,22 +87,35 @@ export async function resolveRecipientPayoutAccount(
  * Dashen returns none. The name is read separately because the account is not
  * the only identifier on offer — Dashen-style responses give a receiver name,
  * which is what the check falls back to.
+ *
+ * Exported so the payment-link confirmation path resolves the credited party the
+ * same way. It previously compared with accountMatches() directly, which returns
+ * true for a null account: for Dashen that made the check unconditionally pass,
+ * because Dashen never returns an account number.
  */
+export function creditedPartyFromData(data: unknown, provider: string): {
+  account: string | null;
+  name: string | null;
+} {
+  if (!data || typeof data !== 'object') return { account: null, name: null };
+
+  const { account } = extractPaymentDetails(data, provider);
+  const record = data as Record<string, unknown>;
+  let name: string | null = null;
+  for (const key of ['creditedPartyName', 'receiverName', 'accountHolderName', 'beneficiaryName', 'recipientName']) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim() !== '') { name = value.trim(); break; }
+  }
+  return { account, name };
+}
+
+/** Same, for a pipeline-shaped result whose payload lives under `data`. */
 function creditedParty(result: Record<string, unknown>, slug: string): {
   account: string | null;
   name: string | null;
 } {
   const data = (result.data ?? result.details) as Record<string, unknown> | undefined;
-  if (!data || typeof data !== 'object') return { account: null, name: null };
-
-  const { account } = extractPaymentDetails(data, slug);
-  const record = data as Record<string, unknown>;
-  let name: string | null = null;
-  for (const key of ['creditedPartyName', 'receiverName', 'accountHolderName', 'beneficiaryName']) {
-    const value = record[key];
-    if (typeof value === 'string' && value.trim() !== '') { name = value.trim(); break; }
-  }
-  return { account, name };
+  return creditedPartyFromData(data, slug);
 }
 
 /**

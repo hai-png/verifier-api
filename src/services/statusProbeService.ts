@@ -27,13 +27,35 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+/**
+ * Race an operation against a deadline.
+ *
+ * The operation receives an AbortSignal and is aborted when the deadline fires.
+ *
+ * Without that, `Promise.race` returned on timeout while the underlying work
+ * kept running: the caller got its ProbeTimeoutError, answered, and the sockets,
+ * fetches and (for Telebirr) the whole per-relay fan-out stayed pinned for their
+ * own full timeouts. Probes run on a timer, so those accumulated for the life of
+ * the process — the response had long since been written when the abandoned work
+ * was still holding connections.
+ *
+ * Aborting is the difference between "the probe gave up" and "the probe stopped".
+ */
+async function withTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
-      operation,
+      operation(controller.signal),
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new ProbeTimeoutError()), timeoutMs);
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new ProbeTimeoutError());
+        }, timeoutMs);
+        timer.unref?.();
       }),
     ]);
   } finally {
@@ -44,7 +66,7 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
 function providerOperation(
   provider: StatusProvider,
   env: NodeJS.ProcessEnv,
-): (() => Promise<{ healthy: boolean; telebirr?: TelebirrProbeDetails }>) | null {
+): ((signal: AbortSignal) => Promise<{ healthy: boolean; telebirr?: TelebirrProbeDetails }>) | null {
   switch (provider) {
     case 'telebirr': {
       const reference = env.STATUS_PROBE_TELEBIRR_REFERENCE;
@@ -156,7 +178,7 @@ export async function runStatusProviderProbe(
   let error: unknown;
   try {
     const outcome = await runWithSensitiveLogsSuppressed(() =>
-      withTimeout(operation(), timeoutMs),
+      withTimeout((signal) => operation(signal), timeoutMs),
     );
     healthy = outcome.healthy;
     telebirr = outcome.telebirr;

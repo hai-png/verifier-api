@@ -41,9 +41,30 @@ test('a phone account cannot accept a bank provider', () => {
   );
 });
 
-test('providers are deduped and lower-cased', () => {
-  assert.deepEqual(normaliseProviders(['Telebirr', 'telebirr', ' M-Pesa ']), ['telebirr', 'm-pesa']);
+test('providers are deduped and canonicalised to the one spelling used everywhere else', () => {
+  // The old assertion expected ['telebirr', 'm-pesa'] and locked the bug in.
+  // normaliseProviders lower-cased but did not canonicalise, so 'M-Pesa' was
+  // stored verbatim — where validatePayoutInput's allow-list rejected it and
+  // ensureProviderCoverage, which matches on 'mpesa', could not see it. The
+  // account then existed, was accepted by nothing, and matched no receipt.
+  assert.deepEqual(normaliseProviders(['Telebirr', 'telebirr', ' M-Pesa ']), ['telebirr', 'mpesa']);
   assert.deepEqual(normaliseProviders('nope'), []);
+
+  // Every alias the verification engine accepts (verifyUniversal.ts) must
+  // canonicalise to the same value the payout vocabulary uses.
+  for (const alias of ['mpesa', 'M-Pesa', 'm-pesa', 'M PESA', '  m-pesa  ']) {
+    assert.deepEqual(normaliseProviders([alias]), ['mpesa'], `${alias} must become mpesa`);
+  }
+  for (const alias of ['cbebirr', 'CBE-Birr', 'cbe_birr', 'CBE Birr']) {
+    assert.deepEqual(normaliseProviders([alias]), ['cbebirr'], `${alias} must become cbebirr`);
+  }
+});
+
+test('a canonicalised alias passes validation that the alias itself failed', () => {
+  // End of the chain: a merchant sending the spelling they read off the API docs
+  // must end up with a working account.
+  assert.equal(validatePayoutInput('PHONE', normaliseAccount('0906422230'), normaliseProviders(['M-Pesa'])), null);
+  assert.equal(validatePayoutInput('PHONE', normaliseAccount('0906422230'), normaliseProviders(['CBE-Birr'])), null);
 });
 
 test('a label of only whitespace is treated as absent, not as a string to store', () => {

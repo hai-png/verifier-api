@@ -147,10 +147,22 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
 
   // Log request details.
   // Never log the raw body or query: this middleware runs before /auth and
-  // apiKeyAuth, so a login body carried a plaintext password and a query string
-  // could carry ?adminKey= or ?apiKey=. Bodies are opt-in via
-  // LOG_REQUEST_BODIES for local debugging only.
-  const logBodies = (process.env.LOG_REQUEST_BODIES ?? 'false').toLowerCase() === 'true';
+  // apiKeyAuth, so a login body carries a plaintext password and a query string
+  // could carry ?adminKey= or ?apiKey=. Bodies are opt-in via LOG_REQUEST_BODIES.
+  //
+  // Non-production only, which the previous version did not enforce. The comment
+  // said "for local debugging only" and the code was `LOG_REQUEST_BODIES === 'true'`,
+  // so turning it on for one debugging session and forgetting meant every
+  // subsequent production deploy logged request bodies — every receipt reference,
+  // every buyer's name, email and phone — until someone noticed. The redaction in
+  // utils/logger.ts covers `password`-shaped keys in a serialised body, but the
+  // point of this flag is not to log customer data at all.
+  const logBodies =
+    (process.env.LOG_REQUEST_BODIES ?? 'false').toLowerCase() === 'true'
+    && process.env.NODE_ENV !== 'production';
+  if ((process.env.LOG_REQUEST_BODIES ?? 'false').toLowerCase() === 'true' && !logBodies) {
+    logger.warn('⚠️ LOG_REQUEST_BODIES is ignored in production; request bodies contain customer data.');
+  }
   const url = req.originalUrl.split('?')[0];
   logger.info(`[${requestId}] Incoming ${req.method} request to ${url}`, {
     method: req.method,

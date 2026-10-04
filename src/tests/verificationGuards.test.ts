@@ -12,6 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prisma } from '../utils/prisma';
 import { checkAmount, noteSuccessfulVerification } from '../utils/verificationGuards';
+import { extractPaymentDetails } from '../utils/paymentMatch';
 
 const telebirr = (settledAmount: string) => ({
   success: true,
@@ -55,18 +56,56 @@ test('no expected amount means no check, and says so', () => {
   }
 });
 
-test('a provider that reports no amount is not treated as a match', () => {
-  // M-Pesa, Awash and Zemen land here. "We cannot see how much" is not evidence
-  // that the right amount arrived.
+test('a provider that genuinely reports no amount is not treated as a match', () => {
+  // Dashen is the honest case: its API returns a receiver name and no amount
+  // field at all. "We cannot see how much" is not evidence that the right
+  // amount arrived.
   const result = checkAmount({
-    result: { success: true, data: { transactionId: 'X1' } },
+    result: { success: true, data: { transactionId: 'X1', receiverName: 'Shop PLC' } },
     expectedAmount: 200,
-    provider: 'mpesa',
+    provider: 'dashen',
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'AMOUNT_NOT_VERIFIABLE');
   assert.equal(result.foundAmount, null);
+});
+
+test('M-Pesa, Awash and Zemen do report an amount and are checked against it', () => {
+  // These three were missing from extractPaymentDetails entirely, so every
+  // receipt fell into the `default:` arm and came back AMOUNT_NOT_VERIFIABLE
+  // — which for a payment link meant a real payment could never be confirmed,
+  // and for /verify-image meant the amount check was inert on 19 of 21
+  // providers. Asserted per provider so a missing case fails here.
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ['mpesa', { success: true, amount: 500, receiverAccount: '0911000000', transactionId: 'MP1' }],
+    ['awash', { success: true, amount: 500, beneficiaryAccount: '1000123456', transactionId: 'AW1' }],
+    ['zemen', { success: true, amount: 500, recipientAccount: '1000765432', transactionId: 'ZE1' }],
+  ];
+  for (const [provider, data] of cases) {
+    const matching = checkAmount({ result: { success: true, data }, expectedAmount: 500, provider });
+    assert.equal(matching.ok, true, `${provider} should read 500`);
+    assert.equal(matching.checked, true);
+    assert.equal(matching.foundAmount, 500);
+
+    const mismatched = checkAmount({ result: { success: true, data }, expectedAmount: 501, provider });
+    assert.equal(mismatched.ok, false, `${provider} must refuse a wrong amount`);
+    assert.equal(mismatched.reason, 'AMOUNT_MISMATCH');
+  }
+});
+
+test('an amount delivered as a string is still read', () => {
+  // The OCR path hands JSON straight from the model, where a number can arrive
+  // as "500.00". `typeof d.amount === 'number'` silently rejected that.
+  for (const provider of ['mpesa', 'awash', 'zemen', 'abyssinia']) {
+    const result = checkAmount({
+      result: { success: true, data: { amount: '500.00' } },
+      expectedAmount: 500,
+      provider,
+    });
+    assert.equal(result.ok, true, `${provider} must coerce a numeric string`);
+    assert.equal(result.foundAmount, 500);
+  }
 });
 
 test('a failed verification is not amount-checked', () => {
@@ -87,12 +126,43 @@ test('each provider amount field is read', () => {
     ['dashen', { transactionAmount: 300 }, 300],
     ['abyssinia', { amount: 150 }, 150],
     ['cbebirr', { paidAmount: '199.50' }, 199.5],
+    ['mpesa', { amount: 175 }, 175],
+    ['awash', { amount: 175 }, 175],
+    ['zemen', { amount: 175 }, 175],
   ];
   for (const [provider, data, expected] of cases) {
     const result = checkAmount({ result: { success: true, data }, expectedAmount: expected, provider });
     assert.equal(result.ok, true, `${provider} should read ${expected}`);
     assert.equal(result.foundAmount, expected);
   }
+});
+
+test('each provider credited-account field is read', () => {
+  // extractPaymentDetails' second half. A provider that reaches `default:`
+  // reports a null account, which accountMatches() reads as "cannot compare"
+  // rather than "mismatch" — so a missing case here is a silent weakening of
+  // the recipient check, not a loud failure.
+  const cases: Array<[string, Record<string, unknown>, string]> = [
+    ['telebirr', { creditedPartyAccountNo: '251911000000' }, '251911000000'],
+    ['cbe', { receiverAccount: '1000123456' }, '1000123456'],
+    ['abyssinia', { receiverAccount: '1000123456' }, '1000123456'],
+    ['cbebirr', { creditAccount: '1000123456' }, '1000123456'],
+    ['mpesa', { receiverAccount: '0911000000' }, '0911000000'],
+    ['awash', { beneficiaryAccount: '1000123456' }, '1000123456'],
+    ['zemen', { recipientAccount: '1000765432' }, '1000765432'],
+  ];
+  for (const [provider, data, expected] of cases) {
+    assert.equal(
+      extractPaymentDetails(data, provider).account,
+      expected,
+      `${provider} must report the credited account`,
+    );
+  }
+  assert.equal(
+    extractPaymentDetails({ receiverName: 'Shop PLC' }, 'dashen').account,
+    null,
+    'dashen has no account number and must not be given one',
+  );
 });
 
 // ─── Replay ──────────────────────────────────────────────────────────────────

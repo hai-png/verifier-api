@@ -196,6 +196,59 @@ What a working proxy looks like:
 > should show Chromium available for the CBE fallback; a Node.js-only startup is
 > not a successful CBE deployment.
 
+### Two settings that are new, and one that is gone
+
+- **`CORS_ALLOWED_ORIGINS`** — only if the dashboard is served from a different
+  domain than this API. Comma-separated origins, e.g.
+  `https://verify.noveld.com.et`. **Unset means same-origin only**, which is the
+  correct setting when this API serves the dashboard itself.
+
+  CORS used to reflect *any* `Origin`. Combined with `CORS_CREDENTIALS=true` — a
+  documented setting — and the fact that `requireSession` also accepted a session
+  cookie, any website a logged-in user visited could make credentialed requests to
+  the dashboard routes and read the responses: every buyer's email, the full
+  payout bank account numbers, and the API keys. The cookie path is gone and CORS
+  is now an allow-list, so this is closed at both ends.
+
+  `CORS_CREDENTIALS` is now **ignored entirely** and logs a warning at startup.
+  The dashboard authenticates with `Authorization: Bearer <session token>`, which
+  a cross-origin page cannot read out of `localStorage`.
+
+- **`TRUST_FORWARDED_HEADERS`** — defaults to `false`. `CF-Connecting-IP` and
+  `X-Forwarded-For` are honoured only when the immediate peer is an address you
+  deployed (private or loopback). On Render that holds, because Render's proxy is
+  the peer, so the default is correct for this topology.
+
+  Set it `true` **only** when the origin is genuinely unreachable except through
+  Cloudflare — enforced by firewall or platform setting, not by assumption.
+  Otherwise per-IP rate limits apply to the proxy address rather than the client:
+  coarser, but still a real limit. With an untrusted peer trusted, the limit is
+  not a limit at all, which is what `CF-Connecting-IP` being caller-settable on a
+  directly-reachable origin means.
+
+- **`CORS_CREDENTIALS`** — removed. See above.
+
+---
+
+## Behaviour changes callers will notice
+
+Breaking, and recorded here because each was previously *documented* as working
+the other way.
+
+| Change | What a caller sees |
+| --- | --- |
+| Sessions are hashed at rest | Every existing session is invalidated once on deploy; users sign in again. |
+| `POST /payment-links/:id/confirm` binds the payer | `buyerPhone` is now required and must equal the payer the provider reports — telebirr, cbe, abyssinia, mpesa, awash, zemen. cbebirr and dashen report no payer and are unchanged. `BUYER_PHONE_REQUIRED` / `BUYER_PHONE_MISMATCH`. |
+| `GET /payment-links/:id/public` | `409` for an inactive or expired link (was a payload rendering as still-buyable). No longer returns `successMessage` or `deliveryUrl`; those come back on the confirm response, which is the only point a buyer is entitled to them. |
+| M-Pesa, Awash, Zemen confirmations | Work. They previously returned `422 Could not extract transaction amount` on every request, including genuine payments. |
+| `X-Veritas-Legacy-Signature` | Not emitted unless `WEBHOOK_LEGACY_SIGNATURE=true`. The timestamped `X-Veritas-Signature` is unchanged and is the one to verify — see README.md for the exact signed material and a reference verifier. |
+| `PATCH /payouts/:id` | `account` is now honoured. It was silently ignored, so rotating a compromised number returned `200 {"success": true}` while keeping the old one. |
+| `PATCH /payment-links/:id` | `status` is validated. `EXPIRED` was accepted at runtime (a declared TS type is erased) and bypassed the default-link guard. |
+| `GET /status/summary` | Secret in the `x-status-secret` header only. `?secret=` and `x-admin-key` are no longer accepted, and unauthenticated callers are throttled. |
+| `POST /auth/signup` | Returns `201 { token: null }` for an address that already exists, instead of `409`. Deliberate: the `409` was a free account-enumeration oracle on an unauthenticated route, and `/auth/login` already went out of its way not to provide one. |
+| `POST /workspaces` | Capped at `MAX_WORKSPACES_PER_USER` (default 5). Each workspace starts with 100 free verification credits, so an uncapped create route was a repeatable free-credit farm. `DELETE /workspaces/:id` now exists — it had been documented in the router header since before the first commit and never was, so a user who hit the cap was permanently stuck. |
+| `GET /admin/api-keys` | Legacy plaintext keys are shown as `legacy-key-redacted` rather than their first 8 characters. `ApiKey.key` is still a live credential. |
+
 ---
 
 ## Step 4: Point your domain at Render
@@ -700,7 +753,7 @@ is re-synced from the blueprint. The live service still carries the older
 
 2. **Deploy > Deploy latest commit** and wait for the boot log. It must contain a
    schema-push line. A boot that reports the schema being skipped means the
-   variable did not take effect � check for a typo or a stale blueprint sync
+   variable did not take effect � check for a typo or a stale blueprint sync
    before deploying again.
 
 3. Confirm the columns landed:
@@ -724,12 +777,12 @@ is re-synced from the blueprint. The live service still carries the older
    `0`, so existing products would otherwise look like they had unlimited stock:
 
    ```bash
-   DATABASE_URL='mysql://�' npm run backfill:sold-count -- --dry-run
-   DATABASE_URL='mysql://�' npm run backfill:sold-count
+   DATABASE_URL='mysql://�' npm run backfill:sold-count -- --dry-run
+   DATABASE_URL='mysql://�' npm run backfill:sold-count
    ```
 
 5. Set `SKIP_SCHEMA_PUSH` back to `true` and redeploy. Boot-time pushes are skipped
-   in steady state on purpose � they add seconds to every cold start and can fail
+   in steady state on purpose � they add seconds to every cold start and can fail
    the deploy on a transient database hiccup.
 
 `KEEP_ALIVE_URL` is separate from the schema. Until it is set, the keep-alive

@@ -2,6 +2,12 @@
 // lookup and no expiry check. Logout deleted the row but the token kept working
 // on every /dashboard and /workspaces route, and a token signed with the old
 // 'fallback-secret' constant was accepted whenever DASHBOARD_SECRET was unset.
+//
+// Separately, `Session.sessionToken` stored the bearer token itself and was the
+// indexed lookup key on every authenticated request — so any read of the table
+// (backup, replica, mysqldump, a SQL injection elsewhere, a leaked .sql) yielded
+// immediately usable 30-day sessions with nothing to crack. Only the sha256 is
+// stored now.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -17,14 +23,18 @@ function sign(payload: string, secret = SECRET): string {
   return `nvd_sess_${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('hex')}`;
 }
 
+const sha256 = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
+
 test('a session token is only valid while its row exists and is unexpired', async (t) => {
   const previousSecret = process.env.DASHBOARD_SECRET;
   process.env.DASHBOARD_SECRET = SECRET;
   const payload = `${USER_ID}.randomnonce`;
   const token = sign(payload);
+  const storedKey = sha256(token);
 
-  // Mutable stand-in for the Session table.
+  // Mutable stand-in for the Session table, keyed the way the table is.
   let row: { userId: string; expires: Date } | null = { userId: USER_ID, expires: new Date('2099-01-01') };
+  const lookups: string[] = [];
   const originals: Array<() => void> = [];
   function replace(object: any, key: string, value: any) {
     const original = object[key];
@@ -33,7 +43,8 @@ test('a session token is only valid while its row exists and is unexpired', asyn
   }
   let authedLookups = 0;
   replace(prisma.session, 'findUnique', async ({ where }: any) => {
-    if (where.sessionToken !== token) return null;
+    lookups.push(where.sessionToken);
+    if (where.sessionToken !== storedKey) return null;
     return row ? { ...row } : null;
   });
   replace(prisma.membership, 'findMany', async () => { authedLookups++; return []; });
@@ -60,6 +71,14 @@ test('a session token is only valid while its row exists and is unexpired', asyn
   assert.equal((await get(token)).status, 200);
   assert.equal(authedLookups, 1);
 
+  // The lookup key is the hash, never the credential. This is the property that
+  // makes a database read useless to an attacker.
+  assert.ok(lookups.length > 0, 'the session must be checked against the table');
+  for (const key of lookups) {
+    assert.notEqual(key, token, 'the raw bearer token must never be used as a lookup key');
+    assert.equal(key, storedKey, 'the lookup key must be the sha256 of the token');
+  }
+
   // Logout deletes the row; the same token must stop working immediately.
   row = null;
   const afterLogout = await get(token);
@@ -85,4 +104,52 @@ test('a session token is only valid while its row exists and is unexpired', asyn
     assert.equal((await get(bad)).status, 401, `expected 401 for ${bad.slice(0, 24)}`);
   }
   assert.equal(authedLookups, 1, 'no rejected token may reach the handler');
+});
+
+test('a session is never read from a cookie, so a cross-origin page cannot ride it', async (t) => {
+  // The dashboard holds the token in localStorage and sends a bearer. Accepting
+  // `req.cookies.session` as well meant that with `cors({ origin: true })` and
+  // CORS_CREDENTIALS=true — the documented setting — any website could make
+  // credentialed requests to /auth/me and /dashboard/* and read the responses:
+  // every buyer's email, the full payout bank account numbers, the API keys.
+  const previousSecret = process.env.DASHBOARD_SECRET;
+  process.env.DASHBOARD_SECRET = SECRET;
+  const token = sign(`${USER_ID}.cookienonce`);
+
+  const originals: Array<() => void> = [];
+  function replace(object: any, key: string, value: any) {
+    const original = object[key];
+    object[key] = value;
+    originals.push(() => { object[key] = original; });
+  }
+  let handlerReached = false;
+  replace(prisma.session, 'findUnique', async () => ({ userId: USER_ID, expires: new Date('2099-01-01') }));
+  replace(prisma.membership, 'findMany', async () => { handlerReached = true; return []; });
+  t.after(() => {
+    originals.reverse().forEach((restore) => restore());
+    if (previousSecret === undefined) delete process.env.DASHBOARD_SECRET; else process.env.DASHBOARD_SECRET = previousSecret;
+  });
+
+  const app = express();
+  app.use(express.json());
+  app.use((req: any, _res, next) => {
+    // A browser attaching a session cookie, which is what an attacker's page does.
+    req.headers.cookie = `session=${token}`;
+    next();
+  });
+  app.use('/workspaces', workspacesRouter);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>((r) => server.once('listening', r));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/workspaces`;
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+    await new Promise<void>((r) => setImmediate(r));
+  });
+
+  assert.equal((await fetch(url)).status, 401, 'a session cookie must not authenticate anything');
+  assert.equal(handlerReached, false, 'the cookie must not reach any handler');
+
+  // The same token as a bearer still works, so the header path is intact.
+  assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${token}` } })).status, 200);
 });

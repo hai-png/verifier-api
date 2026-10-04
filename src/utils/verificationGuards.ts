@@ -36,14 +36,28 @@ const AMOUNT_TOLERANCE = 0.01;
  * and the result carries `checked: false` — the caller has to opt in, because a
  * silent pass would read as a verified amount.
  *
- * A provider that reports no amount is not treated as a match. M-Pesa, Awash and
- * Zemen fall here, and "we cannot see how much" is not evidence that the right
- * amount arrived.
+ * A provider that reports no amount is not treated as a match, and "we cannot
+ * see how much" is not evidence that the right amount arrived. Note this is not
+ * the same as "the provider has no amount": M-Pesa, Awash and Zemen all report
+ * one, and extractPaymentDetails reads it for them. Only a provider that
+ * genuinely omits the field reaches AMOUNT_NOT_VERIFIABLE.
  */
 export function checkAmount(params: {
   result: Record<string, unknown>;
   expectedAmount: unknown;
   provider: string;
+  /**
+   * The amount the source already resolved, bypassing `extractPaymentDetails`.
+   *
+   * The OCR path needs this. Its payload speaks a different vocabulary from a
+   * provider API (`details.amount` rather than `settledAmount` /
+   * `transactionAmount` / `paidAmount`), and `ocrVerifiedTypes` covers 21
+   * providers of which `extractPaymentDetails` knows 8. Routing the OCR payload
+   * through the extractor therefore returned `AMOUNT_NOT_VERIFIABLE` for 13 of
+   * them — on receipts whose amount was present and correct. `undefined` means
+   * "not supplied, use the extractor", which keeps the reference path unchanged.
+   */
+  foundAmount?: number | null;
 }): AmountCheckResult {
   const { result, provider } = params;
   const expected = Number(params.expectedAmount);
@@ -56,8 +70,12 @@ export function checkAmount(params: {
     return { ok: true, checked: false };
   }
 
-  const data = (result.data ?? result.details) as Record<string, unknown> | undefined;
-  const found = data && typeof data === 'object' ? extractPaymentDetails(data, provider).amount : null;
+  const found = 'foundAmount' in params
+    ? params.foundAmount ?? null
+    : (() => {
+        const data = (result.data ?? result.details) as Record<string, unknown> | undefined;
+        return data && typeof data === 'object' ? extractPaymentDetails(data, provider).amount : null;
+      })();
 
   if (found === null || !Number.isFinite(found)) {
     return {

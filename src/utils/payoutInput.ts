@@ -22,6 +22,14 @@ export function normaliseOptionalLabel(input: unknown): string | null | 'invalid
 
 export function normalisePayoutType(input: unknown): PayoutType | null {
     if (input === 'PHONE' || input === 'BANK') return input;
+    // Case-insensitive, because the dashboard previously sent neither and every
+    // other value fell through to the bank branch, passed validation as a bank
+    // account, and then reached prisma.payoutAccount.create({ data: { type } })
+    // as an invalid enum — a 500 where the caller could have been told 400.
+    if (typeof input === 'string') {
+        const upper = input.trim().toUpperCase();
+        if (upper === 'PHONE' || upper === 'BANK') return upper;
+    }
     return null;
 }
 
@@ -31,13 +39,54 @@ export function normaliseAccount(input: unknown): string | 'invalid' {
     return trimmed.length > 0 ? trimmed : 'invalid';
 }
 
+/** Length caps for the two PayoutAccount string columns. See utils/fieldLimits. */
+export function isValidPayoutLabel(label: string): boolean {
+    return Buffer.byteLength(label, 'utf8') <= 191;
+}
+
+export function isValidPayoutAccount(account: string): boolean {
+    return Buffer.byteLength(account, 'utf8') <= 191;
+}
+
+/**
+ * Provider spellings that mean the same provider.
+ *
+ * The verification engine accepts these aliases (verifyUniversal.ts maps
+ * `m-pesa`, `cbe-birr` and `cbe_birr`), so a caller reading that vocabulary
+ * naturally sends one. `normaliseProviders` lower-cased but did not canonicalise,
+ * so `M-Pesa` was stored verbatim, rejected by validatePayoutInput's
+ * allow-list *and* invisible to ensureProviderCoverage, which matches on
+ * `'mpesa'`. The account then sat in the database accepted by nothing and matched
+ * no receipt — while a test asserted the buggy output as correct.
+ */
+const PROVIDER_ALIASES: Record<string, string> = {
+    'm-pesa': 'mpesa',
+    'm pesa': 'mpesa',
+    'mpesa': 'mpesa',
+    'cbe-birr': 'cbebirr',
+    'cbe_birr': 'cbebirr',
+    'cbebirr': 'cbebirr',
+    'cbe birr': 'cbebirr',
+    telebirr: 'telebirr',
+    cbe: 'cbe',
+    dashen: 'dashen',
+    abyssinia: 'abyssinia',
+    zemen: 'zemen',
+    awash: 'awash',
+};
+
+export function canonicalProvider(value: string): string {
+    const key = value.trim().toLowerCase().replace(/\s+/g, '-');
+    return PROVIDER_ALIASES[key] ?? key;
+}
+
 export function normaliseProviders(input: unknown): string[] {
     if (!Array.isArray(input)) return [];
     return [
         ...new Set(
             input
                 .filter((value): value is string => typeof value === 'string')
-                .map((value) => value.trim().toLowerCase())
+                .map((value) => canonicalProvider(value))
                 .filter((value) => value.length > 0),
         ),
     ];
@@ -58,6 +107,9 @@ export function validatePayoutInput(
 ): string | null {
     if (providersAllowed.length === 0) {
         return 'providersAllowed must include at least one provider.';
+    }
+    if (!isValidPayoutAccount(account)) {
+        return 'account must be at most 191 bytes.';
     }
 
     if (type === 'PHONE') {
@@ -127,11 +179,17 @@ export function validatePayoutEdit(
 
     const label = normaliseOptionalLabel(input.label);
     if (label === 'invalid') return { error: 'label must be a string.' };
-    if (label !== null) data.label = label;
+    if (label !== null) {
+        if (!isValidPayoutLabel(label)) return { error: 'label must be at most 191 bytes.' };
+        data.label = label;
+    }
 
     if (input.accountHolderName !== undefined) {
         const holder = normaliseOptionalLabel(input.accountHolderName);
         if (holder === 'invalid') return { error: 'accountHolderName must be a string.' };
+        if (holder !== null && !isValidPayoutLabel(holder)) {
+            return { error: 'accountHolderName must be at most 191 bytes.' };
+        }
         data.accountHolderName = holder;
     }
 

@@ -28,6 +28,27 @@ const SESSION_TTL_DAYS = 30;
 const TOKEN_PREFIX = 'nvd_sess_';
 
 /**
+ * The value stored in `Session.sessionToken`.
+ *
+ * sha256 of the bearer token, not the token itself. The column is the indexed
+ * lookup key for every authenticated request, so storing the credential meant any
+ * read of the table — a backup, a replica, a `mysqldump`, a SQL injection
+ * elsewhere, a leaked `.sql` — yielded immediately usable 30-day sessions for
+ * every logged-in user, with nothing to crack.
+ *
+ * ApiKey already stored `keyHash` for exactly this reason; Session did not.
+ * Lookup is by hash, so the hash is the whole key space: there is no need to
+ * also index the raw token, and no reason to keep it.
+ *
+ * sha256 rather than bcrypt/bcrypt-like work factors because the input is 24
+ * bytes of `crypto.randomBytes` — there is no dictionary to search, so a slow
+ * KDF buys nothing and costs a round trip per request.
+ */
+function hashSessionToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+/**
  * Create a signed session token: nvd_sess_<random>.<hmac>
  * The HMAC binds the token to DASHBOARD_SECRET so it can't be forged.
  */
@@ -116,10 +137,26 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
     }
 
     try {
-        // Check if user already exists
+        // Not an enumeration oracle.
+        //
+        // /auth/login goes out of its way to answer identically for a registered
+        // address and a wrong password, and /auth/forgot-password returns a
+        // uniform body. Signup handed the same answer away unauthenticated, with
+        // a 409 saying so, before any password hashing. Combined with the signup
+        // IP throttle that is a free list of which addresses hold accounts.
+        //
+        // Respond 201 either way. A duplicate still gets `token: null` and no
+        // session, so the caller cannot tell from the body; the genuine case is
+        // distinguishable only by whether a token came back, which is the
+        // information the caller already supplied.
         const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
         if (existing) {
-            res.status(409).json({ success: false, error: 'An account with this email already exists.' });
+            logger.info(`Signup attempted for an address that already exists: ${email.toLowerCase()}`);
+            res.status(201).json({
+                success: true,
+                token: null,
+                message: 'If this address can be registered, it has been.',
+            });
             return;
         }
 
@@ -175,7 +212,7 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
         const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
         await prisma.session.create({
             data: {
-                sessionToken: token,
+                sessionToken: hashSessionToken(token),
                 userId,
                 expires: expiresAt,
             },
@@ -253,7 +290,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
         const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
         await prisma.session.create({
             data: {
-                sessionToken: token,
+                sessionToken: hashSessionToken(token),
                 userId: user.id,
                 expires: expiresAt,
             },
@@ -278,11 +315,30 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 
 // ─── Get current user ────────────────────────────────────────────────────────
 
-router.get('/me', async (req: Request, res: Response): Promise<void> => {
+/**
+ * The session token from the Authorization header, and nowhere else.
+ *
+ * The `req.cookies?.session` fallback that used to sit here is gone. It is the
+ * whole cross-origin story: the API sets `cors({ origin: true })`, which
+ * reflects *any* Origin, and `CORS_CREDENTIALS=true` — the documented setting —
+ * then adds `Access-Control-Allow-Credentials`. With a cookie accepted here, any
+ * website a logged-in dashboard user visited could make credentialed requests to
+ * /auth/me, /dashboard/:ws/orders, /dashboard/:ws/payouts and /dashboard/:ws/api-keys
+ * and *read the responses*: every buyer's name, email and phone, the full payout
+ * bank account numbers, and the ability to mint keys or rewrite payout
+ * destinations. There is no CSRF token and no Origin check, so removing the
+ * cookie path is the control.
+ *
+ * The dashboard keeps the token in `localStorage` and sends it as a bearer
+ * (web/src/lib/api.ts), so nothing legitimate depended on the cookie.
+ */
+function bearerToken(req: Request): string {
     const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ')
-        ? authHeader.slice(7)
-        : req.cookies?.session || '';
+    return authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+}
+
+router.get('/me', async (req: Request, res: Response): Promise<void> => {
+    const token = bearerToken(req);
 
     if (!token) {
         res.status(401).json({ success: false, error: 'Not authenticated.' });
@@ -298,7 +354,7 @@ router.get('/me', async (req: Request, res: Response): Promise<void> => {
     try {
         // Check session in DB (not expired, not deleted)
         const session = await prisma.session.findUnique({
-            where: { sessionToken: token },
+            where: { sessionToken: hashSessionToken(token) },
             include: {
                 user: {
                     select: {
@@ -354,14 +410,11 @@ router.get('/me', async (req: Request, res: Response): Promise<void> => {
 // ─── Logout ──────────────────────────────────────────────────────────────────
 
 router.post('/logout', async (req: Request, res: Response): Promise<void> => {
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ')
-        ? authHeader.slice(7)
-        : req.cookies?.session || '';
+    const token = bearerToken(req);
 
     if (token) {
         try {
-            await prisma.session.deleteMany({ where: { sessionToken: token } });
+            await prisma.session.deleteMany({ where: { sessionToken: hashSessionToken(token) } });
         } catch {
             // ignore — session may already be deleted
         }
@@ -530,16 +583,32 @@ router.post('/reset-password', async (req: Request, res: Response): Promise<void
     }
 
     try {
-        const record = await prisma.verificationToken.findUnique({
-            where: { token: hashResetToken(token) },
-        });
+        const tokenHash = hashResetToken(token);
+        const now = new Date();
 
-        if (!record || !record.identifier.startsWith(RESET_IDENTIFIER_PREFIX)) {
+        // Claim the token first, atomically.
+        //
+        // This used to be `findUnique` outside the transaction followed by a
+        // `deleteMany` inside it, so two concurrent redemptions of the same link
+        // both read a live record and both completed — the "single use" property
+        // the reset email promises was not enforced, and the two password writes
+        // raced. `deleteMany` returning 1 is the claim: exactly one caller can
+        // win it, and the loser's count is 0.
+        const claimed = await prisma.verificationToken.deleteMany({
+            where: { token: tokenHash, expires: { gt: now } },
+        });
+        if (claimed.count !== 1) {
             res.status(400).json({ success: false, error: 'Invalid or expired reset link.' });
             return;
         }
-        if (record.expires < new Date()) {
-            await prisma.verificationToken.deleteMany({ where: { token: record.token } });
+
+        const record = await prisma.verificationToken.findFirst({
+            where: { token: tokenHash, expires: { gt: now } },
+        });
+        // Reachable only if something deleted the row between the claim and the
+        // read. Treat as invalid rather than proceeding: without the identifier
+        // there is no user to update, and the token is spent either way.
+        if (!record || !record.identifier.startsWith(RESET_IDENTIFIER_PREFIX)) {
             res.status(400).json({ success: false, error: 'Invalid or expired reset link.' });
             return;
         }
@@ -548,11 +617,11 @@ router.post('/reset-password', async (req: Request, res: Response): Promise<void
         const passwordHash = await bcrypt.hash(password, 10);
 
         await prisma.$transaction([
-            prisma.verificationToken.deleteMany({ where: { token: record.token } }),
             prisma.account.updateMany({
                 where: { userId, provider: 'credentials' },
                 data: { passwordHash },
             }),
+            // Every existing session dies with the old password.
             prisma.session.deleteMany({ where: { userId } }),
         ]);
 
@@ -572,10 +641,8 @@ router.post('/reset-password', async (req: Request, res: Response): Promise<void
  * Use this to protect dashboard-facing endpoints (workspace management, etc.)
  */
 export async function requireSession(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ')
-        ? authHeader.slice(7)
-        : req.cookies?.session || '';
+    // Bearer only — see bearerToken() for why there is no cookie fallback.
+    const token = bearerToken(req);
 
     if (!token) {
         res.status(401).json({ success: false, error: 'Authentication required.' });
@@ -593,7 +660,7 @@ export async function requireSession(req: Request, res: Response, next: NextFunc
     // still exist, still be unexpired, and still belong to the same user.
     try {
         const session = await prisma.session.findUnique({
-            where: { sessionToken: token },
+            where: { sessionToken: hashSessionToken(token) },
             select: { userId: true, expires: true },
         });
         if (!session || session.expires < new Date() || session.userId !== sessionData.userId) {

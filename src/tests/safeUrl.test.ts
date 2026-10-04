@@ -21,12 +21,58 @@ test('private, loopback, link-local and reserved addresses are recognised', () =
   }
 });
 
+// The regression this file did not have. `isPrivateAddress('::ffff:127.0.0.1')`
+// passed because the old check matched the dotted-quad spelling — but
+// `new URL()` never emits that spelling, it normalises to hex hextets, so the
+// guard silently never ran on a real request. Everything here is asserted in
+// the notation an attacker actually types into a webhook URL field.
+test('IPv4-mapped and IPv4-compatible IPv6 are judged by the IPv4 rules', () => {
+  for (const ip of [
+    '::ffff:a9fe:a9fe', // 169.254.169.254, cloud metadata
+    '::ffff:7f00:1',    // 127.0.0.1, loopback
+    '::ffff:a00:1',     // 10.0.0.1, private
+    '::ffff:c0a8:1',    // 192.168.0.1, private
+    '::7f00:1',         // 127.0.0.1, IPv4-compatible
+    '::a9fe:a9fe',      // 169.254.169.254, IPv4-compatible
+    '0:0:0:0:0:ffff:7f00:1', // fully written out
+    'fe80::1', 'fc00::1', 'fd12:3456::1', 'ff02::1', '2001:db8::1',
+    '64:ff9b::1.2.3.4', '100::1',
+  ]) {
+    assert.equal(isPrivateAddress(ip), true, `${ip} must be treated as non-public`);
+  }
+  // A mapped *public* address is still a routable address and stays allowed,
+  // so this is a real comparison rather than a blanket IPv6 rejection.
+  assert.equal(isPrivateAddress('::ffff:0808:0808'), false, '::ffff:8.8.8.8 is public');
+  assert.equal(isPrivateAddress('2606:4700::1111'), false, 'a public IPv6 must be allowed');
+});
+
+test('every IPv4-mapped spelling is rejected at the URL layer, which is the only layer that matters', async () => {
+  // Asserted through assertSafeOutboundUrl, not isPrivateAddress: the bypass
+  // lived in the gap between what the guard matched and what new URL() emits,
+  // so only the URL-level assertion can fail if that gap reopens.
+  for (const url of [
+    'http://[::ffff:169.254.169.254]/latest/meta-data/iam/security-credentials/',
+    'http://[::ffff:127.0.0.1]:6379/',
+    'http://[::ffff:10.0.0.1]/',
+    'http://[::7f00:1]/',
+    'http://[::a9fe:a9fe]/latest/meta-data/',
+    'http://[0:0:0:0:0:ffff:7f00:1]/',
+  ]) {
+    await assert.rejects(
+      () => assertSafeOutboundUrl(url),
+      (err: unknown) => err instanceof UnsafeOutboundUrlError,
+      `expected ${url} to be rejected`,
+    );
+  }
+});
+
 test('unsafe webhook destinations are rejected', async () => {
   for (const url of [
     'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
     'http://127.0.0.1:3001/admin/stats',
     'http://localhost:3001/admin/stats',
     'http://[::1]:3001/',
+    'http://[::ffff:127.0.0.1]:3001/admin/stats',
     'http://10.0.0.5:8080/internal',
     'http://192.168.1.1/',
     'http://172.16.0.9/',

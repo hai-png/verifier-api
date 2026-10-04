@@ -168,7 +168,12 @@ function scrapeTelebirrReceipt(html: string): TelebirrReceipt {
     // Log HTML content in debug mode to help diagnose scraping issues
     logger.debug(`HTML content length: ${html.length} bytes`);
     if (html.length < 100) {
-        logger.warn(`Suspiciously short HTML response: ${html}`);
+        // Length and a short prefix only. The whole body was interpolated into the
+        // message channel, which redactSecrets does not touch — it walks the
+        // metadata object's own keys and explicitly skips `message`. So every
+        // "suspiciously short" response wrote the relay's or the bank's own HTML
+        // to disk verbatim: payer name, phone number, account numbers, amount.
+        logger.warn(`Suspiciously short HTML response (${html.length} bytes): ${html.slice(0, 120)}`);
     }
 
     const getText = (selector: string): string =>
@@ -382,7 +387,17 @@ async function fetchFromPrimarySource(
             // back to had already been starved and could not be reached.
             timeout: options.timeoutMs ?? PRIMARY_TIMEOUT_MS,
             signal: options.signal,
-            maxRedirects: 5,
+            // A Telebirr receipt page is tens of kilobytes. Without a bound, a
+            // compromised or MITM'd primary could return 500 MB, which axios
+            // buffers whole and then cheerio.load() parses — on the 512 MB
+            // instance that also serves every customer verification.
+            maxContentLength: MAX_RECEIPT_BYTES,
+            maxBodyLength: MAX_RECEIPT_BYTES,
+            // 0 rather than 5. Following a redirect on the *primary* hop means
+            // fetching whatever the response pointed at, with none of that
+            // destination validated. The webhook path already refuses redirects
+            // for the same reason; this hop had `5`.
+            maxRedirects: 0,
             headers: {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                 'Accept-Language': 'am-ET,am;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -595,6 +610,11 @@ async function fetchFromProxySource(
         const response = await axios.get(url, {
             timeout: options.timeoutMs ?? 30_000,
             signal: options.signal,
+            // Same bound as the primary hop: a relay's answer is a small JSON
+            // document, so anything large is a hostile or broken response.
+            maxContentLength: MAX_RECEIPT_BYTES,
+            maxBodyLength: MAX_RECEIPT_BYTES,
+            maxRedirects: 0,
             // Parse 4xx JSON responses from the relay so an invalid key is
             // reported as configuration failure instead of a misleading 404.
             validateStatus: status => status >= 200 && status < 500,
@@ -756,6 +776,15 @@ const RELAY_BUDGET_MS = 9_000;
  * host, so it is worth keeping usable.
  */
 const PRIMARY_TIMEOUT_MS = 8_000;
+
+/**
+ * Ceiling on one Telebirr hop's response body.
+ *
+ * A receipt page is tens of kilobytes and the relays return a small JSON
+ * document. 1 MB is generous by two orders of magnitude and still bounds what a
+ * single request can put in memory before it is parsed.
+ */
+const MAX_RECEIPT_BYTES = 1024 * 1024;
 
 function safePublicLabel(value: string | undefined): string | null {
     const normalized = value?.trim().replace(/\s+/g, ' ');
@@ -1206,37 +1235,58 @@ export async function probeTelebirrProxyPool(
         env.STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS,
         18_000
     );
-    const proxyKey = env.TELEBIRR_PROXY_KEY ?? '';
+    const proxyKey = env.TELEGRAM_PROXY_KEY ?? env.TELEBIRR_PROXY_KEY ?? '';
 
-    const routes = await Promise.all(
-        descriptors.map(async (descriptor): Promise<TelebirrRouteStatus> => {
-            const startedAt = performance.now();
-            try {
-                const receipt = await fetchFromProxySource(reference, descriptor.url, {
-                    proxyKey,
-                    timeoutMs,
-                    relayLabel: descriptor.label
-                });
-                const operational = Boolean(receipt && isValidReceipt(receipt));
-                const latencyMs = Math.round(performance.now() - startedAt);
-                return {
-                    id: descriptor.id,
-                    label: descriptor.label,
-                    role: descriptor.role,
-                    status: operational ? 'operational' : 'unavailable',
-                    latencyMs
-                };
-            } catch {
-                return {
-                    id: descriptor.id,
-                    label: descriptor.label,
-                    role: descriptor.role,
-                    status: 'unavailable',
-                    latencyMs: Math.round(performance.now() - startedAt)
-                };
-            }
-        })
+    // One controller for the whole fan-out, and its signal goes to every hop.
+    //
+    // `Promise.all` over every configured relay with no abort meant a status probe
+    // that hit its own deadline in statusProbeService (Promise.race) returned
+    // while all the relay requests kept running for their full 18 s — so the
+    // response went out and the sockets stayed pinned. Probes run on a timer, so
+    // that accumulated. Aborting on timeout means the work stops when the caller
+    // stops waiting.
+    const probeController = new AbortController();
+    const probeTimer = setTimeout(
+        () => probeController.abort(),
+        Math.max(1, timeoutMs + 1_000)
     );
+    probeTimer.unref?.();
+
+    let routes: TelebirrRouteStatus[];
+    try {
+        routes = await Promise.all(
+            descriptors.map(async (descriptor): Promise<TelebirrRouteStatus> => {
+                const startedAt = performance.now();
+                try {
+                    const receipt = await fetchFromProxySource(reference, descriptor.url, {
+                        proxyKey,
+                        timeoutMs,
+                        relayLabel: descriptor.label,
+                        signal: probeController.signal
+                    });
+                    const operational = Boolean(receipt && isValidReceipt(receipt));
+                    const latencyMs = Math.round(performance.now() - startedAt);
+                    return {
+                        id: descriptor.id,
+                        label: descriptor.label,
+                        role: descriptor.role,
+                        status: operational ? 'operational' : 'unavailable',
+                        latencyMs
+                    };
+                } catch {
+                    return {
+                        id: descriptor.id,
+                        label: descriptor.label,
+                        role: descriptor.role,
+                        status: 'unavailable',
+                        latencyMs: Math.round(performance.now() - startedAt)
+                    };
+                }
+            })
+        );
+    } finally {
+        clearTimeout(probeTimer);
+    }
     const active = routes.find(route => route.status === 'operational') ?? null;
 
     return {
@@ -1254,9 +1304,19 @@ export async function verifyTelebirr(reference: string): Promise<TelebirrReceipt
 
     if (!skipPrimary) {
         logger.info('Attempting primary Telebirr verification.');
-        // The whole request shares one deadline across the primary hop and the
-        // relay pool, so a primary that hangs is cancelled rather than allowed to
-        // spend the pool's budget before the pool is ever entered.
+        // A deadline for the primary hop only.
+        //
+        // This used to carry the comment "the whole request shares one deadline
+        // across the primary hop and the relay pool", which was not true:
+        // `deadlineAt` is local to this block, and the pool computes a fresh
+        // `Date.now() + totalTimeoutMs` of its own at line ~1005. So the real
+        // worst case is PRIMARY_TIMEOUT_MS (8 s) + TELEBIRR_TOTAL_TIMEOUT_MS
+        // (20 s) = 28 s, and the variable named "total" did not bound the total.
+        //
+        // It does correctly stop a hanging primary from being left to run while
+        // the pool is entered, which is the property worth having here — so the
+        // behaviour stays and the claim is corrected rather than the code
+        // reshaped. Passing a shared deadline into the pool is the real fix.
         const deadlineAt =
             Date.now() +
             positiveInteger(process.env.TELEBIRR_TOTAL_TIMEOUT_MS, 20_000);

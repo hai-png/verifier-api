@@ -130,6 +130,21 @@ export function createWriteBehind<T>(options: WriteBehindOptions<T>): WriteBehin
 
     return {
         push: (item: T) => {
+            // Bounded *before* the push, not only in the flush failure path.
+            //
+            // `maxBufferSize` used to be enforced solely in the catch block above.
+            // While a flush is in flight, `flush()` returns the pending promise
+            // and writes nothing, so every push during a stall grew the buffer
+            // with no ceiling at all — and usageLogWriter is fed on every
+            // authenticated request, so a slow or unreachable database turned into
+            // an unbounded array in the request path. The scenario the header
+            // comment describes (a cross-region database) is exactly this one.
+            if (buffer.length >= maxBufferSize) {
+                // Drop the oldest: recent analytics are more useful than stale
+                // ones, and the alternative is unbounded memory.
+                buffer.shift();
+                droppedCount += 1;
+            }
             buffer.push(item);
             startTimer();
             if (buffer.length >= maxBatchSize) {

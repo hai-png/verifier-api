@@ -461,13 +461,82 @@ Get information about the API and available endpoints.
 
 ## 🔐 API Authentication `new`
 
-All verification endpoints require a valid API key.  
-Pass the key using either:
+All verification endpoints require a valid API key.
+Pass it in the `x-api-key` header only:
 
-- Header: `x-api-key: YOUR_API_KEY`
-- Query: `?apiKey=YOUR_API_KEY`
+```
+x-api-key: YOUR_API_KEY
+```
+
+Query-string keys (`?apiKey=…`) were removed: they end up in access logs,
+`Referer` headers and browser history. `apiKeyAuth` accepts the header alone and
+returns 401 without it.
 
 To **generate an API key**, visit: [https://verify.leul.et](https://verify.leul.et)
+
+---
+
+## 🔐 Webhook signature verification
+
+Every webhook delivery carries two headers:
+
+| Header | Value |
+| --- | --- |
+| `X-Veritas-Timestamp` | Unix seconds, UTC |
+| `X-Veritas-Signature` | `t=<timestamp>,v1=<hex hmac>` |
+
+The signed material is **exactly these bytes**, and nothing else:
+
+```
+"<timestamp>.<raw request body>"
+```
+
+That is: the decimal timestamp from `X-Veritas-Timestamp`, an ASCII `.`, then the
+raw request body as received — not a re-serialised version of it.
+
+```
+signature = hex( HMAC_SHA256( signing_secret, "<timestamp>.<raw body>" ) )
+```
+
+Verify in constant time and reject anything outside a tolerance window (this
+service signs with 5 minutes). The timestamp is inside the signed material, so a
+tampered `X-Veritas-Timestamp` fails the comparison — but you still need the
+tolerance check, because without it a captured delivery replays forever.
+
+```js
+import crypto from 'node:crypto';
+
+function verifyVeritasWebhook(rawBody /* Buffer */, header, secret, toleranceSeconds = 300) {
+  const parts = Object.fromEntries(
+    header.split(',').map((p) => { const i = p.indexOf('='); return [p.slice(0, i), p.slice(i + 1)]; }),
+  );
+  const timestamp = Number(parts.t);
+  if (!Number.isFinite(timestamp)) return false;
+
+  const age = Math.abs(Date.now() / 1000 - timestamp);
+  if (age > toleranceSeconds) return false;
+
+  const expected = crypto.createHmac('sha256', secret)
+    .update(`${parts.t}.${rawBody.toString('utf8')}`)
+    .digest('hex');
+
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(parts.v1 ?? '', 'utf8');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+> Use `crypto.timingSafeEqual`, not `===`. A plain comparison is not a meaningful
+> weakness against a 64-char hex digest in isolation, but it is a meaningless
+> pattern to copy into every receiver that implements this.
+
+Do **not** accept `X-Veritas-Legacy-Signature`. It is `sha256=HMAC(secret, body)`
+with no timestamp and is only emitted when `WEBHOOK_LEGACY_SIGNATURE=true`; a
+delivery verified against it can be replayed indefinitely.
+
+The signing secret is shown once when the webhook is created and is not returned
+by any read endpoint. It is stored server-side so deliveries can be signed — treat
+a database read as a read of every tenant's signing key.
 
 ---
 

@@ -71,13 +71,15 @@ export async function emitWorkspaceEvent(
     /**
      * A webhook to leave out of this fan-out.
      *
-     * A webhook that has just dead-lettered is, by definition, subscribed to
-     * webhook.dead_letter. Handing it its own failure means it fails again,
-     * dead-letters and emits again — so N subscribers produce up to N new
-     * deliveries per dead letter, per cycle, with nothing damping it. The event
-     * still reaches every other subscriber.
+     * Narrow on purpose. Excluding one webhook only prevents *self*-recursion,
+     * which is not the same problem: with two webhooks in a workspace both
+     * subscribed to `webhook.dead_letter`, A dying notifies B, B's URL is dead
+     * too, B dies and notifies A, and the pair loops forever — every cycle adding
+     * delivery rows, BullMQ jobs, four HTTP attempts and a group-by. For that
+     * case prefer `excludeWebhooks`, which is total.
      */
     excludeWebhookId: string | null = null,
+    options: { excludeWebhooks?: boolean } = {},
 ): Promise<void> {
     try {
         // Fast path: this workspace had no webhooks or channels a moment ago,
@@ -94,9 +96,11 @@ export async function emitWorkspaceEvent(
                 select: { id: true, events: true },
             }),
         ]);
-        const webhooks = excludeWebhookId === null
-            ? allWebhooks
-            : allWebhooks.filter((webhook) => webhook.id !== excludeWebhookId);
+        const webhooks = options.excludeWebhooks
+            ? []
+            : excludeWebhookId === null
+                ? allWebhooks
+                : allWebhooks.filter((webhook) => webhook.id !== excludeWebhookId);
 
         const eventPayload: WorkspaceEventPayload = {
             event,
@@ -123,8 +127,15 @@ export async function emitWorkspaceEvent(
                 channelId: channel.id,
                 event,
                 payload: eventPayload,
-            }).catch((error) => {
-                logger.error(`Failed to enqueue notification channel ${channel.id}:`, error);
+            }).catch((error: unknown) => {
+                // Code and message only. Prisma embeds the invocation arguments in
+                // its error message, so logging the error object writes the whole
+                // event payload — buyer name, email, phone, reference — to
+                // logs/error-*.log on every transient database failure.
+                const code = (error as { code?: string })?.code;
+                logger.error(`Failed to enqueue notification channel ${channel.id}${code ? ` (${code})` : ''}: ${
+                    error instanceof Error ? error.message : 'unknown error'
+                }`);
             });
         }
     } catch (error) {

@@ -36,7 +36,16 @@ model Account {
 }
 
 model Session {
-    id           String   @id @default(cuid())
+    id   String @id @default(cuid())
+    /// sha256 of the bearer token — never the token itself. This column is the
+    /// indexed lookup key for every authenticated request, so storing the
+    /// credential made any read of this table (backup, replica, mysqldump, a SQL
+    /// injection elsewhere, a leaked .sql) equivalent to stealing every logged-in
+    /// user's session for the next 30 days. `ApiKey.keyHash` works the same way.
+    ///
+    /// The token is `nvd_sess_<userId>.<random>.<hmac>`; the random part is 24
+    /// bytes from crypto.randomBytes, so a plain hash is the right primitive —
+    /// there is no dictionary to search.
     sessionToken String   @unique
     userId       String
     expires      DateTime
@@ -235,8 +244,14 @@ model Webhook {
     url           String
     events        Json
     active        Boolean           @default(true)
-    // Raw signing secret used to compute X-Veritas-Signature.
-    // Column mapped to legacy `secretHash` for backward compat.
+    /// HMAC key for X-Veritas-Signature, stored RAW because the server has to be
+    /// able to sign outbound deliveries with the same value the customer received
+    /// — a one-way hash cannot do that. The column name is a legacy mapping and is
+    /// misleading: this is NOT hashed. Treat a read of this table as a read of
+    /// every tenant's webhook signing key, and prefer encrypting it at rest
+    /// (AES-256-GCM under a server-held key) if that threat model matters to you.
+    ///
+    /// Kept out of API responses: `select` lists name it only where signing needs it.
     signingSecret String?           @map("secretHash")
     createdAt     DateTime          @default(now())
     deliveries    WebhookDelivery[]
