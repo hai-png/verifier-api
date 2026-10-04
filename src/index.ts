@@ -122,24 +122,47 @@ logger.info(`Node version: ${process.version}`);
 logger.info(`Platform: ${process.platform}`);
 
 /**
- * Shared secrets gate /admin/*, the dashboard-secret API path and session
- * tokens. They default to empty and every comparison fails closed, so a missing
- * value disables those surfaces rather than falling back to a guessable
- * constant. That failure is silent, though, and on a free-tier deploy it looks
- * like "the admin key is just wrong". Surface it loudly, and refuse to come up
- * in production.
+ * Required configuration, reported together.
+ *
+ * The secrets default to empty and every comparison fails closed, so a missing
+ * value disables those surfaces rather than falling back to a guessable constant.
+ * In production the process refuses to start, which is the right call — but it
+ * used to report only the secrets, while the real cause sat eleven seconds
+ * earlier in the log as a demoted `WARNING: prisma db push failed`.
+ *
+ * That is backwards in a way that costs a deploy cycle. With DATABASE_URL and
+ * both secrets unset — the signature of a service created from render.yaml and
+ * never configured — the boot printed:
+ *
+ *   WARNING: prisma db push failed - starting the API anyway
+ *   ERROR:   Refusing to start: ADMIN_SECRET, DASHBOARD_SECRET must be set ...
+ *
+ * so the operator fixed the secrets, redeployed, and only then met DATABASE_URL.
+ * One boot now names every absent variable at once.
  */
 const REQUIRED_SHARED_SECRETS = ['ADMIN_SECRET', 'DASHBOARD_SECRET'] as const;
 const MIN_SHARED_SECRET_LENGTH = 16;
+const REQUIRED_DATABASE_URL = 'DATABASE_URL';
 
-function assertSharedSecretsConfigured(): void {
-    const missing = REQUIRED_SHARED_SECRETS.filter((key) => {
+/** Absent or too-short secrets. Fatal in production, a warning elsewhere. */
+function missingSharedSecrets(): string[] {
+    return REQUIRED_SHARED_SECRETS.filter((key) => {
         const value = process.env[key];
         return !value || value.length < MIN_SHARED_SECRET_LENGTH;
     });
+}
+
+function assertSharedSecretsConfigured(): void {
+    const missing = missingSharedSecrets();
     if (missing.length === 0) return;
 
-    const detail = `${missing.join(', ')} must be set to a random value of at least ${MIN_SHARED_SECRET_LENGTH} characters (openssl rand -hex 32). Until then /admin/* and the dashboard-secret API reject every request.`;
+    // Named alongside the secrets even though DATABASE_URL is not itself fatal
+    // here, because otherwise the message points at the symptom.
+    const alsoMissing = !process.env[REQUIRED_DATABASE_URL]?.trim()
+        ? ` ${REQUIRED_DATABASE_URL} is not set either — without it nothing can connect to the database.`
+        : '';
+
+    const detail = `${missing.join(', ')} must be set to a random value of at least ${MIN_SHARED_SECRET_LENGTH} characters (openssl rand -hex 32). Until then /admin/* and the dashboard-secret API reject every request.${alsoMissing}`;
     if (process.env.NODE_ENV === 'production') {
         throw new Error(`Refusing to start: ${detail}`);
     }
@@ -153,6 +176,26 @@ async function initializeRuntime(): Promise<void> {
 
     try {
         assertSharedSecretsConfigured();
+
+        // Loud, early, and deliberately NOT fatal.
+        //
+        // ci.yml boots the image with no DATABASE_URL on purpose and asserts the
+        // container stays up and `/ready` reports non-200 — "the container must
+        // stay up rather than crash-loop on a missing DB". Making this throw
+        // would break that, and a crash-loop is worse than a degraded service
+        // anyway: `/health` would stop answering and Render would restart a
+        // process that could at least have explained itself.
+        //
+        // What was missing is the signal. A missing DATABASE_URL previously only
+        // surfaced as the Dockerfile's demoted `WARNING: prisma db push failed`,
+        // eleven seconds before an unrelated-looking error about secrets.
+        if (!process.env[REQUIRED_DATABASE_URL]?.trim()) {
+            logger.error(
+                `⚠️  ${REQUIRED_DATABASE_URL} is not set. Nothing can reach the database: ` +
+                '/health will answer, /ready will report 503, and every verification and dashboard ' +
+                'route will fail. Set it in Render → Environment.',
+            );
+        }
 
         // Verify Chrome is installed for the legacy CBE fallback. This checks
         // both system paths and the Puppeteer cache used by Render/Docker.

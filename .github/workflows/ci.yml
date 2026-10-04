@@ -29,6 +29,29 @@ jobs:
         with:
           node-version: 24
 
+      # Activate the package manager before anything invokes it.
+      #
+      # `package.json` pins `packageManager: pnpm@11.0.0` and the Dockerfile
+      # already does this (`corepack enable && corepack prepare pnpm@11.0.0
+      # --activate`), but this workflow went straight from setup-node to
+      # `pnpm install`. GitHub runners ship corepack without pnpm shims
+      # activated, so the very first step died with:
+      #
+      #   /home/runner/work/_temp/<id>.sh: line 1: pnpm: command not found
+      #   ##[error]Process completed with exit code 127.
+      #
+      # That is exit 127 in ~10 seconds, before typecheck, before tests and
+      # before the image build — so this job has been reporting failure on every
+      # commit since at least 2026-10-02 while verifying nothing whatsoever. A
+      # red CI badge reads as "the change broke something"; it was actually
+      # "nothing ran". Pin the same major the lockfile was written with, so a
+      # silent drift cannot resolve differently from the Docker build.
+      - name: Activate pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.0.0 --activate
+          pnpm --version
+
       - name: Install
         run: pnpm install --frozen-lockfile
 

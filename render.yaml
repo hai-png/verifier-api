@@ -8,6 +8,26 @@ services:
     # transatlantic RTT per query. Existing Render services cannot be moved by
     # changing a comment: create a Frankfurt replacement and perform a tested
     # cutover. Do NOT recreate/delete the existing database. See DEPLOYMENT.md.
+    #
+    # `region` was absent, so a service created from this Blueprint landed in
+    # Render's default region (Oregon) — which is where the live service
+    # actually is, and which costs ~300ms per database round trip against a
+    # Frankfurt TiDB. A verification spends two of them (access + quota) before
+    # the provider is even called, so that is roughly 600ms of the request.
+    #
+    # Read this correctly: Render cannot move an existing service to a new
+    # region, and does not apply a region change to one. This key takes effect
+    # only when a *new* service is created from this file. Getting the live
+    # service into Frankfurt is still the create-a-replacement-and-cut-over
+    # procedure above, not a config edit.
+    region: frankfurt
+    # Explicit rather than implicit. Render's default is already `commit`, so this
+    # documents the trigger instead of relying on it: a push to the connected
+    # branch deploys. `checksPass` would gate on CI, which cannot verify that
+    # *this* service has its own DATABASE_URL/ADMIN_SECRET/DASHBOARD_SECRET
+    # populated — ci.yml boots with throwaway values, so a green run and a
+    # service with no secrets are perfectly consistent.
+    autoDeployTrigger: commit
     dockerfilePath: ./Dockerfile
     dockerContext: .
     # Probe the database, not the static metadata document. `/` answers 200 with
