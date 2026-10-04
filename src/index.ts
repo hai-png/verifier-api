@@ -232,9 +232,37 @@ async function initializeRuntime(): Promise<void> {
             logger.warn('⚠️ Telebirr has only one relay configured; hedging and failover are inert. Add a second relay URL to FALLBACK_PROXIES.');
         }
 
-        await prisma.$connect();
-        await prisma.$queryRaw`SELECT 1`;
-        logger.info('Connected to database successfully');
+        // A database that is unreachable or unconfigured must NOT end the boot.
+        //
+        // The Dockerfile says so explicitly — `prisma db push` failure is
+        // non-fatal "deliberately: making it fatal turns a transient [failure into]
+        // a crash-loop" — and it names healthCheckPath: /ready as the mechanism,
+        // so a degraded instance reports 503 rather than disappearing. Then this
+        // function made the connection fatal anyway, which is why the CI step
+        // "The API boots and reports readiness" could never pass: it boots the
+        // image with the secrets set and no DATABASE_URL on purpose, asserts the
+        // container stays up, that /health answers 200 and that /ready is non-200
+        // — and the container exited on `prisma.$connect()` before any of them.
+        //
+        // So: catch it, leave `ready` false, and let the existing readiness
+        // plumbing do its job. `/health` answers, `/ready` runs its own
+        // `SELECT 1` and reports 503, `waitForRuntime` holds non-guest requests
+        // for STARTUP_WAIT_MS and then answers 503 with the detail, and Render
+        // restarts on the health check rather than on a crash loop that explains
+        // nothing. Every route that touches the database still fails — it just
+        // fails as a 503 with a reason rather than as a dead process.
+        let databaseReady = false;
+        try {
+            await prisma.$connect();
+            await prisma.$queryRaw`SELECT 1`;
+            logger.info('Connected to database successfully');
+            databaseReady = true;
+        } catch (error) {
+            logger.error(
+                `Database is not reachable: ${error instanceof Error ? error.message : String(error)}. ` +
+                'Serving /health but reporting 503 from /ready until it recovers.',
+            );
+        }
 
         // Mark the runtime ready as soon as the DB is reachable. The stats
         // cache aggregates the whole UsageLog table (COUNT + GROUP BYs), which
@@ -258,7 +286,11 @@ async function initializeRuntime(): Promise<void> {
         }
 
         startupState.initializing = false;
-        startupState.ready = true;
+        // Only claim readiness when the database answered. Everything else about
+        // the boot can succeed without it, and `/ready` independently re-probes,
+        // so a false `ready` here is what makes waitForRuntime answer 503 with a
+        // reason instead of letting traffic through to failing queries.
+        startupState.ready = databaseReady;
         startupState.initializedAt = new Date().toISOString();
     } catch (error) {
         startupState.initializing = false;
