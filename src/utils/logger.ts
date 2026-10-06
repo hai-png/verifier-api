@@ -70,13 +70,17 @@ const SENSITIVE_VALUE_PATTERNS: RegExp[] = [
     /^(sk_live_|sk_test_)\S+/i,          // API keys
     /^nvd_sess_\S+/i,                    // session tokens
     /\bBearer\s+\S+/i,                   // authorization header values
+    // A connection string with an inline password. redis://:pw@host,
+    // rediss://:pw@host, postgres://user:pw@host — these reach logs through error
+    // messages, diagnostic dumps and command echoes far more often than anyone
+    // expects, and the host alone is not enough to be useful for diagnosis.
+    /^[a-z][a-z0-9+.-]*:\/\/[^:@/\s]*:[^@\s]*@/i,
 ];
 
 function looksSensitiveValue(value: unknown): boolean {
     if (typeof value !== 'string' || value.length < 8) return false;
     return SENSITIVE_VALUE_PATTERNS.some((pattern) => pattern.test(value));
 }
-
 function redactValue(value: unknown): unknown {
     if (typeof value === 'string') {
         if (looksSensitiveValue(value)) return REDACTED;

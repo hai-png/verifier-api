@@ -769,7 +769,19 @@ export async function startWebhookQueueWorker(): Promise<void> {
 
     deliveryWorker.on('error', (error) => {
       workerConnected = false;
-      logger.error('Webhook queue worker error:', error);
+      // Message only, never the error object.
+      //
+      // redis-parser attaches the command it was parsing to the error, and for a
+      // failed AUTH that is `['auth', '<the Redis password>']`. Logging the object
+      // therefore writes the credential to logs in plaintext — observed live on
+      // the deployed instance during an Upstash plan-limit outage, repeating on
+      // every reconnect. redactSecrets walks the object's own keys and none of
+      // `command`/`args` is credential-shaped, and the bare password matches no
+      // value pattern, so it passed straight through.
+      //
+      // The message alone identifies the failure ("This database has reached
+      // current Fixed plan limits"), which is the whole diagnostic value.
+      logger.error(`Webhook queue worker error: ${error instanceof Error ? error.message : String(error)}`);
     });
 
     deliveryWorker.on('ready', () => {

@@ -581,7 +581,10 @@ export async function startNotificationQueueWorker(): Promise<void> {
 
     notificationWorker.on('error', (error) => {
       workerConnected = false;
-      logger.error('Notification queue worker error:', error);
+      // Message only — see the identical handler in webhookQueue.ts. redis-parser
+      // attaches the parsed command to the error, so a failed AUTH carries the
+      // Redis password and logging the object writes it to disk in plaintext.
+      logger.error(`Notification queue worker error: ${error instanceof Error ? error.message : String(error)}`);
     });
 
     notificationWorker.on('ready', () => {

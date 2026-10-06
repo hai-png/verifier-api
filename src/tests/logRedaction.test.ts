@@ -8,6 +8,40 @@ import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
 import { createLogger, format, transports } from 'winston';
 
+test('a credential embedded in a connection string is redacted', async () => {
+  // Observed live: an Upstash plan-limit outage made redis-parser attach the
+  // command it was parsing to the error — `['auth', '<the Redis password>']` —
+  // and the queue workers logged the whole error object. Neither `command` nor
+  // `args` is credential-shaped, and a bare password matches no value pattern, so
+  // the existing redaction walked straight past it and the credential was written
+  // to logs on every reconnect.
+  //
+  // The fix at the call site is to log `error.message` only. This is the
+  // defence-in-depth half: a connection string carrying an inline password is
+  // redacted wherever it turns up.
+  const { default: logger } = await import('../utils/logger');
+  const chunks: string[] = [];
+  const original = logger.transports.map((transport) => transport);
+  for (const transport of original) logger.remove(transport);
+  logger.add(new transports.Stream({
+    stream: new Writable({ write(chunk, _e, cb) { chunks.push(chunk.toString()); cb(); } }) as any,
+  }));
+  try {
+    logger.info('cache config', { url: 'rediss://:s3cr3t-password-value@eu1-adorse-fly-.upstash.io:6379' });
+    logger.info('db', { dsn: 'mysql://appuser:hunter2longpassword@eu-central-1.connect.psdb.cloud:3306/veritas' });
+    await new Promise<void>((r) => setImmediate(r));
+  } finally {
+    for (const transport of logger.transports) logger.remove(transport);
+    for (const transport of original) logger.add(transport);
+  }
+
+  const output = chunks.join('\n');
+  assert.ok(!output.includes('s3cr3t-password-value'), `redis password leaked: ${output}`);
+  assert.ok(!output.includes('hunter2longpassword'), `db password leaked: ${output}`);
+  // The host survives, which is what makes the line useful for diagnosis.
+  assert.ok(output.includes('upstash.io') || output.includes('[redacted]'));
+});
+
 test('a login body never reaches the log stream', async (t) => {
   const previousLogBodies = process.env.LOG_REQUEST_BODIES;
   delete process.env.LOG_REQUEST_BODIES;
