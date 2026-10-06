@@ -595,7 +595,7 @@ export async function reconcileWebhookDeliveries(): Promise<number> {
 
   reconciliationRunning = true;
   try {
-    const queue = getWebhookQueue();
+  const queue = getWebhookQueue();
     const staleBefore = new Date(Date.now() - STALE_DELIVERY_AGE_MS);
     const deliveries = await prisma.webhookDelivery.findMany({
       where: {
@@ -685,15 +685,30 @@ function startWebhookReconciliation(): void {
   reconciliationTimer.unref();
 }
 
-export async function getWebhookQueueHealth(): Promise<WebhookQueueHealth> {
-  if (!isWebhookQueueConfigured()) {
-    return {
-      configured: false,
-      workerRunning: false,
-      workerConnected: false,
-      queueName: QUEUE_NAME,
-      counts: {
-        waiting: 0,
+/**
+ * Readiness without the Redis round trip.
+ *
+ * The readiness decision is `configured && workerRunning && workerConnected` —
+ * three in-process booleans. The queue *counts* come from Redis and are pure
+ * observability, so they are excluded here by default.
+ *
+ * This matters because `/ready` is render.yaml's `healthCheckPath`, so Render
+ * calls it on a timer, and the app's own keep-alive pinger calls it every five
+ * minutes. Each call used to run `getJobCounts` against Redis on both queues —
+ * spending a provider's monthly command quota on a number no health check reads,
+ * on a service whose Redis is on Upstash's free tier. `/status/summary` still
+ * reports the counts; it is secret-gated and human-facing, which is the right
+ * place for them.
+ */
+export async function getWebhookQueueHealth(options: { includeDepth?: boolean } = {}): Promise<WebhookQueueHealth> {
+     if (!isWebhookQueueConfigured()) {
+       return {
+         configured: false,
+         workerRunning: false,
+         workerConnected: false,
+         queueName: QUEUE_NAME,
+         counts: {
+           waiting: 0,
         active: 0,
         delayed: 0,
         completed: 0,
@@ -703,10 +718,23 @@ export async function getWebhookQueueHealth(): Promise<WebhookQueueHealth> {
     };
   }
 
+  // Queue depth is an observability read, so it is opt-in. See the note above:
+  // /ready is the platform's healthCheckPath and must not spend provider quota.
+  if (options.includeDepth !== true) {
+    return {
+      configured: true,
+      workerRunning: Boolean(deliveryWorker),
+      workerConnected,
+      queueName: QUEUE_NAME,
+      counts: { waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0, paused: 0 },
+      note: 'queue depth omitted — readiness does not read Redis',
+    };
+  }
+
   const queue = getWebhookQueue();
-  // Bounded. `getJobCounts` was awaited without a deadline on GET /ready, so a
-  // stalled Redis meant the readiness probe never returned — Render never got its
-  // 503 and restarted a healthy instance rather than being told it was degraded.
+  // Bounded. `getJobCounts` was awaited without a deadline, so a stalled Redis
+  // meant the call never returned — Render never got its 503 and restarted a
+  // healthy instance rather than being told it was degraded.
   const counts = await withRedisDeadline(
     queue.getJobCounts(
       'waiting',

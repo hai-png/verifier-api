@@ -632,7 +632,12 @@ export async function stopNotificationQueueWorker(): Promise<void> {
   queueConnection = null;
 }
 
-export async function getNotificationQueueHealth(): Promise<NotificationQueueHealth> {
+/**
+ * Readiness without the Redis round trip — see the identical note in
+ * webhookQueue.ts. `/ready` is the platform's healthCheckPath; the queue counts
+ * are observability and cost provider quota, so they are opt-in.
+ */
+export async function getNotificationQueueHealth(options: { includeDepth?: boolean } = {}): Promise<NotificationQueueHealth> {
   if (!isNotificationQueueConfigured()) {
     return {
       configured: false,
@@ -647,6 +652,17 @@ export async function getNotificationQueueHealth(): Promise<NotificationQueueHea
         failed: 0,
         paused: 0,
       },
+    };
+  }
+
+  if (options.includeDepth !== true) {
+    return {
+      configured: true,
+      workerRunning: Boolean(notificationWorker),
+      workerConnected,
+      queueName: QUEUE_NAME,
+      counts: { waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0, paused: 0 },
+      note: 'queue depth omitted — readiness does not read Redis',
     };
   }
 

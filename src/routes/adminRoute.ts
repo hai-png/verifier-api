@@ -163,7 +163,10 @@ router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, 
 // Webhook queue health for dashboard/admin visibility
 router.get('/webhook-queue-health', checkAdminAuth as RequestHandler, async (_req: Request, res: Response): Promise<void> => {
     try {
-        const health = await getWebhookQueueHealth();
+        // includeDepth: an operator asking for queue health is the one caller that
+  // wants the counts, and it is a human-initiated, admin-gated request — unlike
+  // /ready, which the platform calls on a timer.
+  const health = await getWebhookQueueHealth({ includeDepth: true });
         res.json({ success: true, data: health });
     } catch (err) {
         logger.error('Failed to get webhook queue health:', err);
