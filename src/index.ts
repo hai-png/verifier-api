@@ -278,9 +278,33 @@ async function initializeRuntime(): Promise<void> {
         // instead of crashing the app. Verifications work fine without queues —
         // only webhook + notification delivery is affected.
         if (process.env.REDIS_URL) {
-            await startWebhookQueueWorker();
-            await startNotificationQueueWorker();
-            logger.info('Webhook + notification queue workers started (Redis connected)');
+            // Each worker is started independently and a failure is contained to
+            // its own queue. `REDIS_URL` being set says nothing about whether Redis
+            // is reachable: it can be wrong, rate-limited, or over its plan quota,
+            // and the worker exhausts retries and throws on all three. Awaiting
+            // that unguarded made the whole API exit — the comment above promised
+            // the opposite, and the mismatch is invisible until Redis has a bad
+            // day. Queues are an optional feature; verifications are not.
+            try {
+                await startWebhookQueueWorker();
+                logger.info('Webhook queue worker started (Redis connected)');
+            } catch (error) {
+                logger.error(
+                    'Webhook queue worker failed to start — webhook delivery is disabled for this instance. ' +
+                        'Verifications are unaffected. Check REDIS_URL, the Upstash plan quota, and that the URL is reachable.',
+                    error,
+                );
+            }
+            try {
+                await startNotificationQueueWorker();
+                logger.info('Notification queue worker started (Redis connected)');
+            } catch (error) {
+                logger.error(
+                    'Notification queue worker failed to start — notification delivery is disabled for this instance. ' +
+                        'Check REDIS_URL, the Upstash plan quota, and that the URL is reachable.',
+                    error,
+                );
+            }
         } else {
             logger.warn('REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.');
         }
@@ -573,15 +597,26 @@ app.get('/ready', async (req: Request, res: Response) => {
         (checks.notificationQueue as any).data = { configured: false, note: 'REDIS_URL not set — queues disabled' };
     }
 
-    const ready =
-        checks.startup.ready
-        && checks.database.ready
-        && checks.webhookQueue.ready
-        && checks.notificationQueue.ready;
+    // Only startup and the database gate readiness. The queues do not: they carry
+    // webhook and notification delivery, which is an optional feature, and every
+    // verification endpoint works without them. Gating on them meant an over-quota
+    // or unreachable Redis made /ready return 503 — and since render.yaml points
+    // healthCheckPath at /ready, Render would then treat a service that correctly
+    // answers /verify-* as unhealthy. A failing optional dependency should degrade
+    // the service, not evict it.
+    const ready = checks.startup.ready && checks.database.ready;
+
+    const degraded = [
+        ...(checks.webhookQueue.ready ? [] : ['webhookQueue']),
+        ...(checks.notificationQueue.ready ? [] : ['notificationQueue']),
+    ];
 
     res.status(ready ? 200 : 503).json({
         ready,
         timestamp,
+        // Surfaced explicitly so a queue outage is visible to operators and to
+        // anything reading /ready, without turning it into a restart trigger.
+        degraded: degraded.length > 0 ? degraded : undefined,
         checks,
     });
 });
