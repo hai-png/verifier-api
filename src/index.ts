@@ -696,9 +696,45 @@ const gracefulShutdown = async () => {
     }, 10000).unref?.();
 };
 
+// Redis/queue failures that are recoverable and must not end the process.
+//
+// ioredis raises these asynchronously from its own internal promise chains, so
+// they surface as unhandled rejections long after `startWebhookQueueWorker`
+// returned — catching at the call site does not catch them. Over-quota Redis
+// produces them continuously, and each one used to trigger gracefulShutdown,
+// which is how an exhausted free-tier database took down an API whose
+// verification endpoints never touch Redis. The message is logged loudly in
+// webhookQueue.ts / notificationQueue.ts; this only stops the escalation.
+const RECOVERABLE_REDIS_REJECTIONS = [
+    /Connection is closed/i,
+    /max retries per request/i,
+    /Stream isn't writeable/i,
+    /Connection timeout/i,
+    /ECONNRESET/i,
+    /reached current Fixed plan limits/i,
+    /READONLY/i,
+];
+
+function isRecoverableRedisRejection(reason: unknown): boolean {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    return RECOVERABLE_REDIS_REJECTIONS.some((pattern) => pattern.test(message));
+}
+
 // Node treats an unhandled rejection as fatal and exits immediately, which skips
 // the drain above and loses buffered usage rows. Log, then shut down cleanly.
+//
+// Exception: a recoverable Redis/queue rejection is logged and survived. The
+// queues are an optional feature, so degrading them must not evict an instance
+// that is correctly serving verifications. `/ready` reports them via `degraded`,
+// so the condition is still observable rather than swallowed.
 process.on('unhandledRejection', (reason) => {
+    if (isRecoverableRedisRejection(reason)) {
+        logger.error(
+            'Recoverable Redis/queue rejection — continuing without queues:',
+            reason instanceof Error ? reason.message : String(reason),
+        );
+        return;
+    }
     logger.error('Unhandled promise rejection:', reason);
     void gracefulShutdown();
 });
