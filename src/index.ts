@@ -329,9 +329,19 @@ app.set('trust proxy', 1);
 // dashboard authenticates with a bearer token, which a cross-origin request cannot
 // read out of localStorage. If you have a genuine cookie-authenticated client,
 // that is a design change, not an environment variable.
+// Trailing slashes stripped. `VERITAS_APP_URL` in the environment is
+// `https://dashboard.noveld.com.et/` and pasting that value straight into
+// CORS_ALLOWED_ORIGINS — the obvious thing to do, since it is the dashboard's
+// own configured URL — would produce the entry
+// `https://dashboard.noveld.com.et/`, which never equals the `Origin` header
+// `https://dashboard.noveld.com.et`. The symptom is a browser console CORS
+// error with a 200 in the network tab, which reads as "the server is ignoring
+// my header" rather than as a string-comparison mistake. Scheme and host are
+// also lowercased, since an origin comparison is case-insensitive on the host
+// and the scheme is normalised to lowercase by the browser.
 const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? '')
   .split(',')
-  .map((origin) => origin.trim())
+  .map((origin) => origin.trim().replace(/\/+$/, '').toLowerCase())
   .filter(Boolean);
 
 const corsCredentialsRequested = (process.env.CORS_CREDENTIALS ?? 'false').toLowerCase() === 'true';
@@ -349,7 +359,12 @@ app.use(cors({
     origin: CORS_ALLOWED_ORIGINS.length === 0
         ? false
         : (origin: string | undefined, callback: (err: Error | null, origin?: boolean | string) => void) =>
-            callback(null, origin && CORS_ALLOWED_ORIGINS.includes(origin) ? origin : false),
+            callback(
+                null,
+                origin && CORS_ALLOWED_ORIGINS.includes(origin.trim().replace(/\/+$/, '').toLowerCase())
+                    ? origin
+                    : false,
+            ),
     credentials: false,
     maxAge: 600, // Cache successful preflight, never receipt responses.
     exposedHeaders: ['Server-Timing', 'X-Verify-Cache', 'Retry-After'],

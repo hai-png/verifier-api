@@ -164,10 +164,52 @@ What a working proxy looks like:
 
 ## Step 3: Deploy the verifier-api on Render (free)
 
+> ### Do this FIRST: check whether you already have a service
+>
+> Every push to the watched branch auto-deploys **every** service watching it. Two
+> services on the same repo and branch means every commit races two builds, and
+> they fight over the environment: whichever finishes last wins, so a good deploy
+> gets replaced by a broken one or vice versa, non-deterministically.
+>
+> Before creating anything, list what you have:
+>
+> ```bash
+> render services list -o json     # or: Render dashboard → your workspace
+> ```
+>
+> - **Exactly one `verifier-api`** → you are done here. Skip to step 5 and fill in
+>   any missing environment variables on that service.
+> - **Two or more services** → stop. Delete the extras (see the note below) and
+>   keep the one that has your data and history. Do *not* create a third.
+> - **None** → continue with the steps below.
+>
+> `render.yaml` cannot adopt an existing service. Applying it when a service of
+> that name already exists creates a **second** one rather than updating the
+> first, which is exactly how this repo ended up with `verifier-api` (Live, real
+> config) and `verifier-api-selfhosted` (created later by a Blueprint apply,
+> never configured, 19 deploys and 19 failures, never served a request).
+>
+> ```bash
+> # delete the duplicate(s) — verify the ID before running this
+> render services list -o json
+> render services delete <service-id>
+> ```
+>
+> Deleting a service discards its environment variables. Capture them first with
+> `node tools/capture-env-cjs <service-id>` (see "Backing up environment
+> variables" below) — the Render API never returns secret-typed values, so those
+> must be copied from the dashboard by hand.
+
 1. Go to https://render.com → Sign up (with GitHub)
 2. **New** → **Blueprint**
 3. Select your fork of this repo (or `hai-png/verifier-api`, branch `selfhosted`)
 4. Render will detect `render.yaml` and create a **Docker** service. This is required for legacy CBE verification: the Dockerfile installs Chromium. Do not replace the Docker service with a native Node service or use the old `pnpm install ... && node dist/index.js` commands, because that runtime has no browser.
+
+   `render.yaml` also pins `region: frankfurt` to match TiDB. Render cannot move
+   an existing service between regions — `render blueprints validate` rejects a
+   region change with `changing region not supported` — so this applies at creation
+   only. A service created without it lands in Render's default region and pays a
+   ~300ms round trip on every database query.
 5. In the **Environment** tab, set these secrets:
    - `DATABASE_URL` → paste the TiDB connection string from Step 1
    - `ADMIN_SECRET` → `openssl rand -hex 32` (generate + paste)
@@ -185,9 +227,30 @@ What a working proxy looks like:
    - `MPESA_FALLBACK_URL` → `https://proxy.noveld.com.et/mpesa.php`
    - `MPESA_PROXY_KEY` → the key you set in mpesa.php (Step 2c)
    - `REDIS_URL` → (leave empty — not needed for verifications, only for webhooks)
+   - `CORS_ALLOWED_ORIGINS` → the dashboard's origin, comma-separated for
+     several. **Required if the dashboard is on a different host than the API**,
+     which it is by default (`web/src/lib/api.ts` calls
+     `https://verify.noveld.com.et` from `dashboard.noveld.com.et`). Left unset,
+     every dashboard request fails preflight — a CORS error in the browser
+     console alongside a 200 in the network tab. Trailing slashes are stripped
+     when parsed, so pasting `VERITAS_APP_URL` verbatim works. The previous
+     behaviour reflected any `Origin` header, which let any website call every
+     dashboard route with the operator's cookie; this is an explicit allow-list.
+
+   Verify before you deploy anything irreversible:
+   ```bash
+   node tools/verify-env-backup.cjs   # names only what is still missing
+   ```
 6. Click **Create Blueprint**
-7. Render will build (5-10 min) + deploy. The URL will be `https://verifier-api-selfhosted.onrender.com`
-8. Test: `curl https://verifier-api-selfhosted.onrender.com/health` → `{"status":"ok",...}`
+7. Render will build (5-10 min) + deploy. The URL will be `https://verifier-api.onrender.com`
+8. Test: `curl https://verifier-api.onrender.com/health` → `{"status":"ok",...}`
+
+> **Redact your custom domain first.** Pointing `verify.noveld.com.et` at a
+> service, then deleting that service, leaves the domain serving Render's
+> "service not found" page. Custom domains are environment-level, not
+> service-level, so they are not removed with the service. Before deleting a
+> service that a domain points at, move the domain to the replacement or
+> unassign it.
 
 > **Existing Render service:** a service created from an earlier revision may still
 > show `Using Node.js version ...` and run `pnpm install --frozen-lockfile && pnpm build`.

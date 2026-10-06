@@ -1,25 +1,32 @@
 services:
   - type: web
-    name: verifier-api-selfhosted
+    # ONE service, one name.
+    #
+    # Two services were attached to this repo, both auto-deploying `selfhosted`,
+    # so every push raced two builds: `verifier-api` (created 2026-09-30, inside
+    # Project `verifier`, Live, carrying the real configuration) and
+    # `verifier-api-selfhosted` (created 2026-10-02 by a Blueprint apply, never
+    # configured, 19 deploys and 19 failures, never served a request). The
+    # duplicate came from following DEPLOYMENT.md Step 3, which said to create a
+    # service from this file without first checking whether one already existed.
+    # That step now warns about it.
+    #
+    # If a service by this name already exists, do NOT apply this file — update
+    # the existing service instead. A Blueprint apply creates a second service
+    # rather than adopting the first.
+    name: verifier-api
     env: docker
     plan: free  # 512MB RAM / shared CPU, spins down after 15 min inactivity (cold start ~30s)
-    # REGION MATTERS: live origin DNS identified Oregon; the owner confirmed
-    # TiDB is in Frankfurt (2026-09-26). Co-locate API + DB to avoid paying a
-    # transatlantic RTT per query. Existing Render services cannot be moved by
-    # changing a comment: create a Frankfurt replacement and perform a tested
-    # cutover. Do NOT recreate/delete the existing database. See DEPLOYMENT.md.
+    # TiDB is in Frankfurt (2026-09-26). Co-locate API + DB: a verification
+    # spends two database round trips (access + quota) before the provider is even
+    # called, and each transatlantic round trip measured ~300ms.
     #
-    # `region` was absent, so a service created from this Blueprint landed in
-    # Render's default region (Oregon) — which is where the live service
-    # actually is, and which costs ~300ms per database round trip against a
-    # Frankfurt TiDB. A verification spends two of them (access + quota) before
-    # the provider is even called, so that is roughly 600ms of the request.
-    #
-    # Read this correctly: Render cannot move an existing service to a new
-    # region, and does not apply a region change to one. This key takes effect
-    # only when a *new* service is created from this file. Getting the live
-    # service into Frankfurt is still the create-a-replacement-and-cut-over
-    # procedure above, not a config edit.
+    # This key only takes effect when a *new* service is created. Render cannot
+    # move an existing service between regions and `render blueprints validate`
+    # rejects a region change outright with "changing region not supported" — so
+    # changing it here on a live service is a no-op at best. To relocate, create
+    # the replacement in the target region and cut over. Do NOT recreate or
+    # delete the database; see DEPLOYMENT.md.
     region: frankfurt
     # Explicit rather than implicit. Render's default is already `commit`, so this
     # documents the trigger instead of relying on it: a push to the connected
@@ -63,7 +70,27 @@ services:
       # Set this in the Render dashboard → Environment → Add DATABASE_URL
       - key: DATABASE_URL
         sync: false
-      # Admin + dashboard secrets (generate with: openssl rand -hex 32)
+      # Browser origins allowed to call this API. UNSET MEANS SAME-ORIGIN ONLY.
+      #
+      # The dashboard is a separate deploy on a different host from the API
+      # (web/src/lib/api.ts calls https://verify.noveld.com.et from
+      # dashboard.noveld.com.et), so it IS cross-origin and this MUST be set or
+      # every dashboard request fails preflight. This replaces the previous
+      # `origin: true`, which reflected any Origin and — combined with
+      # CORS_CREDENTIALS and a session cookie accepted by requireSession —
+      # exposed every dashboard route to any website.
+      #
+      # Trailing slashes are stripped when parsed, so pasting VERITAS_APP_URL
+      # verbatim works.
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://dashboard.noveld.com.et
+      # Trust CF-Connecting-IP / X-Forwarded-For from a *public* peer. Off by
+      # default: those headers are only trustworthy when the hop that set them is
+      # one you deployed. On Render the peer is Render's proxy, so the default is
+      # correct and per-IP rate limits key on the proxy address.
+      - key: TRUST_FORWARDED_HEADERS
+        value: "false"
+      # Admin secret (generate with: openssl rand -hex 32)
       - key: ADMIN_SECRET
         sync: false
       #   Also grants unlimited credits per workspace:
