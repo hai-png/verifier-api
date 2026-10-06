@@ -120,6 +120,12 @@ test('a failed verification is not amount-checked', () => {
 });
 
 test('each provider amount field is read', () => {
+  // Pinned to the gross basis because that is what these payloads describe: a
+  // primary amount field and no itemised fee. Under the default net basis a
+  // provider that is known to charge a fee cannot resolve a net from these, and
+  // returns AMOUNT_NOT_VERIFIABLE by design — that behaviour has its own tests
+  // in amountBasis.test.ts. The claim under test here is narrower and still
+  // worth holding: every provider's amount field is reachable.
   const cases: Array<[string, Record<string, unknown>, number]> = [
     ['telebirr', { settledAmount: '200 Birr' }, 200],
     ['cbe', { amount: 250 }, 250],
@@ -131,7 +137,12 @@ test('each provider amount field is read', () => {
     ['zemen', { amount: 175 }, 175],
   ];
   for (const [provider, data, expected] of cases) {
-    const result = checkAmount({ result: { success: true, data }, expectedAmount: expected, provider });
+    const result = checkAmount({
+      result: { success: true, data },
+      expectedAmount: expected,
+      provider,
+      basis: 'gross',
+    });
     assert.equal(result.ok, true, `${provider} should read ${expected}`);
     assert.equal(result.foundAmount, expected);
   }

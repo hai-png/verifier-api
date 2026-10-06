@@ -1,5 +1,12 @@
 import { prisma } from './prisma';
 import { extractPaymentDetails } from './paymentMatch';
+import {
+  describeAmountUnresolvable,
+  resolveComparableAmount,
+  resolveAmountBasis,
+  type AmountBasis,
+  type ResolvedAmount,
+} from './amountBasis';
 
 /**
  * The two checks the recipient check cannot make for itself.
@@ -24,6 +31,18 @@ export interface AmountCheckResult {
   /** What the provider reported, null when it reports none. */
   foundAmount?: number | null;
   checked: boolean;
+  /**
+   * The gross/fee/net breakdown behind `foundAmount`, when it came from a
+   * provider payload. Surfaced so a merchant can see why the comparison used
+   * the figure it did instead of having to infer it from a mismatch.
+   */
+  amountBreakdown?: {
+    gross: number | null;
+    fee: number | null;
+    net: number | null;
+    basis: AmountBasis;
+    source: ResolvedAmount['source'];
+  };
 }
 
 /** ETB amounts are whole birr in practice; this only absorbs float representation. */
@@ -47,7 +66,7 @@ export function checkAmount(params: {
   expectedAmount: unknown;
   provider: string;
   /**
-   * The amount the source already resolved, bypassing `extractPaymentDetails`.
+   * The amount the source already resolved, bypassing the provider payload.
    *
    * The OCR path needs this. Its payload speaks a different vocabulary from a
    * provider API (`details.amount` rather than `settledAmount` /
@@ -55,9 +74,15 @@ export function checkAmount(params: {
    * providers of which `extractPaymentDetails` knows 8. Routing the OCR payload
    * through the extractor therefore returned `AMOUNT_NOT_VERIFIABLE` for 13 of
    * them — on receipts whose amount was present and correct. `undefined` means
-   * "not supplied, use the extractor", which keeps the reference path unchanged.
+   * "not supplied, use the provider payload", which keeps the reference path on
+   * the shared resolver.
    */
   foundAmount?: number | null;
+  /**
+   * Explicit basis override. Defaults to `VERIFY_AMOUNT_BASIS`, which defaults
+   * to `net`. Tests pin this so they do not depend on ambient environment.
+   */
+  basis?: AmountBasis;
 }): AmountCheckResult {
   const { result, provider } = params;
   const expected = Number(params.expectedAmount);
@@ -70,23 +95,48 @@ export function checkAmount(params: {
     return { ok: true, checked: false };
   }
 
+  const basis = params.basis ?? resolveAmountBasis();
+  let breakdown: AmountCheckResult['amountBreakdown'];
+
   const found = 'foundAmount' in params
     ? params.foundAmount ?? null
     : (() => {
+        // A provider payload goes through the net/gross resolver rather than the
+        // flat extractor, because most providers lead with the amount the payer
+        // was charged and itemise the fee separately. Comparing that gross figure
+        // against a merchant's expected net rejects every correct payment by the
+        // fee amount — observed live as 801 gross versus 797 received.
         const data = (result.data ?? result.details) as Record<string, unknown> | undefined;
-        return data && typeof data === 'object' ? extractPaymentDetails(data, provider).amount : null;
+        if (data && typeof data === 'object') {
+          const { amount, resolved } = resolveComparableAmount(provider, data, basis);
+          breakdown = {
+            gross: resolved.gross,
+            fee: resolved.fee,
+            net: resolved.net,
+            basis,
+            source: resolved.source,
+          };
+          // `gross` basis needs the flat extractor as a last resort: a provider
+          // with no net field and no itemised fee still has a comparable gross.
+          return amount ?? (basis === 'gross' ? extractPaymentDetails(data, provider).amount : null);
+        }
+        return null;
       })();
 
   if (found === null || !Number.isFinite(found)) {
+    const data = (result.data ?? result.details) as Record<string, unknown> | undefined;
+    const detail =
+      data && typeof data === 'object'
+        ? describeAmountUnresolvable(resolveComparableAmount(provider, data, basis).resolved, basis)
+        : `${provider} did not report an amount for this transaction, so it cannot be confirmed as a payment of ${expected}. Do not issue on this evidence.`;
     return {
       ok: false,
       checked: true,
       reason: 'AMOUNT_NOT_VERIFIABLE',
       expectedAmount: expected,
       foundAmount: null,
-      error:
-        `${provider} did not report an amount for this transaction, so it cannot be confirmed as a payment of ${expected}. ` +
-        'Do not issue on this evidence.',
+      amountBreakdown: breakdown,
+      error: detail,
     };
   }
 
@@ -97,11 +147,12 @@ export function checkAmount(params: {
       reason: 'AMOUNT_MISMATCH',
       expectedAmount: expected,
       foundAmount: found,
+      amountBreakdown: breakdown,
       error: `The payment was ${found}, not ${expected}.`,
     };
   }
 
-  return { ok: true, checked: true, expectedAmount: expected, foundAmount: found };
+  return { ok: true, checked: true, expectedAmount: expected, foundAmount: found, amountBreakdown: breakdown };
 }
 
 export interface ReplayInfo {

@@ -90,6 +90,12 @@ services:
       # correct and per-IP rate limits key on the proxy address.
       - key: TRUST_FORWARDED_HEADERS
         value: "false"
+      # What `expectedAmount` is compared against: net (what the recipient
+      # actually received, after the provider's fee) or gross (what the payer was
+      # charged). Net is the default and matches a bank statement. See
+      # .env.example for the full explanation and a worked Telebirr example.
+      - key: VERIFY_AMOUNT_BASIS
+        value: net
       # Admin secret (generate with: openssl rand -hex 32)
       - key: ADMIN_SECRET
         sync: false

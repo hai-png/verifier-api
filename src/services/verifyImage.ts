@@ -11,6 +11,7 @@ import {
     payoutAccountAllowsProvider,
 } from "../utils/recipientCheck";
 import { checkAmount, noteSuccessfulVerification } from "../utils/verificationGuards";
+import { resolveAmountBasis, resolveAmounts } from "../utils/amountBasis";
 import { extractPaymentDetails } from "../utils/paymentMatch";
 
 dotenv.config();
@@ -246,12 +247,17 @@ async function enforceAmount(params: {
     const { res, result, providerType, expectedAmount } = params;
     // `foundAmount` is passed explicitly rather than letting checkAmount derive it.
     //
-    // checkAmount's extractor is keyed on provider *API* field names and knows 8
+    // checkAmount's resolver is keyed on provider *API* field names and knows 8
     // providers; `ocrVerifiedTypes` lists 21. Deriving it meant 13 of them hit the
     // `default:` arm and came back AMOUNT_NOT_VERIFIABLE — a 422 on a receipt whose
     // amount was in `ocrDetails.amount` all along. The comparison itself is still
     // checkAmount's: same tolerance, same fail-closed on a missing amount, same
     // reason codes.
+    //
+    // The caller is responsible for supplying a figure on the *comparison* basis
+    // the caller has already chosen. For the OCR path that is the number the OCR
+    // read. For a provider path it must be the resolved net, not the gross
+    // headline — see the Telebirr caller below.
     const outcome = checkAmount({
         result: { success: true, data: result },
         expectedAmount,
@@ -268,6 +274,7 @@ async function enforceAmount(params: {
         type: providerType,
         expectedAmount: outcome.expectedAmount,
         foundAmount: outcome.foundAmount,
+        ...(outcome.amountBreakdown ? { amountBreakdown: outcome.amountBreakdown } : {}),
     });
     return false;
 }
@@ -767,9 +774,20 @@ Return this JSON format exactly, with no extra prose:
                         // branch. A merchant that adopted expectedAmount after
                         // reading the OCR branch's note got no protection here: a
                         // correct-account receipt for 1 birr passed as verified.
+                        // Provider-reported net, never the receipt's gross headline.
+                        // Telebirr debits the sender the charged amount and credits
+                        // the recipient less: a live transaction debited 801 Birr
+                        // (service fee 3.48 + VAT 0.52) and credited 797.
+                        // `settledAmount` is the credited figure, so it is what a
+                        // merchant's expectedAmount means. Passing the gross
+                        // rejected correct payments by exactly the fee.
+                        const telebirrAmounts = resolveAmounts('telebirr', data);
+                        const telebirrComparable = resolveAmountBasis() === 'gross'
+                            ? telebirrAmounts.gross
+                            : telebirrAmounts.net;
                         if (!await enforceAmount({
                             res,
-                            result: { amount: extractAmountFromProviderData(data, 'telebirr') },
+                            result: { amount: telebirrComparable },
                             providerType: 'telebirr',
                             expectedAmount: req.body?.expectedAmount,
                         })) {
@@ -788,6 +806,17 @@ Return this JSON format exactly, with no extra prose:
                             // the amount check, but only when the caller opted in
                             // with expectedAmount. Silence would read as "checked".
                             amountChecked: isAmountCheckRequested(req.body?.expectedAmount),
+                            // The gross/fee/net split behind the comparison, so a
+                            // merchant reconciling against a bank statement can see
+                            // why 801 charged produced a 797 match instead of
+                            // inferring it from a failed one.
+                            amountBreakdown: {
+                                gross: telebirrAmounts.gross,
+                                fee: telebirrAmounts.fee,
+                                net: telebirrAmounts.net,
+                                basis: resolveAmountBasis(),
+                                source: telebirrAmounts.source,
+                            },
                         });
                     } catch (verifyErr: any) {
                         logger.error("Telebirr verification failed", { verifyErr });
@@ -843,9 +872,12 @@ Return this JSON format exactly, with no extra prose:
                     })) {
                         return;
                     }
+                    const cbeAmounts = resolveAmounts('cbe', data);
                     if (!await enforceAmount({
                         res,
-                        result: { amount: extractAmountFromProviderData(data, 'cbe') },
+                        result: {
+                            amount: resolveAmountBasis() === 'gross' ? cbeAmounts.gross : cbeAmounts.net,
+                        },
                         providerType: 'cbe',
                         expectedAmount: req.body?.expectedAmount,
                     })) {
@@ -861,6 +893,13 @@ Return this JSON format exactly, with no extra prose:
                             ? { payoutAccountId: payoutAccount.id, payoutAccountLabel: payoutAccount.label }
                             : {}),
                         amountChecked: isAmountCheckRequested(req.body?.expectedAmount),
+                        amountBreakdown: {
+                            gross: cbeAmounts.gross,
+                            fee: cbeAmounts.fee,
+                            net: cbeAmounts.net,
+                            basis: resolveAmountBasis(),
+                            source: cbeAmounts.source,
+                        },
                     });
                 } catch (verifyErr) {
                     logger.error("CBE verification failed", { verifyErr });
