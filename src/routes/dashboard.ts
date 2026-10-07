@@ -507,17 +507,75 @@ router.delete('/:workspaceId/payouts/:payoutId', async (req: Request, res: Respo
             return;
         }
 
-        const updated = await prisma.payoutAccount.updateMany({
-            where: { id: payoutId, workspaceId },
-            data: { active: false },
+        // Mirrors DELETE /payouts/:id (payouts.ts:309-343), which unbinds the
+        // account from every API key, product and payment link in one
+        // transaction. This route only set `active: false`, so the bindings
+        // survived a delete that had, from the user's point of view, removed the
+        // account:
+        //
+        //   - an API key stayed bound to it. verifyRecipient resolves the bound
+        //     account with `active: true`, found nothing, and returned null,
+        //     which silently disables the recipient check on every subsequent
+        //     verification made with that key. A security check turning itself
+        //     off with no error and no warning.
+        //   - a payment link stayed bound to it. A link resolves a unique
+        //     destination from its active accounts, so with the only account
+        //     retired the link returns null and every buyer gets 422 on a link
+        //     the dashboard still shows as shareable.
+        //
+        // Reactivating the account would otherwise restore every binding, which
+        // is why the disconnect has to happen here rather than being left to a
+        // cascade that never fires on a soft delete.
+        const [boundProducts, boundLinks] = await Promise.all([
+            prisma.product.findMany({
+                where: { workspaceId, payoutAccounts: { some: { id: payoutId } } },
+                select: { id: true },
+            }),
+            prisma.paymentLink.findMany({
+                where: { workspaceId, payoutAccounts: { some: { id: payoutId } } },
+                select: { id: true },
+            }),
+        ]);
+
+        const updated = await prisma.$transaction(async (tx) => {
+            const result = await tx.payoutAccount.updateMany({
+                where: { id: payoutId, workspaceId },
+                data: { active: false, isDefault: false },
+            });
+            if (result.count === 0) return 0;
+
+            await tx.apiKey.updateMany({
+                where: { workspaceId, defaultPayoutAccountId: payoutId },
+                data: { defaultPayoutAccountId: null },
+            });
+            for (const product of boundProducts) {
+                await tx.product.update({
+                    where: { id: product.id },
+                    data: { payoutAccounts: { disconnect: { id: payoutId } } },
+                });
+            }
+            for (const link of boundLinks) {
+                await tx.paymentLink.update({
+                    where: { id: link.id },
+                    data: { payoutAccounts: { disconnect: { id: payoutId } } },
+                });
+            }
+            return result.count;
         });
 
-        if (updated.count === 0) {
+        if (updated === 0) {
             res.status(404).json({ success: false, error: 'Payout account not found.' });
             return;
         }
 
-        res.json({ success: true });
+        // Told to the client so the UI can name what it just broke rather than
+        // letting the user discover it later as a silent check failure.
+        res.json({
+            success: true,
+            unboundKeys: true,
+            unboundProducts: boundProducts.length,
+            unboundPaymentLinks: boundLinks.length,
+        });
     } catch (err) {
         logger.error('Delete payout error:', err);
         res.status(500).json({ success: false, error: 'Failed to delete payout account.' });

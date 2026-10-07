@@ -44,6 +44,7 @@ import {
   Loader2, Building2, ChevronRight, BarChart3, Pencil, Star, History, Lock
 } from 'lucide-react'
 import { API_URL } from '@/lib/api'
+import { ToggleChip } from '@/components/ui/toggle-chip'
 
 // ─── API Config ─────────────────────────────────────────────────────────────
 
@@ -278,6 +279,30 @@ async function apiFetch(path: string, token: string | null, options: RequestInit
     },
   })
   return res
+}
+
+/**
+ * Read a JSON body and turn a non-2xx status into a thrown error.
+ *
+ * `apiFetch` returns the Response and never inspects `res.ok`, so every list
+ * load in this file treated a 401, 403, 500 or network failure as "no data" and
+ * rendered a confident empty state. That is actively misleading: a user whose
+ * session expired was told they had no payout accounts, and a revoked member was
+ * told the same. Throwing here lets each caller distinguish empty from broken.
+ */
+async function readJson(res: Response): Promise<any> {
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    const message =
+      body?.error ||
+      (res.status === 401
+        ? 'Your session has expired. Sign in again.'
+        : res.status === 403
+          ? 'You do not have access to this workspace.'
+          : `Request failed (HTTP ${res.status}).`)
+    throw new Error(message)
+  }
+  return body
 }
 
 // ─── Pages ──────────────────────────────────────────────────────────────────
@@ -894,9 +919,9 @@ function ApiKeysTab({ workspaceId, canManage }: { workspaceId: string; canManage
   const [newKey, setNewKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
-    const [revokingId, setRevokingId] = useState<string | null>(null)
-    const [payouts, setPayouts] = useState<PayoutAccount[]>([])
-    const [bindingId, setBindingId] = useState<string | null>(null)
+  const [revokingId, setRevokingId] = useState<string | null>(null)
+  const [payouts, setPayouts] = useState<PayoutAccount[]>([])
+  const [bindingId, setBindingId] = useState<string | null>(null)
 
     const load = useCallback(() => {
       apiFetch(`/dashboard/${workspaceId}/api-keys`, token)
@@ -1136,12 +1161,23 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
     providersAllowed: [] as string[],
   })
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  // Which payout account ID was just copied, so only that card's button shows
+  // its confirmation. A single boolean would light up every card at once.
+  const [copiedId, setCopiedId] = useState<string | null>(null)
 
   const load = useCallback(() => {
+    setLoadError(null)
     apiFetch(`/dashboard/${workspaceId}/payouts`, token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => {
         if (data.success) setPayouts(data.payouts)
+      })
+      // A failed load is not an empty list. Rendering "No payout accounts yet"
+      // after a 403 told a user with revoked access that they simply had none.
+      .catch(err => {
+        setLoadError(err instanceof Error ? err.message : 'Could not load payout accounts.')
       })
       .finally(() => setLoading(false))
   }, [token, workspaceId])
@@ -1172,23 +1208,37 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
 
   const save = async () => {
     const isEdit = editingId !== null
-    const res = await apiFetch(
-      isEdit ? `/dashboard/${workspaceId}/payouts/${editingId}` : `/dashboard/${workspaceId}/payouts`,
-      token,
-      {
-        method: isEdit ? 'PATCH' : 'POST',
-        body: JSON.stringify(form),
-      },
-    )
-    const data = await res.json()
-    if (data.success) {
-      toast({ title: isEdit ? 'Payout account updated' : 'Payout account created' })
-      setCreateOpen(false)
-      setEditingId(null)
-      setForm({ label: '', accountHolderName: '', type: 'PHONE', account: '', providersAllowed: [] })
-      load()
-    } else {
-      toast({ title: 'Error', description: data.error, variant: 'destructive' })
+    // Guarded: an unhandled rejection here left the dialog open with no feedback,
+    // so a dropped connection looked like the button simply not working.
+    if (saving) return
+    setSaving(true)
+    try {
+      const res = await apiFetch(
+        isEdit ? `/dashboard/${workspaceId}/payouts/${editingId}` : `/dashboard/${workspaceId}/payouts`,
+        token,
+        {
+          method: isEdit ? 'PATCH' : 'POST',
+          body: JSON.stringify(form),
+        },
+      )
+      const data = await readJson(res)
+      if (data.success) {
+        toast({ title: isEdit ? 'Payout account updated' : 'Payout account created' })
+        setCreateOpen(false)
+        setEditingId(null)
+        setForm({ label: '', accountHolderName: '', type: 'PHONE', account: '', providersAllowed: [] })
+        load()
+      } else {
+        toast({ title: 'Error', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not save',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -1210,17 +1260,39 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
   }
 
   const remove = async (id: string) => {
-    if (!confirm('Delete this payout account?')) return
+    // Names the consequences. Deleting an account unbinds it from API keys,
+    // products and payment links, which is not obvious and is how a recipient
+    // check ends up silently disabled on every later verification.
+    const account = payouts.find(p => p.id === id)
+    const label = account ? `"${account.label}"` : 'this account'
+    if (!confirm(
+      `Delete payout account ${label}?\n\n` +
+      'This also unbinds it from any API keys, products and payment links that use it. ' +
+      'Verifications through those keys will stop checking the recipient, and payment links ' +
+      'will no longer resolve a destination account.\n\n' +
+      'This cannot be undone from the dashboard.'
+    )) return
     setRemovingId(id)
     try {
       const res = await apiFetch(`/dashboard/${workspaceId}/payouts/${id}`, token, { method: 'DELETE' })
-      const data = await res.json()
+      const data = await readJson(res)
       if (!res.ok || !data.success) {
         toast({ title: 'Failed to delete account', description: data.error || 'Please try again.', variant: 'destructive' })
         return
       }
       load()
-      toast({ title: 'Payout account deleted' })
+      // Report what was broken, not just that something happened.
+      const unbound: string[] = [];
+      if (data.unboundKeys) unbound.push('API keys');
+      if (data.unboundProducts) unbound.push(`${data.unboundProducts} product(s)`);
+      if (data.unboundPaymentLinks) unbound.push(`${data.unboundPaymentLinks} payment link(s)`);
+      toast({
+        title: 'Payout account deleted',
+        description: unbound.length
+          ? `Unbound from: ${unbound.join(', ')}.`
+          : undefined,
+        variant: unbound.length ? 'default' : 'default',
+      })
     } catch (err) {
       toast({ title: 'Failed to delete account', description: err instanceof Error ? err.message : 'Please try again.', variant: 'destructive' })
     } finally {
@@ -1253,6 +1325,13 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
+      ) : loadError ? (
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={load}>Try again</Button>
+          </CardContent>
+        </Card>
       ) : payouts.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
@@ -1280,6 +1359,37 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
                       {(p.providersAllowed as string[]).map(pr => (
                         <Badge key={pr} variant="secondary" className="text-xs capitalize">{pr}</Badge>
                       ))}
+                    </div>
+                    {/* The API refers to this account by id, and it is a cuid —
+                        not derivable from the label or the phone number. It used to
+                        be rendered nowhere in the dashboard, so following the
+                        documented "copy it from the Payouts page" instruction meant
+                        reading it out of devtools. Not a secret, so unlike the API
+                        key it needs no show-once treatment — just visibility and a
+                        copy button. */}
+                    <div className="flex items-center gap-2 mt-2">
+                      <code className="text-xs bg-muted rounded px-1.5 py-0.5 break-all" title="Payout account ID">
+                        {p.id}
+                      </code>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2"
+                        aria-label={`Copy payout account ID for ${p.label}`}
+                        onClick={() => {
+                          navigator.clipboard.writeText(p.id)
+                          setCopiedId(p.id)
+                          setTimeout(() => setCopiedId(cur => (cur === p.id ? null : cur)), 2000)
+                          toast({ title: 'Payout account ID copied', description: p.id })
+                        }}
+                      >
+                        {copiedId === p.id
+                          ? <Check className="w-3 h-3 text-green-600" />
+                          : <Copy className="w-3 h-3" />}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        use as <code>payoutAccountId</code>
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1330,7 +1440,7 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
               >                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="PHONE">📱 Phone (Telebirr / CBE Birr / M-Pesa)</SelectItem>
-                  <SelectItem value="BANK">🏦 Bank (CBE / Dashen / Abyssinia / Awash / Zemen)</SelectItem>
+                  <SelectItem value="BANK">🏦 Bank (CBE / Dashen / Abyssinia)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1342,10 +1452,8 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
               <Label>Accepted Providers</Label>
               <div className="flex flex-wrap gap-2">
                 {PROVIDERS.filter(p => p.type === form.type).map(p => (
-                  <Badge
+                  <ToggleChip selected={form.providersAllowed.includes(p.id)}
                     key={p.id}
-                    variant={form.providersAllowed.includes(p.id) ? 'default' : 'outline'}
-                    className="cursor-pointer"
                     onClick={() => {
                       setForm({
                         ...form,
@@ -1356,7 +1464,7 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
                     }}
                   >
                     {p.label}
-                  </Badge>
+                  </ToggleChip>
                 ))}
               </div>
             </div>
@@ -1655,10 +1763,8 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
               <Label>Accepted Providers</Label>
               <div className="flex flex-wrap gap-2">
                 {PROVIDERS.map(p => (
-                  <Badge
+                  <ToggleChip selected={form.acceptedProviders.includes(p.id)}
                     key={p.id}
-                    variant={form.acceptedProviders.includes(p.id) ? 'default' : 'outline'}
-                    className="cursor-pointer"
                     onClick={() => {
                       setForm({
                         ...form,
@@ -1669,7 +1775,7 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                     }}
                   >
                     {p.label}
-                  </Badge>
+                  </ToggleChip>
                 ))}
               </div>
             </div>
@@ -1683,10 +1789,8 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {eligiblePayouts.map(p => (
-                    <Badge
+                    <ToggleChip selected={form.payoutAccountIds.includes(p.id)}
                       key={p.id}
-                      variant={form.payoutAccountIds.includes(p.id) ? 'default' : 'outline'}
-                      className="cursor-pointer"
                       title={`${p.accountHolderName || ''} ${p.account}`}
                       onClick={() => setForm({
                         ...form,
@@ -1696,7 +1800,7 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                       })}
                     >
                       {p.label} — {p.account}
-                    </Badge>
+                    </ToggleChip>
                   ))}
                 </div>
               )}
@@ -1874,14 +1978,12 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
               <Label>Accepted Providers</Label>
               <div className="flex flex-wrap gap-2">
                 {PROVIDERS.map(p => (
-                  <Badge
+                  <ToggleChip selected={form.acceptedProviders.includes(p.id)}
                     key={p.id}
-                    variant={form.acceptedProviders.includes(p.id) ? 'default' : 'outline'}
-                    className="cursor-pointer"
                     onClick={() => toggleProvider(p.id)}
                   >
                     {p.label}
-                  </Badge>
+                  </ToggleChip>
                 ))}
               </div>
             </div>
@@ -1894,14 +1996,12 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {payouts.map(a => (
-                    <Badge
+                    <ToggleChip selected={form.payoutAccountIds.includes(a.id)}
                       key={a.id}
-                      variant={form.payoutAccountIds.includes(a.id) ? 'default' : 'outline'}
-                      className="cursor-pointer"
                       onClick={() => togglePayout(a.id)}
                     >
                       {a.label}
-                    </Badge>
+                    </ToggleChip>
                   ))}
                 </div>
               )}
@@ -2010,8 +2110,9 @@ function WebhooksTab({ workspaceId, canManage }: { workspaceId: string; canManag
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ url: '', events: ['payment_link.paid'] })
-  const [newSecret, setNewSecret] = useState<string | null>(null)
+const [newSecret, setNewSecret] = useState<string | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
 
   const load = useCallback(() => {
     apiFetch(`/dashboard/${workspaceId}/webhooks`, token)
@@ -2025,17 +2126,34 @@ function WebhooksTab({ workspaceId, canManage }: { workspaceId: string; canManag
   useEffect(() => { load() }, [load])
 
   const create = async () => {
-    const res = await apiFetch(`/dashboard/${workspaceId}/webhooks`, token, {
-      method: 'POST',
-      body: JSON.stringify(form),
-    })
-    const data = await res.json()
-    if (data.success) {
-      setNewSecret(data.webhook.signingSecret)
-      setCreateOpen(false)
-      setForm({ url: '', events: ['payment_link.paid'] })
-      load()
-      toast({ title: 'Webhook created' })
+    // This had no `else` at all: a rejected create — including the plan-limit
+    // 400 the server returns on the free tier — left the dialog open, silent, and
+    // the user clicking Create repeatedly with no idea why.
+    if (creating) return
+    setCreating(true)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/webhooks`, token, {
+        method: 'POST',
+        body: JSON.stringify(form),
+      })
+      const data = await readJson(res)
+      if (data.success) {
+        setNewSecret(data.webhook.signingSecret)
+        setCreateOpen(false)
+        setForm({ url: '', events: ['payment_link.paid'] })
+        load()
+        toast({ title: 'Webhook created' })
+      } else {
+        toast({ title: 'Could not create webhook', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not create webhook',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -2158,10 +2276,8 @@ function WebhooksTab({ workspaceId, canManage }: { workspaceId: string; canManag
               <Label>Events</Label>
               <div className="flex flex-wrap gap-2">
                 {WEBHOOK_EVENTS.map(ev => (
-                  <Badge
+                  <ToggleChip selected={form.events.includes(ev)}
                     key={ev}
-                    variant={form.events.includes(ev) ? 'default' : 'outline'}
-                    className="cursor-pointer"
                     onClick={() => {
                       setForm({
                         ...form,
@@ -2172,14 +2288,16 @@ function WebhooksTab({ workspaceId, canManage }: { workspaceId: string; canManag
                     }}
                   >
                     {ev}
-                  </Badge>
+                  </ToggleChip>
                 ))}
               </div>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button onClick={create} disabled={!form.url}>Create</Button>
+            <Button variant="ghost" onClick={() => setCreateOpen(false)} disabled={creating}>Cancel</Button>
+            <Button onClick={create} disabled={!form.url || creating}>
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

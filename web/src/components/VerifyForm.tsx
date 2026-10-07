@@ -39,6 +39,14 @@ interface VerifyResult {
   matchedOn?: string
   payoutAccountId?: string
   payoutAccountLabel?: string
+  /** Emitted whenever an amount comparison ran. */
+  amountBreakdown?: {
+    gross: number | null
+    fee: number | null
+    net: number | null
+    basis: string
+    source: string
+  }
 }
 
 /** Shape of GET /dashboard/:workspaceId/payouts */
@@ -213,6 +221,16 @@ function AmountField({
       <p className="text-xs text-muted-foreground">
         With an amount set, a receipt for a different figure is refused. Providers that do not
         report one (M-Pesa, Awash, Zemen) are refused as unverifiable rather than assumed.
+      </p>
+      {/* The distinction that silently rejects every correct payment if
+          misunderstood. A Telebirr receipt's headline "Total Paid Amount" is what
+          the SENDER was charged; the recipient receives less once the service fee
+          is deducted. Typing the headline figure here means every genuine payment
+          is refused by exactly the fee. */}
+      <p className="text-xs text-amber-700 dark:text-amber-500">
+        Enter what <strong>you receive</strong>, not the total charged to the sender. A Telebirr
+        payment showing a 801 Birr total may credit 797 after a 4 Birr service fee — enter 797.
+        The result shows the gross/fee/net breakdown so you can confirm what was compared.
       </p>
     </div>
   )
@@ -644,8 +662,27 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
                 ) : "FAILED"}
               </Badge>
               {result.recipientChecked && <Badge variant="outline">recipient checked</Badge>}
-              {result.recipientChecked && result.success && (
+              {result.amountChecked && (
+                <Badge variant="outline" className="border-green-600 text-green-600">
+                  amount checked
+                  {typeof result.verifiedAmount === "number" ? ` · ${result.verifiedAmount} Birr` : ""}
+                </Badge>
+              )}
+              {/* Keyed on amountChecked, not on recipientChecked. The old guard
+                  printed "amount not checked" on results where the amount HAD
+                  been checked and passed — the operator who explicitly asked for
+                  the check was told it never ran. */}
+              {!result.amountChecked && result.success && (
                 <Badge variant="outline" className="border-amber-500 text-amber-600">amount not checked</Badge>
+              )}
+              {/* No guards ran at all: no payout account selected and no expected
+                  amount given. The provider's lookup succeeded, but nothing about
+                  who was paid or how much was verified, and a bare green VERIFIED
+                  reads as if both were. */}
+              {!result.recipientChecked && !result.amountChecked && result.success && (
+                <Badge variant="outline" className="border-amber-500 text-amber-600">
+                  no checks run — provider confirmed the payment only
+                </Badge>
               )}
               {result.replayed && (
                 <Badge variant="outline" className="border-amber-500 text-amber-600">
@@ -677,14 +714,42 @@ const [imageResult, setImageResult] = useState<ImageResult | null>(null)
             {!result.success && result.error && (
               <CardDescription>
                 {result.reason
-                  ? `${RECIPIENT_REASON_COPY[result.reason] ?? result.error} Expected ${result.expectedAccount}.`
+                  // Only name an expected account when the server actually sent
+                  // one. `expectedAccount` is not part of the guard annotations,
+                  // so it is absent for a recipient refusal and interpolating it
+                  // unconditionally rendered "Expected undefined." on the one
+                  // message whose entire purpose is to name the account.
+                  ? `${RECIPIENT_REASON_COPY[result.reason] ?? result.error}${
+                      result.expectedAccount
+                        ? ` Expected ${result.expectedAccount}.`
+                        : ""
+                    }`
                   : result.error}
               </CardDescription>
             )}
+            {/* The gross/fee/net split behind a passing or failing amount check.
+                Without it an operator who entered the receipt's headline figure and
+                got a mismatch has no way to see that the comparison used the net. */}
+            {result.amountBreakdown && (
+              <p className="text-sm text-muted-foreground mt-2">
+                {result.amountBreakdown.gross != null && result.amountBreakdown.net != null && (
+                  <>
+                    Charged {result.amountBreakdown.gross} Birr
+                    {result.amountBreakdown.fee != null && `, service fee ${result.amountBreakdown.fee}`}
+                    {` → ${result.amountBreakdown.net} Birr received. Compared on the ${
+                      result.amountBreakdown.basis
+                    } basis (${result.amountBreakdown.source}).`}
+                  </>
+                )}
+              </p>
+            )}
           </CardHeader>
           <CardContent>
+            {/* The whole result, not just `data`. Rendering only `data` showed the
+                provider's own payload and dropped every annotation the pipeline
+                computed — which account was checked, what net figure was compared. */}
             <pre className="bg-muted rounded-md p-4 overflow-auto text-xs max-h-96 whitespace-pre-wrap break-words">
-              {JSON.stringify(result.data ?? result.details ?? result, null, 2)}
+              {JSON.stringify(result.data ? { ...result, data: result.data } : result, null, 2)}
             </pre>
           </CardContent>
         </Card>
