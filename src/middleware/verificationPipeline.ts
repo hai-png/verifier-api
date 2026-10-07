@@ -154,7 +154,15 @@ export function createVerificationPipeline(options: PipelineOptions = {}, overri
       });
       if (amount.checked) {
         result = amount.ok
-          ? { ...result, amountChecked: true, verifiedAmount: amount.foundAmount }
+          ? {
+              ...result,
+              amountChecked: true,
+              verifiedAmount: amount.foundAmount,
+              // The gross/fee/net split behind the comparison, so the figure that
+              // produced a match is visible rather than inferred from a failure.
+              // Surfaced on both verification paths for the same reason.
+              ...(amount.amountBreakdown ? { amountBreakdown: amount.amountBreakdown } : {}),
+            }
           : {
               ...result,
               success: false,
@@ -164,6 +172,7 @@ export function createVerificationPipeline(options: PipelineOptions = {}, overri
               amountChecked: false,
               expectedAmount: amount.expectedAmount,
               verifiedAmount: amount.foundAmount,
+              ...(amount.amountBreakdown ? { amountBreakdown: amount.amountBreakdown } : {}),
             };
       }
 

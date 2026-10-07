@@ -42,6 +42,37 @@ export default function Image() {
         image credit is spent.
       </DocP>
 
+      <DocH2>Checking the amount too</DocH2>
+      <DocP>
+        A receipt can be genuine, correctly addressed, and still be for the wrong amount. Add{" "}
+        <Code code="expectedAmount" inline /> alongside <Code code="payoutAccountId" inline /> and
+        both are enforced before success is reported:
+      </DocP>
+      <Code
+        code={`curl -X POST ${API_HOST}/verify-image \\
+  -H "x-api-key: $VERIFIER_API_KEY" \\
+  -F "file=@/path/to/receipt.jpg" \\
+  -F "payoutAccountId=clx1234567890abcdef" \\
+  -F "expectedAmount=797"`}
+      />
+      <DocP>
+        Expect the amount that <strong>arrived</strong>, not the figure on the receipt. Providers
+        charge the sender a fee on top of the transfer, so a Telebirr receipt reading &ldquo;Total
+        Paid Amount 801&rdquo; can credit 797 to your account. Sending 801 rejects a correct payment;
+        sending 797 against a gross comparison approves a short one. The{" "}
+        <Code code="amountChecked" inline /> and <Code code="amountBreakdown" inline /> fields in the
+        response show exactly what was compared and why.
+      </DocP>
+      <DocP>
+        This matters most on the OCR path. A Telebirr or CBE receipt is verified against the
+        provider&apos;s own API, which reports the settled figure — but a bank with no public API is
+        verified from the screenshot alone, where the most prominent number is the charged amount.
+        Pass <Code code="expectedAmount" inline /> on those so the comparison happens against a net
+        figure rather than a headline. See{" "}
+        <a href="/docs/reference/amounts" className="underline font-medium">Amount checks</a> for the
+        per-provider detail.
+      </DocP>
+
       <DocH2>Not every receipt prints an account</DocH2>
       <DocP>
         Some banks identify the beneficiary by name only — Dashen publishes no destination account

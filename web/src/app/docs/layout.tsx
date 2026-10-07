@@ -41,6 +41,8 @@ const SECTIONS: { title: string; links: { href: string; label: string }[] }[] = 
     title: "Reference",
     links: [
       { href: "/docs/reference/providers", label: "Providers" },
+      { href: "/docs/reference/amounts", label: "Amount checks" },
+      { href: "/docs/reference/operations", label: "Operations" },
       { href: "/docs/reference/plans", label: "Plans & limits" },
       { href: "/docs/reference/errors", label: "Errors & retries" },
     ],
