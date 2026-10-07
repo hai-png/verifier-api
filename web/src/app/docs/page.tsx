@@ -34,14 +34,18 @@ export default function DocsOverview() {
         verification uses multipart form data.
       </DocP>
       <DocP>
-        Inspect both the HTTP status and the JSON body. Every error uses the{" "}
-        <code>{"{ success: false, error }"}</code> envelope.
+        Inspect both the HTTP status and the JSON body. Verification failures use the{" "}
+        <code>{"{ success: false, error, reason }"}</code> envelope, where{" "}
+        <code>reason</code> is a stable code you can branch on. Two deliberate exceptions: receipt
+        image verification uses <code>{"{ verified: false, error, reason }"}</code>, and the legacy
+        Dashen, M-Pesa, Awash, Zemen and CBE Birr routes return their provider&apos;s own payload
+        unchanged.
       </DocP>
       <Code
         code={`curl -X POST ${API_HOST}/verify \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: sk_live_YOUR_KEY" \\
-  -d '{"reference": "FT123ABC456"}'`}
+  -d '{"reference": "FT74A19B2C3D"}'`}
       />
       <Next href="/docs/getting-started" label="Getting started" />
     </>

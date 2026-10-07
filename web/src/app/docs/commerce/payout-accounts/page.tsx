@@ -25,9 +25,15 @@ export default function PayoutAccounts() {
       <DocP>
         When a buyer pays, the system finds the payout account whose{" "}
         <code>providersAllowed</code> includes that provider and compares its{" "}
-        <code>account</code> against the verified recipient. CBE accounts compare by suffix, so
-        store the full account number and pass the seller suffix when verifying legacy CBE
-        receipts.
+        <code>account</code> against the verified recipient. CBE accounts compare by suffix, so store
+        the full account number.
+      </DocP>
+      <DocP>
+        The <code>suffix</code> you send when verifying a legacy CBE receipt is the{" "}
+        <strong>payer&apos;s</strong> 8-digit account tail, not this account. CBE keys its legacy
+        receipt lookup on the sender, so submitting your own account number looks up a different
+        receipt and returns 404. This payout account belongs in the{" "}
+        <code>payoutAccountId</code> you pass to the verification request instead.
       </DocP>
       <Next href="/docs/commerce/payment-links" label="Payment links" />
     </>

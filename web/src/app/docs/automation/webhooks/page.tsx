@@ -58,11 +58,13 @@ if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.sendStatu
 
 const event = JSON.parse(rawBody);`}
       />
-      <DocP>
-        <code>X-Veritas-Legacy-Signature</code> is still sent as{' '}
-        <code>sha256=&lt;hex&gt;</code> over the body alone, so a receiver running the
-        previous example keeps working. It is deprecated and carries no replay
-        protection — move to the timestamped form and you can stop reading it.
+<DocP>
+        <code>X-Veritas-Legacy-Signature</code> is <strong>off by default</strong>. It is only
+        emitted when the server is started with <code>WEBHOOK_LEGACY_SIGNATURE=true</code>, and the
+        server logs a warning when it is. If your receiver still validates the old
+        <code>sha256=&lt;hex&gt;</code> header over the body alone, that header will be absent
+        until it is enabled explicitly — migrate to the timestamped form above rather than relying
+        on it continuing to arrive.
       </DocP>
       <DocP>
         A valid signature still does not make a delivery safe to act on twice: the

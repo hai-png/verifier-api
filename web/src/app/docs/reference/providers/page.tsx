@@ -47,8 +47,18 @@ export default function Providers() {
       </DocP>
       <DocH2>Ethiopian-IP note</DocH2>
       <DocP>
-        Telebirr and M-Pesa block non-Ethiopian IPs; the API relays those checks through an
-        Ethiopia-hosted proxy with automatic fallback relays, so integrations work from anywhere.
+        Telebirr and M-Pesa block non-Ethiopian IPs, so the API relays those checks through an
+        operator-hosted proxy. Telebirr uses a pool of relay URLs and fails over between them;
+        <strong>M-Pesa has a single relay</strong> with no fallback, so an M-Pesa verification
+        depends on that one host being up.
+      </DocP>
+      <DocH2>Sellable vs verifiable</DocH2>
+      <DocP>
+        Eight providers can be verified against, but only six can be sold on. Products and payment
+        links accept <code>acceptedProviders</code> from: telebirr, cbe, dashen, abyssinia, cbebirr,
+        mpesa. <strong>Awash and Zemen cannot be sold on</strong>, because a payment link must be
+        able to settle an order and neither returns the amount and recipient figures needed to
+        confirm one. They remain fully available for verification.
       </DocP>
       <Next href="/docs/reference/plans" label="Plans & limits" />
     </>

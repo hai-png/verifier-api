@@ -2,15 +2,18 @@ import { DocH, DocLead, DocH2, DocP, Code } from "@/components/Docs";
 
 const ROWS: [string, string][] = [
   ["400", "Bad request — missing/invalid parameters. Fix the payload."],
-  ["401", "Missing or invalid API key / session. Check credentials."],
+  ["401", "No API key or session presented at all."],
   ["402", "Quota exhausted or feature not in plan. Top up or upgrade."],
-  ["403", "Key lacks the required permission. Update it in the dashboard."],
+  ["403", "API key invalid, or lacks the required permission."],
   ["404", "Unknown receipt / resource. Confirm the reference."],
   ["409", "Conflict — reference already used, sold out, or duplicate."],
+  ["413", "Upload too large (receipt images are capped at 2 MB)."],
+  ["415", "Unsupported upload type — receipt images accept JPEG, PNG or WebP."],
   ["422", "Provider understood the request but rejected it (e.g. recipient mismatch, unreadable image)."],
   ["429", "Rate limit or public-verify throttle. Back off per retryAfter."],
   ["500", "Server error. Retry with backoff; contact support if persistent."],
   ["502", "Upstream provider unreachable (relays exhausted). Retry later."],
+  ["503", "Cold start or database unavailable. Honour Retry-After."],
 ];
 
 export default function Errors() {
@@ -20,8 +23,11 @@ export default function Errors() {
       <DocLead>One envelope, predictable codes, safe retry rules.</DocLead>
 
       <DocP>
-        Errors always look like <code>{"{ success: false, error }"}</code>, sometimes with extra
-        fields (<code>details</code>, <code>retryAfter</code>, <code>code</code>).
+Errors generally look like <Code code={"{ success: false, error }"} inline />, sometimes with
+        extra fields (<Code code="reason" inline />, <Code code="details" inline />,{" "}
+        <Code code="retryAfter" inline />). Two exceptions worth knowing: receipt image verification
+        uses <Code code={"{ verified: false, error }"} inline />, and the legacy Dashen, M-Pesa,
+        Awash, Zemen and CBE Birr routes return the provider&apos;s own payload unchanged.
       </DocP>
 
       <div className="border rounded-md overflow-hidden mb-4">
@@ -42,14 +48,16 @@ export default function Errors() {
           </tbody>
         </table>
       </div>
-
-      <DocH2>Recipient reasons</DocH2>
       <DocP>
-        When a payout account applies — passed as <Code code="payoutAccountId" inline />, or bound to
-        the API key — a verification can confirm the receipt and still refuse it. On reference
-        verification that comes back as <Code code="200" inline /> with <Code code="success:false" inline />{' '}
-        and a <Code code="reason" inline />, because the lookup itself succeeded; only image
-        verification uses <Code code="422" inline />.
+        An invalid API key is <Code code="403" inline />, not <Code code="401" inline />. Only a completely
+        absent credential is <Code code="401" inline />, which distinguishes &ldquo;forgot the header&rdquo;
+        from &ldquo;rotated the key&rdquo; without reading the body.
+      </DocP>
+
+      <DocH2>Reason codes</DocH2>
+      <DocP>
+        A verification can succeed as a lookup and still be refused. Branch on{" "}
+        <Code code="reason" inline /> rather than matching the <Code code="error" inline /> prose:
       </DocP>
       <table className="w-full text-sm">
         <tbody>
@@ -57,6 +65,10 @@ export default function Errors() {
             ['RECIPIENT_MISMATCH', 'The receipt names a different account or payee. Do not issue.'],
             ['RECIPIENT_NOT_VERIFIABLE', 'The receipt shows no destination account or receiver name that can be matched, so it cannot be confirmed either way. Do not issue.'],
             ['PROVIDER_NOT_ALLOWED', 'The selected payout account does not accept that provider. Choose another account or omit it.'],
+            ['AMOUNT_MISMATCH', 'The provider reported an amount, and it was not the expected one.'],
+            ['AMOUNT_NOT_VERIFIABLE', 'No amount could be established at all. Never treat this as a pass.'],
+            ['BUYER_PHONE_REQUIRED', 'The provider reports a payer phone number and none was supplied.'],
+            ['BUYER_PHONE_MISMATCH', 'The payer number on the receipt is not the one supplied.'],
           ].map(([code, desc]) => (
             <tr key={code} className="border-t">
               <td className="p-2 font-mono text-xs align-top whitespace-nowrap">{code}</td>
@@ -66,9 +78,16 @@ export default function Errors() {
         </tbody>
       </table>
       <DocP>
-        A verified response also carries <Code code="amountChecked: false" inline />. The recipient
-        check says <em>who</em> was paid, never <em>how much</em> — compare the amount yourself
-        before issuing.
+        On reference verification a recipient or amount refusal comes back as <Code code="200" inline />{" "}
+        with <Code code="success:false" inline /> and a <Code code="reason" inline />, because the provider
+        lookup itself succeeded. Receipt image verification uses <Code code="422" inline /> for the same
+        conditions.
+      </DocP>
+      <DocP>
+        A successful response with no <Code code="expectedAmount" inline /> supplied carries{" "}
+        <Code code="amountChecked: false" inline />. The recipient check says <em>who</em> was paid, never{" "}
+        <em>how much</em> — see{" "}
+        <a href="/docs/reference/amounts" className="underline font-medium">Amount checks</a>.
       </DocP>
 
       <DocH2>Retry strategy</DocH2>
