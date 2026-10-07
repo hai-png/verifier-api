@@ -46,24 +46,72 @@ export function dashboardVerificationAccess(db: Pick<typeof prisma, 'workspace'>
   };
 }
 
+/**
+ * The guard annotations the pipeline layers onto `result`.
+ *
+ * `applyRecipientCheck`, `checkAmount` and `noteSuccessfulVerification` all
+ * compute their findings and spread them onto the result object. Those findings
+ * were then dropped on the floor here, because the body was built from
+ * `result.data` alone — so `/verify-telebirr` answered a successful receipt with
+ * nothing about the amount it was compared against, no `reason` on a rejection,
+ * and no replay flag. The recipient check could reject a payment and the caller
+ * was handed a bare `error` string with no machine-readable code to distinguish
+ * RECIPIENT_MISMATCH from PROVIDER_NOT_ALLOWED from AMOUNT_MISMATCH.
+ *
+ * Each field is emitted only when actually set, so a verification that ran no
+ * guards carries none of them rather than a set of misleading falses.
+ */
+const GUARD_ANNOTATIONS = [
+  'recipientChecked',
+  'amountChecked',
+  'verifiedAmount',
+  'amountBreakdown',
+  'expectedAmount',
+  'reason',
+  'replayed',
+  'timesSeen',
+  'firstVerifiedAt',
+  'payoutAccountId',
+  'payoutAccountLabel',
+] as const;
+
+function guardAnnotations(result: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of GUARD_ANNOTATIONS) {
+    const value = result[key];
+    if (value !== undefined && value !== null) out[key] = value;
+  }
+  return out;
+}
+
 /** Transport adapters only. Legacy routes keep success payloads and historical
  * domain-failure envelopes; the provider/cache/billing decisions are shared.
  */
 export function verificationResponse(result: SmartVerifyResult, envelope: VerificationEnvelope, legacyProvider?: string): { status: number; body: unknown } {
   const p = legacyProvider?.toLowerCase();
+  const annotations = guardAnnotations(result as unknown as Record<string, unknown>);
   if (!result.success) {
     if (envelope === 'legacy' && result.data && ['dashen', 'mpesa', 'awash', 'zemen', 'cbebirr'].includes(p ?? '')) {
       return { status: 200, body: result.data };
     }
     return {
       status: envelope === 'legacy' && p === 'abyssinia' && result.data ? 404 : result.httpStatus,
-      body: { success: false, error: result.error, ...(envelope === 'dashboard' ? { provider: result.provider } : {}), ...(result.details ? { details: result.details } : {}) },
+      // `reason` first-class for the universal envelope so a caller can branch on
+      // the cause instead of string-matching `error`. Legacy envelopes keep their
+      // historical shape and are left exactly as they were.
+      body: {
+        success: false,
+        error: result.error,
+        ...(envelope === 'universal' ? annotations : {}),
+        ...(envelope === 'dashboard' ? { provider: result.provider } : {}),
+        ...(result.details ? { details: result.details } : {}),
+      },
     };
   }
   const data = result.data as any;
-  if (envelope === 'dashboard') return { status: 200, body: { success: true, provider: result.provider, data: data?.success !== undefined ? data.data ?? data : data } };
+  if (envelope === 'dashboard') return { status: 200, body: { success: true, provider: result.provider, data: data?.success !== undefined ? data.data ?? data : data, ...annotations } };
   if (envelope === 'legacy') return { status: 200, body: ['telebirr', 'abyssinia'].includes(p ?? '') ? { success: true, data } : data };
-  return { status: 200, body: data?.success !== undefined ? data : { success: true, data } };
+  return { status: 200, body: { ...(data?.success !== undefined ? data : { success: true, data }), ...annotations } };
 }
 
 /** The ONLY single-receipt HTTP pipeline, after the entry point authenticates.

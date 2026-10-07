@@ -114,6 +114,8 @@ const PROVIDER_FIELDS: Record<string, ProviderAmountFields> = {
   // Zemen's fetcher assigns `amount` from its settled-amount regex, so its
   // primary figure is already net.
   zemen: { net: ['amount'], gross: ['totalPaidAmount'], fee: ['serviceCharge'] },
+  // Registered under the hyphenated OCR spelling; `fieldsFor` normalises it so the
+  // reference path's `cbebirr` slug reaches this same entry.
   'cbe-birr': { net: [], gross: ['paidAmount', 'amount'], fee: ['serviceCharge'] },
   dashen: { net: [], gross: ['transactionAmount', 'amount'], fee: ['serviceCharge'] },
   mpesa: { net: [], gross: ['amount'], fee: ['serviceFee'] },
@@ -122,8 +124,27 @@ const PROVIDER_FIELDS: Record<string, ProviderAmountFields> = {
   awash: { net: [], gross: ['amount'], fee: [] },
 };
 
+/**
+ * Fold the two spellings of a provider slug onto one key.
+ *
+ * The reference path and the OCR path disagree about this: `providerSlug()`
+ * translates the CBE_BIRR enum to `cbebirr`, while the OCR vocabulary in
+ * `ocrVerifiedTypes` uses `cbe-birr`. Keying the map on only one of them meant
+ * `/verify-cbebirr` missed its own entry and fell through to the defaults, which
+ * declare no fee — so CBE Birr silently compared `paidAmount` gross instead of
+ * subtracting the service charge. Normalising both sides makes the spelling
+ * irrelevant instead of load-bearing.
+ */
+function normaliseProviderKey(provider: string): string {
+  return provider.trim().toLowerCase().replace(/[-_\s]/g, '');
+}
+
+const NORMALISED_PROVIDER_FIELDS: Record<string, ProviderAmountFields> = Object.fromEntries(
+  Object.entries(PROVIDER_FIELDS).map(([key, value]) => [normaliseProviderKey(key), value]),
+);
+
 function fieldsFor(provider: string): ProviderAmountFields {
-  return PROVIDER_FIELDS[provider.trim().toLowerCase()] ?? DEFAULT_FIELDS;
+  return NORMALISED_PROVIDER_FIELDS[normaliseProviderKey(provider)] ?? DEFAULT_FIELDS;
 }
 
 /** Like the extractor's `num`: accepts a number or a numeric string, rejects NaN. */

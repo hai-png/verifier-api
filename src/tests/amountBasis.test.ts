@@ -128,6 +128,23 @@ test('cbe reports amountCredited, so its primary figure is already net', () => {
   assert.equal(r.feeDeclared, false);
 });
 
+test('both spellings of the CBE Birr slug reach the same entry', () => {
+  // The reference path translates the enum to `cbebirr`; the OCR vocabulary uses
+  // `cbe-birr`. Keying on one spelling meant the other fell through to defaults
+  // that declare no fee, so CBE Birr compared gross and never subtracted the
+  // service charge.
+  for (const slug of ['cbe-birr', 'cbebirr', 'CBE_BIRR', 'cbe_birr']) {
+    const r = resolveAmounts(slug, { paidAmount: '199.50', serviceCharge: '0.50' });
+    assert.equal(r.source, 'grossMinusFee', `${slug} must resolve its own fee entry`);
+    assert.equal(r.net, 199, `${slug} must subtract the fee`);
+  }
+});
+
+test('provider slug lookup ignores case and separators', () => {
+  assert.equal(resolveAmounts('TELEBIRR', { settledAmount: '797' }).source, 'providerNet');
+  assert.equal(resolveAmounts('Telebirr', { settledAmount: '797' }).source, 'providerNet');
+});
+
 test('an unstudied provider is not assumed to charge a fee', () => {
   // The regression this guards: declaring a fee by default made every provider
   // without an entry fail closed, and CBE stopped verifying entirely.
