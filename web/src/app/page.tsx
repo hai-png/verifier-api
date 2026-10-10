@@ -41,8 +41,11 @@ import {
   LayoutDashboard, Key, Wallet, Link2, CreditCard, Webhook, Settings,
   LogOut, Plus, Trash2, Copy, Check, TrendingUp, DollarSign, ShoppingCart,
   Users, ArrowRight, Menu, X, Eye, EyeOff, AlertCircle, CheckCircle2,
-  Loader2, Building2, ChevronRight, BarChart3, Pencil, Star, History, Lock
+  Loader2, Building2, ChevronRight, BarChart3, Pencil, Star, History, Lock,
+  Send, Pause, Play, Bell
 } from 'lucide-react'
+import { NotificationsTab } from './notifications-tab'
+import { registerSharedTabDeps } from './tab-deps'
 import { API_URL } from '@/lib/api'
 import { ToggleChip } from '@/components/ui/toggle-chip'
 
@@ -158,6 +161,13 @@ function ReadOnlyNotice({ what }: { what: string }) {
   )
 }
 
+// The notification tab lives in its own module but shares this file's helpers.
+// Passing them in as props would mean threading five bindings through
+// WorkspacePage for the sake of module boundaries. tab-deps.ts breaks what would
+// otherwise be a circular import: page.tsx registers them there once, the tab
+// reads them. Registered at the bottom of this module because it references
+// useAuth, which is declared further down.
+
 interface WorkspaceStats {
   totalRevenue: number
   totalPayments: number
@@ -265,6 +275,10 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
 }
 
 const useAuth = () => useContext(AuthContext)
+
+// Runs at module load, before any render, so a split-out tab can read them on
+// its first render rather than needing a lazy fallback.
+registerSharedTabDeps({ apiFetch, readJson, useAuth, useToast, ReadOnlyNotice })
 
 // ─── API Helper ─────────────────────────────────────────────────────────────
 
@@ -540,16 +554,24 @@ function DashboardPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
   const { token } = useAuth()
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const loadWorkspaces = useCallback(() => {
     if (!token) return
+    setLoading(true)
+    setLoadError(null)
     apiFetch('/workspaces', token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => {
         if (data.success) setWorkspaces(data.workspaces)
       })
+      // Without this a 401 or 500 rendered "No apps yet", so an expired session
+      // looked like a brand-new account.
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load your apps.'))
       .finally(() => setLoading(false))
   }, [token])
+
+  useEffect(() => { loadWorkspaces() }, [loadWorkspaces])
 
   return (
     <div className="space-y-6">
@@ -570,6 +592,14 @@ function DashboardPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
         <div className="flex items-center justify-center py-12">
           <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
         </div>
+      ) : loadError ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center space-y-3">
+            <AlertCircle className="w-10 h-10 text-destructive mb-2" />
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={() => { setLoading(true); loadWorkspaces() }}>Try again</Button>
+          </CardContent>
+        </Card>
       ) : workspaces.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
@@ -710,16 +740,22 @@ function WorkspacePage({
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [tab, setTab] = useState(initialTab)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const loadWorkspace = useCallback(() => {
     if (!token) return
+    setLoading(true)
+    setLoadError(null)
     apiFetch(`/workspaces/${workspaceId}`, token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => {
         if (data.success) setWorkspace(data.workspace)
       })
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load this workspace.'))
       .finally(() => setLoading(false))
   }, [token, workspaceId])
+
+  useEffect(() => { loadWorkspace() }, [loadWorkspace])
 
   if (loading) {
     return (
@@ -730,7 +766,18 @@ function WorkspacePage({
   }
 
   if (!workspace) {
-    return <div>Workspace not found</div>
+    // A failed load and a genuinely missing workspace are different problems and
+    // used to look identical. The 403 case matters most: the user's access was
+    // revoked, and "Workspace not found" implies they mistyped a URL.
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-center space-y-3">
+        <AlertCircle className="w-10 h-10 text-destructive" />
+        <p className="text-sm text-destructive">
+          {loadError ?? 'This workspace could not be loaded.'}
+        </p>
+        <Button variant="outline" size="sm" onClick={loadWorkspace}>Try again</Button>
+      </div>
+    )
   }
 
   const canManage = canManageWorkspace(workspace.role)
@@ -762,8 +809,9 @@ function WorkspacePage({
           <TabsTrigger value="links"><Link2 className="w-4 h-4 mr-1" />Links</TabsTrigger>
           <TabsTrigger value="products"><ShoppingCart className="w-4 h-4 mr-1" />Products</TabsTrigger>
           <TabsTrigger value="payments"><CreditCard className="w-4 h-4 mr-1" />Payments</TabsTrigger>
-          <TabsTrigger value="webhooks"><Webhook className="w-4 h-4 mr-1" />Webhooks</TabsTrigger>
-          <TabsTrigger value="settings"><Settings className="w-4 h-4 mr-1" />Settings</TabsTrigger>
+<TabsTrigger value="webhooks"><Webhook className="w-4 h-4 mr-1" />Webhooks</TabsTrigger>
+        <TabsTrigger value="notifications"><Bell className="w-4 h-4 mr-1" />Notifications</TabsTrigger>
+        <TabsTrigger value="settings"><Settings className="w-4 h-4 mr-1" />Settings</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="mt-6">
@@ -790,6 +838,9 @@ function WorkspacePage({
         <TabsContent value="webhooks" className="mt-6">
           <WebhooksTab workspaceId={workspaceId} canManage={canManage} />
         </TabsContent>
+        <TabsContent value="notifications" className="mt-6">
+          <NotificationsTab workspaceId={workspaceId} canManage={canManage} />
+        </TabsContent>
         <TabsContent value="settings" className="mt-6">
           <SettingsTab workspace={workspace} canManage={canManage} />
         </TabsContent>
@@ -804,18 +855,36 @@ function OverviewTab({ workspaceId }: { workspaceId: string }) {
   const { token } = useAuth()
   const [stats, setStats] = useState<WorkspaceStats | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const loadStats = useCallback(() => {
+    setLoading(true)
+    setLoadError(null)
     apiFetch(`/workspaces/${workspaceId}/stats`, token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => {
         if (data.success) setStats(data.stats)
       })
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load stats.'))
       .finally(() => setLoading(false))
   }, [token, workspaceId])
 
+  useEffect(() => { loadStats() }, [loadStats])
+
+
   if (loading) return <Loader2 className="w-6 h-6 animate-spin" />
-  if (!stats) return <div>No stats available</div>
+  // "No stats available" is a real state for a workspace with no payments yet,
+  // but it was also what a failed request produced — indistinguishable from an
+  // account with no revenue.
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-center space-y-3">
+        <p className="text-sm text-destructive">{loadError}</p>
+        <Button variant="outline" size="sm" onClick={loadStats}>Try again</Button>
+      </div>
+    )
+  }
+  if (!stats) return <div className="text-muted-foreground text-sm">No stats available yet.</div>
 
   const maxRevenue = Math.max(...stats.dailyRevenue.map(d => d.revenue), 1)
 
@@ -922,17 +991,22 @@ function ApiKeysTab({ workspaceId, canManage }: { workspaceId: string; canManage
   const [revokingId, setRevokingId] = useState<string | null>(null)
   const [payouts, setPayouts] = useState<PayoutAccount[]>([])
   const [bindingId, setBindingId] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
 
     const load = useCallback(() => {
+      setLoadError(null)
       apiFetch(`/dashboard/${workspaceId}/api-keys`, token)
-        .then(res => res.json())
+        .then(readJson)
         .then(data => {
           if (data.success) setKeys(data.apiKeys)
         })
+        .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load API keys.'))
         .finally(() => setLoading(false))
-      // Needed for the per-key account selector.
+      // Needed for the per-key account selector. A failure here degrades only the
+      // selector, so it stays non-fatal rather than blanking the tab.
       apiFetch(`/dashboard/${workspaceId}/payouts`, token)
-        .then(res => res.json())
+        .then(readJson)
         .then(data => { if (data.success) setPayouts(data.payouts ?? []) })
         .catch(() => setPayouts([]))
     }, [token, workspaceId])
@@ -967,12 +1041,17 @@ function ApiKeysTab({ workspaceId, canManage }: { workspaceId: string; canManage
     }
 
   const createKey = async () => {
+    // The raw key is shown exactly once and `setNewKey` overwrites it. A
+    // double-click on Generate issued two keys and discarded the first — a live
+    // key the operator was told they would need, and had no id to revoke.
+    if (creating) return
+    setCreating(true)
     try {
       const res = await apiFetch(`/dashboard/${workspaceId}/api-keys`, token, {
         method: 'POST',
         body: JSON.stringify({}),
       })
-      const data = await res.json()
+      const data = await readJson(res)
       if (data.success) {
         setNewKey(data.apiKey.key)
         setCreateOpen(false)
@@ -983,6 +1062,8 @@ function ApiKeysTab({ workspaceId, canManage }: { workspaceId: string; canManage
       }
     } catch (err) {
       toast({ title: 'Failed to create key', description: err instanceof Error ? err.message : 'Please try again.', variant: 'destructive' })
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -1057,10 +1138,25 @@ function ApiKeysTab({ workspaceId, canManage }: { workspaceId: string; canManage
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
+      ) : loadError ? (
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={load}>Try again</Button>
+          </CardContent>
+        </Card>
       ) : keys.length === 0 ? (
         <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            No API keys yet. Generate one to start integrating.
+          {/* An empty state with no action leaves a new user with dead text on
+              the first tab they need to act on. */}
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-muted-foreground">No API keys yet. Generate one to start integrating.</p>
+            {canManage && (
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus className="w-4 h-4 mr-2" />
+                Generate your first key
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -1122,7 +1218,9 @@ function ApiKeysTab({ workspaceId, canManage }: { workspaceId: string; canManage
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button onClick={createKey}>Generate</Button>
+            <Button onClick={createKey} disabled={creating}>
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Generate'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1504,11 +1602,13 @@ function VerificationsTab({ workspaceId }: { workspaceId: string }) {
   const [totalPages, setTotalPages] = useState(1)
   const [total, setTotal] = useState(0)
   const [query, setQuery] = useState('')
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
+    setLoadError(null)
     apiFetch(`/dashboard/${workspaceId}/verifications?page=${page}`, token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => {
         if (data.success) {
           setRows(data.verifications ?? [])
@@ -1516,6 +1616,11 @@ function VerificationsTab({ workspaceId }: { workspaceId: string }) {
           setTotal(data.pagination?.total ?? 0)
         }
       })
+      // Previously this rendered "No successful verifications recorded yet",
+      // which reads as "you have verified nothing" rather than "the request
+      // failed" — the opposite of what a merchant checking for a missing
+      // payment needs to know.
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load verifications.'))
       .finally(() => setLoading(false))
   }, [token, workspaceId, page])
 
@@ -1545,6 +1650,13 @@ function VerificationsTab({ workspaceId }: { workspaceId: string }) {
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
+      ) : loadError ? (
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={load}>Try again</Button>
+          </CardContent>
+        </Card>
       ) : rows.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
@@ -1608,6 +1720,8 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
   const [payouts, setPayouts] = useState<PayoutAccount[]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({
     name: '',
     fixedAmount: 299,
@@ -1621,14 +1735,18 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
   })
 
   const load = useCallback(() => {
+    setLoadError(null)
     apiFetch(`/dashboard/${workspaceId}/payment-links`, token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => {
         if (data.success) setLinks(data.paymentLinks)
       })
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load payment links.'))
       .finally(() => setLoading(false))
+    // Payout fetch stays non-fatal: it only feeds the picker, and failing it
+    // should not blank the list of links the merchant can already share.
     apiFetch(`/dashboard/${workspaceId}/payouts`, token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => { if (data.success) setPayouts(data.payouts ?? []) })
       .catch(() => setPayouts([]))
   }, [token, workspaceId])
@@ -1642,21 +1760,35 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
   )
 
   const create = async () => {
-    const res = await apiFetch(`/dashboard/${workspaceId}/payment-links`, token, {
-      method: 'POST',
-      body: JSON.stringify({
-        ...form,
-        redirectUrl: form.redirectUrl || undefined,
-      }),
-    })
-    const data = await res.json()
-    if (data.success) {
-      toast({ title: 'Payment link created!' })
-      setCreateOpen(false)
-      setForm({ name: '', fixedAmount: 299, acceptedProviders: ['telebirr'], redirectUrl: '', payoutAccountIds: [] })
-      load()
-    } else {
-      toast({ title: 'Error', description: data.error, variant: 'destructive' })
+    if (creating) return
+    setCreating(true)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/payment-links`, token, {
+        method: 'POST',
+        body: JSON.stringify({
+          ...form,
+          redirectUrl: form.redirectUrl || undefined,
+        }),
+      })
+      const data = await readJson(res)
+      if (data.success) {
+        toast({ title: 'Payment link created!' })
+        setCreateOpen(false)
+        setForm({ name: '', fixedAmount: 299, acceptedProviders: ['telebirr'], redirectUrl: '', payoutAccountIds: [] })
+        load()
+      } else {
+        toast({ title: 'Error', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      // Unhandled before, so a dropped connection left the dialog open and
+      // silent.
+      toast({
+        title: 'Could not create payment link',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -1684,10 +1816,23 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
+      ) : loadError ? (
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={load}>Try again</Button>
+          </CardContent>
+        </Card>
       ) : links.length === 0 ? (
         <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            No payment links yet. Create one to start collecting payments.
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-muted-foreground">No payment links yet. Create one to start collecting payments.</p>
+            {canManage && (
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus className="w-4 h-4 mr-2" />
+                Create your first link
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -1817,8 +1962,8 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button onClick={create} disabled={!form.name || form.fixedAmount <= 0 || form.payoutAccountIds.length === 0}>
-              Create
+            <Button onClick={create} disabled={!form.name || form.fixedAmount <= 0 || form.payoutAccountIds.length === 0 || creating}>
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1836,6 +1981,8 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
   const [payouts, setPayouts] = useState<PayoutAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({
     name: '',
     price: 299,
@@ -1845,14 +1992,19 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
   })
 
   const load = useCallback(() => {
+    setLoadError(null)
     Promise.all([
-      apiFetch(`/dashboard/${workspaceId}/products`, token).then(res => res.json()),
-      apiFetch(`/dashboard/${workspaceId}/payouts`, token).then(res => res.json()),
+      apiFetch(`/dashboard/${workspaceId}/products`, token).then(readJson),
+      apiFetch(`/dashboard/${workspaceId}/payouts`, token).then(readJson),
     ])
       .then(([pData, payData]) => {
         if (pData.success) setProducts(pData.products)
         if (payData.success) setPayouts(payData.payouts)
       })
+      // Promise.all rejects on the first failure, so a 500 from the payouts
+      // fetch used to discard the products that had loaded fine and leave both
+      // lists empty — "No products yet" for a workspace that had some.
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load products.'))
       .finally(() => setLoading(false))
   }, [token, workspaceId])
 
@@ -1877,24 +2029,36 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
   }
 
   const create = async () => {
-    const res = await apiFetch(`/dashboard/${workspaceId}/products`, token, {
-      method: 'POST',
-      body: JSON.stringify({
-        name: form.name,
-        price: form.price,
-        acceptedProviders: form.acceptedProviders,
-        payoutAccountIds: form.payoutAccountIds,
-        maxBuyers: form.maxBuyers === '' ? undefined : parseInt(form.maxBuyers) || undefined,
-      }),
-    })
-    const data = await res.json()
-    if (data.success) {
-      toast({ title: 'Product created! A default payment link was generated.' })
-      setCreateOpen(false)
-      setForm({ name: '', price: 299, acceptedProviders: ['telebirr'], payoutAccountIds: [], maxBuyers: '' })
-      load()
-    } else {
-      toast({ title: 'Error', description: data.error, variant: 'destructive' })
+    if (creating) return
+    setCreating(true)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/products`, token, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: form.name,
+          price: form.price,
+          acceptedProviders: form.acceptedProviders,
+          payoutAccountIds: form.payoutAccountIds,
+          maxBuyers: form.maxBuyers === '' ? undefined : parseInt(form.maxBuyers) || undefined,
+        }),
+      })
+      const data = await readJson(res)
+      if (data.success) {
+        toast({ title: 'Product created! A default payment link was generated.' })
+        setCreateOpen(false)
+        setForm({ name: '', price: 299, acceptedProviders: ['telebirr'], payoutAccountIds: [], maxBuyers: '' })
+        load()
+      } else {
+        toast({ title: 'Error', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not create product',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -1922,10 +2086,23 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
+      ) : loadError ? (
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={load}>Try again</Button>
+          </CardContent>
+        </Card>
       ) : products.length === 0 ? (
         <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            No products yet. Create one to start selling.
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-muted-foreground">No products yet. Create one to start selling.</p>
+            {canManage && (
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus className="w-4 h-4 mr-2" />
+                Create your first product
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -2015,9 +2192,9 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
             <Button
               onClick={create}
-              disabled={!form.name || form.price <= 0 || form.payoutAccountIds.length === 0}
+              disabled={!form.name || form.price <= 0 || form.payoutAccountIds.length === 0 || creating}
             >
-              Create
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2032,17 +2209,39 @@ function PaymentsTab({ workspaceId }: { workspaceId: string }) {
   const { token } = useAuth()
   const [payments, setPayments] = useState<Payment[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const loadPayments = useCallback(() => {
+    setLoading(true)
+    setLoadError(null)
     apiFetch(`/workspaces/${workspaceId}/payments?limit=50`, token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => {
         if (data.success) setPayments(data.payments)
       })
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load payments.'))
       .finally(() => setLoading(false))
   }, [token, workspaceId])
 
+  useEffect(() => { loadPayments() }, [loadPayments])
+
   if (loading) return <Loader2 className="w-6 h-6 animate-spin" />
+
+  // "No payments yet" and a failed request were the same screen, so a merchant
+  // checking whether a customer paid could be told the customer had not.
+  if (loadError) {
+    return (
+      <div className="space-y-4">
+        <h2 className="text-xl font-semibold">Recent Payments</h2>
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={loadPayments}>Try again</Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -2113,13 +2312,16 @@ function WebhooksTab({ workspaceId, canManage }: { workspaceId: string; canManag
 const [newSecret, setNewSecret] = useState<string | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const load = useCallback(() => {
+    setLoadError(null)
     apiFetch(`/dashboard/${workspaceId}/webhooks`, token)
-      .then(res => res.json())
+      .then(readJson)
       .then(data => {
         if (data.success) setWebhooks(data.webhooks)
       })
+      .catch(err => setLoadError(err instanceof Error ? err.message : 'Could not load webhooks.'))
       .finally(() => setLoading(false))
   }, [token, workspaceId])
 
@@ -2226,10 +2428,25 @@ const [newSecret, setNewSecret] = useState<string | null>(null)
 
       {loading ? (
         <Loader2 className="w-6 h-6 animate-spin" />
+      ) : loadError ? (
+        <Card>
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" onClick={load}>Try again</Button>
+          </CardContent>
+        </Card>
       ) : webhooks.length === 0 ? (
         <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            No webhooks configured. Add one to receive real-time payment notifications.
+          <CardContent className="py-12 text-center space-y-3">
+            <p className="text-muted-foreground">
+              No webhooks configured. Add one to receive real-time payment notifications.
+            </p>
+            {canManage && (
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus className="w-4 h-4 mr-2" />
+                Add your first webhook
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : (

@@ -41,6 +41,7 @@ import {
 } from '../utils/fieldLimits';
 import { assertBrowserNavigableUrl, assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 import { WORKSPACE_EVENTS } from '../utils/workspaceEvents';
+import { handlers as notificationHandlers } from './notifications';
 import {
     ensureProviderCoverage,
     getWorkspacePayoutAccounts,
@@ -1152,5 +1153,67 @@ router.post(
     verifyImageGate,
     ...verifyImageHandler,
 );
+
+// ═══ NOTIFICATION CHANNELS ═══════════════════════════════════════════════════
+
+/**
+ * Notification channels under session auth.
+ *
+ * The feature had a complete API (`src/routes/notifications.ts`) and a docs
+ * page, but no dashboard UI, so it was unreachable from the product. These
+ * routes call the public handlers directly rather than reimplementing them: the
+ * plan limit, destination validation and event-name rules live in exactly one
+ * place, and a second copy would drift.
+ *
+ * Each authenticates a session, checks membership, then populates the workspace
+ * context the handlers resolve from — so they act on the workspace in the URL,
+ * not on whatever the request happened to carry.
+ */
+async function withSessionWorkspace(
+    req: Request,
+    res: Response,
+    handler: (req: Request, res: Response) => Promise<void>,
+): Promise<void> {
+    const userId = (req as any).userId as string;
+    const { workspaceId } = req.params as { workspaceId: string };
+
+    const membership = await verifyWorkspaceAccess(userId, workspaceId);
+    if (!membership) {
+        res.status(403).json({ success: false, error: 'Access denied.' });
+        return;
+    }
+
+    const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { id: true, tier: true },
+    });
+    if (!workspace) {
+        res.status(404).json({ success: false, error: 'Workspace not found.' });
+        return;
+    }
+
+    (req as any).workspaceContext = { workspace, source: 'dashboard' };
+    await handler(req, res);
+}
+
+router.get('/:workspaceId/notifications', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, notificationHandlers.list);
+});
+
+router.post('/:workspaceId/notifications', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, notificationHandlers.create);
+});
+
+router.patch('/:workspaceId/notifications/:id', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, notificationHandlers.patch);
+});
+
+router.delete('/:workspaceId/notifications/:id', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, notificationHandlers.delete);
+});
+
+router.post('/:workspaceId/notifications/:id/test', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, notificationHandlers.test);
+});
 
 export default router;

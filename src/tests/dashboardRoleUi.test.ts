@@ -15,6 +15,22 @@ import path from 'node:path';
 const PAGE = path.join(__dirname, '..', '..', 'web', 'src', 'app', 'page.tsx');
 const source = fs.readFileSync(PAGE, 'utf8');
 
+// Tabs split into their own modules still have to honour the gate, so they are
+// read and checked alongside page.tsx rather than being silently exempt.
+const TABS_DIR = path.join(__dirname, '..', '..', 'web', 'src', 'app');
+const tabSource = (file: string) => fs.readFileSync(path.join(TABS_DIR, file), 'utf8');
+
+/** Every tab that renders management controls, and the file it now lives in. */
+const MUTATING_TABS: Record<string, string> = {
+  ApiKeysTab: 'page.tsx',
+  PayoutsTab: 'page.tsx',
+  PaymentLinksTab: 'page.tsx',
+  ProductsTab: 'page.tsx',
+  WebhooksTab: 'page.tsx',
+  SettingsTab: 'page.tsx',
+  NotificationsTab: 'notifications-tab.tsx',
+};
+
 test('exactly owners and admins may manage', () => {
   // Mirrors canManageWorkspace. Pinned here so a change to the UI rule is a
   // deliberate edit in two places rather than a silent divergence.
@@ -38,15 +54,18 @@ test('the dashboard actually gates on that decision', () => {
 test('every mutating tab receives canManage', () => {
   // These five tabs plus Settings contain the controls that change money,
   // credentials or destinations. A missing prop means an ungated tab.
-  for (const tab of ['ApiKeysTab', 'PayoutsTab', 'PaymentLinksTab', 'ProductsTab', 'WebhooksTab', 'SettingsTab']) {
+  for (const [tab, file] of Object.entries(MUTATING_TABS)) {
+    // The call site is in page.tsx even when the component is defined elsewhere.
     assert.match(
       source,
       new RegExp(`<${tab}[^>]*canManage=\\{canManage\\}`),
       `${tab} must receive canManage`,
     );
+    // The signature is in whichever module declares it.
+    const src = file === 'page.tsx' ? source : tabSource(file);
     assert.match(
-      source,
-      new RegExp(`function ${tab}\\([^)]*canManage`),
+      src,
+      new RegExp(`(?:function|const) ${tab}\\([^)]*canManage`),
       `${tab} must declare canManage`,
     );
   }
@@ -62,22 +81,43 @@ test('every create button sits behind the gate', () => {
   // Payouts opens its form via openCreate rather than a state setter, so match
   // the click handlers rather than one specific call.
   // Payouts passes openCreate straight through; the others wrap it in an arrow.
-  const buttons = source.match(/onClick=\{(?:\(\) => )?(?:setCreateOpen\(true\)|openCreate)\}>/g) ?? [];
-  // Api keys, payouts, links, products, webhooks. Settings renames inline and
-  // is gated separately below.
-  assert.equal(buttons.length, 5, `expected one create button per mutating tab, found ${buttons.length}`);
+  // Settings renames inline and is gated separately below.
+  //
+  // Each tab's empty state grew a call to action, so the same handler appears
+  // twice per tab — once in the header, once in the empty state. Both copies
+  // must be gated, which is why this asserts a count rather than a presence: a
+  // header button gated and an empty-state button ungated is exactly the bug
+  // this catches, and only the count notices.
+  // Five tabs in page.tsx (api keys, payouts, links, products, webhooks). Four
+  // gained an empty-state call to action; payouts did not, because its empty
+  // state already sits directly under a visible "Add Account" button.
+  const EXPECTED_PER_FILE: Record<string, number> = {
+    'page.tsx': 9,
+    // Add Channel header + Add your first channel empty state.
+    'notifications-tab.tsx': 2,
+  };
 
-  for (const match of buttons) {
-    const at = source.indexOf(match);
-    // The gate sits a line or two above the handler, with the <Button between
-    // them, so match the opening of the ternary rather than anchoring to the
-    // end of the window.
-    const before = source.slice(Math.max(0, at - 200), at);
-    assert.match(
-      before,
-      /\{canManage \? \(/,
-      `create button at offset ${at} is not behind canManage`,
+  for (const [file, expected] of Object.entries(EXPECTED_PER_FILE)) {
+    const src = file === 'page.tsx' ? source : tabSource(file);
+    const buttons = src.match(/onClick=\{(?:\(\) => )?(?:setCreateOpen\(true\)|openCreate)\}>/g) ?? [];
+    assert.equal(
+      buttons.length,
+      expected,
+      `expected ${expected} create buttons in ${file} (header + empty state), found ${buttons.length}`,
     );
+
+    for (const match of buttons) {
+      const at = src.indexOf(match);
+      // The gate sits a line or two above the handler, with the <Button between
+      // them, so match the opening of the ternary rather than anchoring to the
+      // end of the window.
+      const before = src.slice(Math.max(0, at - 200), at);
+      assert.match(
+        before,
+        /\{canManage \? \(/,
+        `create button at offset ${at} in ${file} is not behind canManage`,
+      );
+    }
   }
 });
 

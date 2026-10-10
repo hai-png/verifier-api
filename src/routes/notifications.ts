@@ -51,7 +51,7 @@ function validateDestination(type: NotificationChannelType, destination: string)
     : 'Use a Telegram chat ID like 123456789 or a username like @yourchannel.';
 }
 
-router.get('/', async (req: Request, res: Response): Promise<void> => {
+const listHandler = async (req: Request, res: Response): Promise<void> => {
   const workspaceId = getWorkspaceId(req);
   if (!workspaceId) {
     res.json({ success: true, channels: [] });
@@ -104,9 +104,9 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
     logger.error('Failed to list notification channels:', error);
     res.status(500).json({ success: false, error: 'Failed to retrieve notifications.' });
   }
-});
+};
 
-router.post('/', async (req: Request, res: Response): Promise<void> => {
+const createHandler = async (req: Request, res: Response): Promise<void> => {
   const workspaceId = getWorkspaceId(req);
   if (!workspaceId) {
     res.status(400).json({ success: false, error: 'This workspace could not be resolved.' });
@@ -183,9 +183,9 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     logger.error('Failed to create notification channel:', error);
     res.status(500).json({ success: false, error: 'Failed to create notification channel.' });
   }
-});
+};
 
-router.post('/:id/test', async (req: Request, res: Response): Promise<void> => {
+const testHandler = async (req: Request, res: Response): Promise<void> => {
   const workspaceId = getWorkspaceId(req);
   const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
@@ -229,9 +229,9 @@ router.post('/:id/test', async (req: Request, res: Response): Promise<void> => {
     logger.error('Failed to queue notification test:', error);
     res.status(500).json({ success: false, error: 'Failed to queue notification test.' });
   }
-});
+};
 
-router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
+const patchHandler = async (req: Request, res: Response): Promise<void> => {
   const workspaceId = getWorkspaceId(req);
   const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
@@ -328,9 +328,9 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     logger.error('Failed to update notification channel:', error);
     res.status(500).json({ success: false, error: 'Failed to update notification channel.' });
   }
-});
+};
 
-router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
+const deleteHandler = async (req: Request, res: Response): Promise<void> => {
   const workspaceId = getWorkspaceId(req);
   const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
@@ -356,6 +356,29 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     logger.error('Failed to delete notification channel:', error);
     res.status(500).json({ success: false, error: 'Failed to delete notification channel.' });
   }
-});
+};
+
+router.get('/', listHandler);
+router.post('/', createHandler);
+router.post('/:id/test', testHandler);
+router.patch('/:id', patchHandler);
+router.delete('/:id', deleteHandler);
+
+/**
+ * Handles exported so the dashboard can reuse them under its own session auth.
+ *
+ * The dashboard routes in dashboard.ts call these directly rather than each
+ * getting a copy. Notification channels have a complete public API and a docs
+ * page but were unreachable from the dashboard UI; duplicating the five handlers
+ * would have produced two implementations of the plan-limit, destination
+ * validation and event-name rules that drift apart within a release.
+ */
+export const handlers = {
+  list: listHandler,
+  create: createHandler,
+  patch: patchHandler,
+  delete: deleteHandler,
+  test: testHandler,
+};
 
 export default router;
