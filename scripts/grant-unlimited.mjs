@@ -24,6 +24,9 @@
  * applies the new plan's allowance immediately (the admin endpoint tops the
  * balance up to the new quota; see POST /admin/workspaces/plan).
  *
+ * For the common FREE -> PRO upgrade there is a dedicated wrapper with the
+ * tier filled in: scripts/upgrade-to-pro.mjs.
+ *
  * Environment:
  *   ADMIN_SECRET   required. The same value the API is configured with.
  *   SMOKE_API_URL  optional. Defaults to the production API.
@@ -31,6 +34,8 @@
  * Reads ADMIN_SECRET from the environment rather than argv, so it does not land
  * in shell history or in the process list.
  */
+
+import { pathToFileURL } from 'node:url';
 
 const API_URL = (process.env.SMOKE_API_URL || 'https://verify.noveld.com.et').replace(/\/$/, '');
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
@@ -102,65 +107,64 @@ async function fetchWithTimeout(url, init, timeoutMs) {
   }
 }
 
-async function main() {
+/**
+ * Run a grant. Returns the process exit code instead of setting it, so
+ * scripts/upgrade-to-pro.mjs can call this in-process — a child process would
+ * lose the shared fetch/error handling and duplicate the argument rules.
+ * `scriptName` only affects the audit note, so the trail names the command the
+ * operator actually ran.
+ */
+async function main(argv = process.argv.slice(2), { scriptName = 'grant-unlimited' } = {}) {
   let options;
   try {
-    options = parseArgs(process.argv.slice(2));
+    options = parseArgs(argv);
   } catch (err) {
     console.error(err.message);
     usage();
-    process.exitCode = 2;
-    return;
+    return 2;
   }
 
-  if (options.help) { usage(); return; }
+  if (options.help) { usage(); return 0; }
   if (!ADMIN_SECRET) {
     console.error('ADMIN_SECRET is not set. Nothing was sent.');
     console.error('PowerShell:  $env:ADMIN_SECRET = "..."');
-    process.exitCode = 2;
-    return;
+    return 2;
   }
   if (options.ids.length === 0) {
     console.error('At least one workspace id is required.');
     usage();
-    process.exitCode = 2;
-    return;
+    return 2;
   }
   if (options.revoke && !(options.verifications && options.images)) {
     console.error('--revoke cannot be combined with --verify-only or --images-only.');
-    process.exitCode = 2;
-    return;
+    return 2;
   }
   if (options.tier !== null && !TIERS.includes(options.tier)) {
     console.error(`--tier must be one of: ${TIERS.join(', ')}.`);
-    process.exitCode = 2;
-    return;
+    return 2;
   }
   if (options.months !== null && (!Number.isInteger(options.months) || options.months < 0 || options.months > 120)) {
     console.error('--months must be an integer between 0 and 120.');
-    process.exitCode = 2;
-    return;
+    return 2;
   }
   const planChange = options.tier !== null || options.months !== null;
   if (options.planOnly && !planChange) {
     console.error('--plan-only requires --tier and/or --months — otherwise there is nothing to change.');
-    process.exitCode = 2;
-    return;
+    return 2;
   }
   // Contradictory combinations are refused rather than guessed at: --plan-only
   // promises the flags are untouched, and --revoke/--verify-only/--images-only
   // exist to touch them.
   if (options.planOnly && (options.revoke || !options.verifications || !options.images)) {
     console.error('--plan-only cannot be combined with --revoke, --verify-only or --images-only.');
-    process.exitCode = 2;
-    return;
+    return 2;
   }
 
   const note = options.revoke
-    ? 'revoked via grant-unlimited script'
+    ? `revoked via ${scriptName} script`
     : planChange
-      ? `plan grant via grant-unlimited script (${options.tier ?? 'tier unchanged'}${options.months !== null ? `, ${options.months} month(s)` : ''})`
-      : 'granted via grant-unlimited script';
+      ? `plan grant via ${scriptName} script (${options.tier ?? 'tier unchanged'}${options.months !== null ? `, ${options.months} month(s)` : ''})`
+      : `granted via ${scriptName} script`;
 
   const body = {
     workspaceIds: options.ids,
@@ -202,8 +206,7 @@ async function main() {
     }, 30_000);
   } catch (err) {
     console.error(`Request failed: ${err.message}`);
-    process.exitCode = 3;
-    return;
+    return 3;
   }
 
   let payload;
@@ -211,14 +214,12 @@ async function main() {
     payload = await response.json();
   } catch {
     console.error(`Unreadable response (HTTP ${response.status}).`);
-    process.exitCode = 3;
-    return;
+    return 3;
   }
 
   if (!response.ok) {
     console.error(`HTTP ${response.status}: ${payload.error ?? 'request rejected'}`);
-    process.exitCode = 1;
-    return;
+    return 1;
   }
 
   console.log(`\nGranted to ${payload.granted} workspace(s):`);
@@ -236,11 +237,24 @@ async function main() {
     // Exit non-zero so a script that granted several accounts cannot report
     // success while quietly skipping one.
     console.error(`\nNot found: ${payload.missing.join(', ')}`);
-    process.exitCode = 1;
+    return 1;
   }
+
+  return 0;
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exitCode = 3;
-});
+// Run only when invoked directly. Without this guard, importing main from
+// upgrade-to-pro.mjs would execute a grant with this script's argv.
+const invokedDirectly = process.argv[1]
+  && pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (invokedDirectly) {
+  main()
+    .then((code) => { process.exitCode = code; })
+    .catch(err => {
+      console.error(err);
+      process.exitCode = 3;
+    });
+}
+
+export { main };

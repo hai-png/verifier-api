@@ -99,7 +99,9 @@ services:
       # Admin secret (generate with: openssl rand -hex 32)
       - key: ADMIN_SECRET
         sync: false
-      #   Also grants unlimited credits per workspace:
+      #   Upgrade a workspace to PRO (unlimited verifications + images):
+      #     node scripts/upgrade-to-pro.mjs <workspace-id> [more ids...]
+      #   Also grants unlimited credits per workspace, or other tiers:
       #     node scripts/grant-unlimited.mjs <workspace-id> [more ids...]
       #   Those are booleans on Workspace, not large credit balances, so they
       #   survive the monthly reset and a plan downgrade.

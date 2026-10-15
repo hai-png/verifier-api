@@ -113,12 +113,15 @@ without it nothing can connect to the database.`}
       <DocP>
         Upgrades are an operator action, not a self-serve checkout. The grant endpoint is{" "}
         <Code code="POST /admin/workspaces/plan" inline /> (authenticated with{" "}
-        <Code code="x-admin-key" inline />), and the shipped wrapper performs the full upgrade a
+        <Code code="x-admin-key" inline />), and the shipped wrappers perform the full upgrade a
         paying customer gets in one call:
       </DocP>
       <Code
-        code={`node scripts/grant-unlimited.mjs --tier PRO --months 12 ws_abc
-# sets the tier, the term, and unlimited verifications + images at once`}
+        code={`node scripts/upgrade-to-pro.mjs --months 12 ws_abc
+# FREE -> PRO, with unlimited verifications + images. Omit --months for no expiry.
+
+node scripts/grant-unlimited.mjs --tier BUSINESS --months 12 ws_abc
+# any other tier, same endpoint: sets tier, term, and unlimited flags at once`}
       />
       <DocP>
         A tier change applies the new plan&apos;s allowance <em>immediately</em>: the balance is
