@@ -42,9 +42,12 @@ import {
 import { assertBrowserNavigableUrl, assertSafeOutboundUrl, UnsafeOutboundUrlError } from '../utils/safeUrl';
 import { WORKSPACE_EVENTS } from '../utils/workspaceEvents';
 import { handlers as notificationHandlers } from './notifications';
+import { handlers as paymentLinkHandlers } from './paymentLinks';
+import { handlers as webhookHandlers, listWebhooksWithStats } from './webhooks';
 import {
     ensureProviderCoverage,
     getWorkspacePayoutAccounts,
+    handlers as productHandlers,
     normaliseIdList,
     normaliseOptionalText,
     normaliseOptionalUrl,
@@ -608,6 +611,12 @@ router.get('/:workspaceId/payment-links', async (req: Request, res: Response): P
                 redirectUrl: true,
                 expiresAt: true,
                 createdAt: true,
+                // The edit dialog has to prefill the current selection, and the
+                // card should say where the money lands. Without these the UI
+                // could only offer a blind edit that would silently replace the
+                // payout accounts with whatever the operator happened to tick.
+                isDefaultForProduct: true,
+                payoutAccounts: { select: { id: true, label: true, account: true, providersAllowed: true } },
                 _count: { select: { orders: { where: { status: 'PAID' } } } },
             },
             orderBy: { createdAt: 'desc' },
@@ -737,6 +746,28 @@ router.post('/:workspaceId/payment-links', async (req: Request, res: Response): 
     }
 });
 
+/**
+ * Edit, deactivate and delete an existing link.
+ *
+ * The API-key router had PATCH and DELETE from the start and the dashboard had
+ * neither, so a merchant could create a link and then never retire it — no way
+ * to stop accepting payments on a price that changed, which is the single most
+ * common reason to touch a link. Both call the API's own handlers behind session
+ * auth, so the "exactly one payout account per provider" and
+ * "default-link-cannot-be-deactivated" rules live in one place.
+ *
+ * Both are mounted on the workspace-scoped path, so the handler's
+ * getAuthContext resolves creatorType DASHBOARD and the workspace from
+ * req.workspaceContext rather than from whatever the body carries.
+ */
+router.patch('/:workspaceId/payment-links/:id', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, paymentLinkHandlers.patch);
+});
+
+router.delete('/:workspaceId/payment-links/:id', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, paymentLinkHandlers.delete);
+});
+
 // ═══ WEBHOOKS ═══════════════════════════════════════════════════════════════
 
 router.get('/:workspaceId/webhooks', async (req: Request, res: Response): Promise<void> => {
@@ -750,18 +781,13 @@ router.get('/:workspaceId/webhooks', async (req: Request, res: Response): Promis
             return;
         }
 
-        const webhooks = await prisma.webhook.findMany({
-            where: { workspaceId },
-            select: {
-                id: true,
-                url: true,
-                events: true,
-                active: true,
-                createdAt: true,
-                _count: { select: { deliveries: true } },
-            },
-            orderBy: { createdAt: 'desc' },
-        });
+        // The shared list, so the dashboard and the API-key view cannot disagree
+        // about a webhook's health. This route used to return only
+        // `_count.deliveries`, which says nothing about success: a webhook that
+        // had been dead-lettering for a week looked exactly like one that had
+        // never fired, and the only place the failure showed was the customer's
+        // own logs.
+        const webhooks = await listWebhooksWithStats(workspaceId);
 
         res.json({ success: true, webhooks });
     } catch (err) {
@@ -867,12 +893,17 @@ router.delete('/:workspaceId/webhooks/:webhookId', async (req: Request, res: Res
             return;
         }
 
-        const updated = await prisma.webhook.updateMany({
+        // A real delete, matching the API-key route and the button that says
+        // "Delete". This used to set active:false while the list rendered no
+        // active state at all, so a "deleted" webhook stayed on screen looking
+        // identical to a live one — and there was no route to bring it back,
+        // making the deactivation a one-way trip to a zombie row.
+        // WebhookDelivery cascades, so history goes with it.
+        const deleted = await prisma.webhook.deleteMany({
             where: { id: webhookId, workspaceId },
-            data: { active: false },
         });
 
-        if (updated.count === 0) {
+        if (deleted.count === 0) {
             res.status(404).json({ success: false, error: 'Webhook not found.' });
             return;
         }
@@ -882,6 +913,22 @@ router.delete('/:workspaceId/webhooks/:webhookId', async (req: Request, res: Res
         logger.error('Delete webhook error:', err);
         res.status(500).json({ success: false, error: 'Failed to delete webhook.' });
     }
+});
+
+/**
+ * Delivery history and manual retry, behind session auth.
+ *
+ * The stats on the list say a webhook is failing; this is where the operator
+ * finds out why (statusCode, attempts, lastError) and does something about it.
+ * Both call the API's own handlers, which resolve the workspace from the
+ * session context set below rather than from apiKeyData.
+ */
+router.get('/:workspaceId/webhooks/:id/deliveries', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, webhookHandlers.deliveries);
+});
+
+router.post('/:workspaceId/webhooks/:id/retry/:deliveryId', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, webhookHandlers.retry);
 });
 
 // ═══ PRODUCTS ═════════════════════════════════════════════════════════════════
@@ -906,6 +953,9 @@ router.get('/:workspaceId/products', async (req: Request, res: Response): Promis
                 active: true,
                 acceptedProviders: true,
                 maxBuyers: true,
+                // The edit dialog refuses a cap below this server-side, so the
+                // number has to be on screen before the operator types one.
+                soldCount: true,
                 createdAt: true,
                 payoutAccounts: { select: { id: true, label: true } },
                 _count: { select: { orders: true } },
@@ -1025,6 +1075,21 @@ router.post('/:workspaceId/products', async (req: Request, res: Response): Promi
         logger.error('Create product error:', err);
         res.status(500).json({ success: false, error: 'Failed to create product.' });
     }
+});
+
+/**
+ * Edit or deactivate a product, behind session auth.
+ *
+ * The API-key route had this from the start; the dashboard had create and
+ * nothing else, so a price change meant creating a second product and leaving
+ * the first one live at the old price. The handler also keeps the product's
+ * links in step — deactivating here marks them INACTIVE, reactivating restores
+ * them ACTIVE — which is why it is called rather than reimplemented: a copy that
+ * forgot the second write would leave checkout pages answering 400 for a product
+ * that shows as active.
+ */
+router.patch('/:workspaceId/products/:id', async (req: Request, res: Response): Promise<void> => {
+    await withSessionWorkspace(req, res, productHandlers.patch);
 });
 
 // ═══ ORDERS ═══════════════════════════════════════════════════════════════════

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Grant or revoke unlimited credits for one or more workspaces.
+ * Grant or revoke unlimited credits — and, in the same call, change plan — for
+ * one or more workspaces.
  *
  * Unlimited is a boolean on the workspace, not a big number in the credit
  * columns: the monthly reset overwrites those counters with the plan allowance,
@@ -12,6 +13,16 @@
  *   node scripts/grant-unlimited.mjs --verify-only ws_abc
  *   node scripts/grant-unlimited.mjs --images-only ws_abc
  *   node scripts/grant-unlimited.mjs --revoke ws_abc
+ *   node scripts/grant-unlimited.mjs --tier PRO --months 12 ws_abc
+ *   node scripts/grant-unlimited.mjs --tier BUSINESS --plan-only ws_abc
+ *
+ * The full upgrade a paying customer gets is one command:
+ *
+ *   node scripts/grant-unlimited.mjs --tier PRO --months 12 ws_abc
+ *
+ * which sets the tier, the term, and both unlimited flags. The tier change
+ * applies the new plan's allowance immediately (the admin endpoint tops the
+ * balance up to the new quota; see POST /admin/workspaces/plan).
  *
  * Environment:
  *   ADMIN_SECRET   required. The same value the API is configured with.
@@ -23,14 +34,19 @@
 
 const API_URL = (process.env.SMOKE_API_URL || 'https://verify.noveld.com.et').replace(/\/$/, '');
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+const TIERS = ['FREE', 'PRO', 'BUSINESS'];
 
 function parseArgs(argv) {
-  const options = { verifications: true, images: true, revoke: false };
+  const options = { verifications: true, images: true, revoke: false, planOnly: false, tier: null, months: null };
   const ids = [];
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
     if (arg === '--verify-only') options.images = false;
     else if (arg === '--images-only') options.verifications = false;
     else if (arg === '--revoke') options.revoke = true;
+    else if (arg === '--plan-only') options.planOnly = true;
+    else if (arg === '--tier') options.tier = (argv[++i] ?? '').toUpperCase();
+    else if (arg === '--months') options.months = Number(argv[++i]);
     else if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}`);
     else ids.push(arg);
@@ -39,14 +55,25 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  console.log(`Grant or revoke unlimited credits for a workspace.
+  console.log(`Grant or revoke unlimited credits, optionally with a plan change.
 
 Usage:
   node scripts/grant-unlimited.mjs <workspace-id> [more ids...]
-  node scripts/grant-unlimited.mjs --verify-only <id>    unlimited verifications only
-  node scripts/grant-unlimited.mjs --images-only <id>    unlimited image credits only
-  node scripts/grant-unlimited.mjs --revoke <id>         revoke both
+  node scripts/grant-unlimited.mjs --verify-only <id>        unlimited verifications only
+  node scripts/grant-unlimited.mjs --images-only <id>        unlimited image credits only
+  node scripts/grant-unlimited.mjs --revoke <id>             revoke both
+  node scripts/grant-unlimited.mjs --tier <tier> [--months <n>] <id>
+                                                             also set the plan (and term)
+  node scripts/grant-unlimited.mjs --tier <tier> --plan-only <id>
+                                                             plan change only, leave the
+                                                             unlimited flags untouched
   node scripts/grant-unlimited.mjs --help
+
+Tiers:      FREE, PRO, BUSINESS
+Months:     0-120. 0 clears the term (no auto-downgrade date).
+
+A tier change applies the new plan's allowance immediately — the workspace can
+use the new quota on its next request, not at the next monthly reset.
 
 Environment:
   ADMIN_SECRET   required — the API's ADMIN_SECRET
@@ -62,7 +89,7 @@ To confirm afterwards, read the flags from GET /workspaces/<id>.`);
  * Deliberately not AbortSignal.timeout(): that leaves a timer pending, and an
  * explicit process.exit() after a fetch tears down a live libuv handle and
  * asserts on Windows — "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING),
- * file src\win\async.c". So: clear the timer in finally, and set exitCode
+ * file src\\win\\async.c". So: clear the timer in finally, and set exitCode
  * instead of exiting.
  */
 async function fetchWithTimeout(url, init, timeoutMs) {
@@ -104,28 +131,64 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  if (options.tier !== null && !TIERS.includes(options.tier)) {
+    console.error(`--tier must be one of: ${TIERS.join(', ')}.`);
+    process.exitCode = 2;
+    return;
+  }
+  if (options.months !== null && (!Number.isInteger(options.months) || options.months < 0 || options.months > 120)) {
+    console.error('--months must be an integer between 0 and 120.');
+    process.exitCode = 2;
+    return;
+  }
+  const planChange = options.tier !== null || options.months !== null;
+  if (options.planOnly && !planChange) {
+    console.error('--plan-only requires --tier and/or --months — otherwise there is nothing to change.');
+    process.exitCode = 2;
+    return;
+  }
+  // Contradictory combinations are refused rather than guessed at: --plan-only
+  // promises the flags are untouched, and --revoke/--verify-only/--images-only
+  // exist to touch them.
+  if (options.planOnly && (options.revoke || !options.verifications || !options.images)) {
+    console.error('--plan-only cannot be combined with --revoke, --verify-only or --images-only.');
+    process.exitCode = 2;
+    return;
+  }
 
-  const value = !options.revoke;
   const note = options.revoke
     ? 'revoked via grant-unlimited script'
-    : 'granted via grant-unlimited script';
+    : planChange
+      ? `plan grant via grant-unlimited script (${options.tier ?? 'tier unchanged'}${options.months !== null ? `, ${options.months} month(s)` : ''})`
+      : 'granted via grant-unlimited script';
 
   const body = {
     workspaceIds: options.ids,
     note,
   };
+  if (planChange) {
+    if (options.tier !== null) body.tier = options.tier;
+    if (options.months !== null) body.planTermMonths = options.months;
+  }
   // Only send the flags this invocation actually touches, so a --verify-only
-  // call cannot revoke an unrelated image grant by leaving it undefined.
-  if (options.verifications) body.unlimitedVerifications = value;
-  if (options.images) body.unlimitedImages = value;
+  // call cannot revoke an unrelated image grant by leaving it undefined — and a
+  // --plan-only call cannot turn unlimited on as a side effect.
+  if (!options.planOnly) {
+    const value = !options.revoke;
+    if (options.verifications) body.unlimitedVerifications = value;
+    if (options.images) body.unlimitedImages = value;
+  }
 
-  const verb = options.revoke ? 'Revoking' : 'Granting';
-  const what = [
-    options.verifications ? 'verifications' : null,
-    options.images ? 'image credits' : null,
-  ].filter(Boolean).join(' + ');
-
-  console.log(`${verb} unlimited ${what} on ${options.ids.length} workspace(s)…`);
+  const parts = [];
+  if (planChange) parts.push(`plan ${options.tier ?? '(unchanged)'}${options.months !== null ? ` for ${options.months} month(s)` : ''}`);
+  if (!options.planOnly) {
+    parts.push(
+      options.revoke
+        ? `revoke unlimited ${[options.verifications ? 'verifications' : null, options.images ? 'image credits' : null].filter(Boolean).join(' + ')}`
+        : `unlimited ${[options.verifications ? 'verifications' : null, options.images ? 'image credits' : null].filter(Boolean).join(' + ')}`,
+    );
+  }
+  console.log(`Setting ${parts.join(' + ')} on ${options.ids.length} workspace(s)…`);
 
   let response;
   try {
@@ -160,11 +223,13 @@ async function main() {
 
   console.log(`\nGranted to ${payload.granted} workspace(s):`);
   for (const workspace of payload.workspaces ?? []) {
-    console.log(
-      `  ${workspace.id}  ${workspace.name ?? ''}\n` +
-      `    verifications: ${workspace.verificationCreditsUnlimited ? 'unlimited' : `${workspace.verificationCredits} left`}\n` +
-      `    images:        ${workspace.imageCreditsUnlimited ? 'unlimited' : `${workspace.imageCredits} left`}`,
-    );
+    const lines = [
+      `  ${workspace.id}  ${workspace.name ?? ''}`,
+      `    tier:          ${workspace.tier}${workspace.paidUntil ? ` until ${String(workspace.paidUntil).slice(0, 10)}` : ''}`,
+      `    verifications: ${workspace.verificationCreditsUnlimited ? 'unlimited' : `${workspace.verificationCredits} left (${workspace.verificationCreditsMonthly}/mo)`}`,
+      `    images:        ${workspace.imageCreditsUnlimited ? 'unlimited' : `${workspace.imageCredits} left (${workspace.imageCreditsMonthly}/mo)`}`,
+    ];
+    console.log(lines.join('\n'));
   }
 
   if (payload.missing?.length) {

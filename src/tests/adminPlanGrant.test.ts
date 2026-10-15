@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { AddressInfo } from 'node:net';
 import { prisma } from '../utils/prisma';
+import { invalidateBillingConfigCache } from '../config/billingConfig';
 import adminRouter from '../routes/adminRoute';
 
 const ADMIN_SECRET = 'admin-plan-grant-test-secret-value';
@@ -23,7 +24,7 @@ async function serve(t: any) {
 
   const rows: any[] = [
     {
-      id: WORKSPACE_ID, name: 'Acme', tier: 'FREE',
+      id: WORKSPACE_ID, name: 'Acme', tier: 'FREE', grandfathered: false,
       verificationCredits: 100, verificationCreditsMonthly: 100,
       verificationCreditsUnlimited: false,
       imageCredits: 5, imageCreditsMonthly: 5,
@@ -31,7 +32,7 @@ async function serve(t: any) {
       paidUntil: null, planTermMonths: null,
     },
     {
-      id: SECOND_WORKSPACE_ID, name: 'Beta', tier: 'FREE',
+      id: SECOND_WORKSPACE_ID, name: 'Beta', tier: 'FREE', grandfathered: false,
       verificationCredits: 0, verificationCreditsMonthly: 0,
       verificationCreditsUnlimited: false,
       imageCredits: 0, imageCreditsMonthly: 0,
@@ -47,25 +48,25 @@ async function serve(t: any) {
     originals.push(() => { object[key] = original; });
   }
 
-  // The endpoint grants to a list of workspaces and reports per-workspace results,
-  // so it uses updateMany rather than update: one unknown id must not roll back
-  // the workspaces that do exist.
+  // The endpoint grants to a list of workspaces and reports per-workspace
+  // results; each row is updated individually so a tier change can raise the
+  // balance to the new plan's allowance (a value updateMany cannot compute).
   const idsIn = (where: any): string[] | null => where?.id?.in ?? null;
   const matches = (row: any, where: any) => {
     const ids = idsIn(where);
     return ids ? ids.includes(row.id) : where?.id === row.id;
   };
-  function apply(data: any) {
-    if (data.verificationCredits?.increment) {
-      for (const row of rows) row.verificationCredits += data.verificationCredits.increment;
-    }
-    if (data.imageCredits?.increment) {
-      for (const row of rows) row.imageCredits += data.imageCredits.increment;
-    }
+  function apply(data: any, where: any) {
     for (const row of rows) {
+      if (!matches(row, where)) continue;
       for (const [key, value] of Object.entries(data)) {
-        if (key === 'verificationCredits' || key === 'imageCredits') continue;
-        row[key] = value;
+        // { increment } is a relative write; anything else (including the
+        // absolute credits a tier change computes) is a plain assignment.
+        if (value && typeof value === 'object' && 'increment' in (value as Record<string, unknown>)) {
+          row[key] += (value as { increment: number }).increment;
+        } else {
+          row[key] = value;
+        }
       }
     }
   }
@@ -73,17 +74,24 @@ async function serve(t: any) {
   replace(prisma.workspace, 'findMany', async ({ where }: any) => rows.filter(r => matches(r, where)).map(r => ({ ...r })));
   replace(prisma.workspace, 'updateMany', async ({ where, data }: any) => {
     writes.push(data);
-    apply(data);
+    apply(data, where);
     return { count: rows.filter(r => matches(r, where)).length };
   });
-  // Still used by the api-key credits endpoint.
+  // Also used by the api-key credits endpoint.
   replace(prisma.workspace, 'update', async ({ where, data }: any) => {
     writes.push(data);
-    apply(data);
+    apply(data, where);
     const row = rows.find(r => matches(r, where));
     return row ? { ...row } : null;
   });
-  t.after(() => originals.reverse().forEach((restore) => restore()));
+  // The tier-change path reads plan allowances from the cached billing config.
+  replace(prisma.planPricingConfig, 'findUnique', async () => ({
+    proQuotaMonthly: 2000, freeQuotaNewMonthly: 100, freeQuotaLegacyMonthly: 250,
+    businessQuotaMonthly: 50000,
+    freeImageCredits: 0, proImageCredits: 100, businessImageCredits: 300,
+  } as any));
+  invalidateBillingConfigCache();
+  t.after(() => { originals.reverse().forEach((restore) => restore()); invalidateBillingConfigCache(); });
 
   // The router captured ADMIN_SECRET at import time in some module layouts;
   // import after the variable is set so the constant is populated.
@@ -115,7 +123,7 @@ async function serve(t: any) {
 }
 
 test('an admin can grant a paid plan and credits', async (t) => {
-  const { post, writes } = await serve(t);
+  const { post, writes, rows } = await serve(t);
 
   const granted = await post({
     workspaceId: WORKSPACE_ID, tier: 'BUSINESS',
@@ -125,12 +133,41 @@ test('an admin can grant a paid plan and credits', async (t) => {
   assert.equal(granted.body.workspaces[0].tier, 'BUSINESS');
   assert.ok(granted.body.workspaces[0].paidUntil, 'a term must set paidUntil for the auto-downgrade');
 
-  // Credits are additive and the reset window is pushed out so the very next
-  // request cannot trigger the period reset and erase the grant.
+  // The new plan's allowance lands immediately — max(balance, 50000) — and the
+  // explicit 5000 is additive on top of it.
+  const row = rows.find(r => r.id === WORKSPACE_ID)!;
+  assert.equal(row.verificationCredits, 55000);
+  assert.equal(row.verificationCreditsMonthly, 50000);
+  assert.equal(row.imageCredits, 300);
+  assert.equal(row.imageCreditsMonthly, 300);
+
+  // The reset window is pushed out so the very next request cannot trigger the
+  // period reset and erase the grant.
   const write = writes.at(-1);
-  assert.deepEqual(write.verificationCredits, { increment: 5000 });
   assert.ok(write.verificationCreditsResetAt instanceof Date);
   assert.ok(write.verificationCreditsResetAt.getTime() > Date.now(), 'reset must be in the future');
+});
+
+test('a tier change is usable immediately, not at the next reset', async (t) => {
+  const { post, rows } = await serve(t);
+
+  // FREE with 100 credits, 60 of them spent elsewhere or not: the upgrade must
+  // replace the baseline, not wait for the reset the grant itself pushes out.
+  const upgraded = await post({ workspaceId: WORKSPACE_ID, tier: 'PRO', note: 'upgrade' });
+  assert.equal(upgraded.status, 200, JSON.stringify(upgraded.body));
+
+  const row = rows.find(r => r.id === WORKSPACE_ID)!;
+  assert.equal(row.tier, 'PRO');
+  assert.equal(row.verificationCredits, 2000, 'the PRO allowance must be usable now');
+  assert.equal(row.verificationCreditsMonthly, 2000);
+  assert.equal(row.imageCredits, 100);
+  assert.equal(row.imageCreditsMonthly, 100);
+
+  // A balance already above the new allowance is never lowered mid-term.
+  row.verificationCredits = 7000;
+  await post({ workspaceId: WORKSPACE_ID, tier: 'FREE', note: 'downgrade' });
+  assert.equal(row.verificationCredits, 7000, 'a downgrade must not erase credits already granted');
+  assert.equal(row.verificationCreditsMonthly, 100, 'but the monthly baseline follows the tier');
 });
 
 test('an admin can grant unlimited credits to one workspace', async (t) => {

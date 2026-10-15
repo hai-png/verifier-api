@@ -13,6 +13,9 @@ import {
 import { checkAmount, noteSuccessfulVerification } from "../utils/verificationGuards";
 import { resolveAmountBasis, resolveAmounts } from "../utils/amountBasis";
 import { extractPaymentDetails } from "../utils/paymentMatch";
+import { resolveAppUrl } from "../config/appUrl";
+
+const APP_URL = resolveAppUrl();
 
 dotenv.config();
 
@@ -571,9 +574,12 @@ export const verifyImageHandler = [
 
                 if (decrementCount === 0) {
                     if (req.file?.path) fs.unlinkSync(req.file.path);
+                    // The dashboard lives on APP_URL, not on the API host — this
+                    // hardcoded verify.noveld.com.et and 404'd there. Matches
+                    // the tierGate topUp links.
                     res.status(402).json({
-                        error: "Out of image credits. Top up at veritas.et/dashboard/billing",
-                        topUp: "https://verify.noveld.com.et/dashboard/billing",
+                        error: "Out of image credits.",
+                        topUp: `${APP_URL}/dashboard/billing`,
                     });
                     return;
                 }

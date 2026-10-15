@@ -33,6 +33,14 @@ export default function Plans() {
         are grandfathered with higher FREE quotas. Exceeding the monthly quota returns HTTP 402;
         exceeding the rate limit returns 429 with a <code>retryAfter</code> hint.
       </DocP>
+      <DocP>
+        Upgrades are applied by the operator (see{" "}
+        <a className="underline" href="/docs/reference/operations">Operations</a>) and take effect
+        immediately. A workspace can also be granted <em>unlimited</em> verifications and/or image
+        verifications — a flag, not a large balance — which outlives the monthly reset and a later
+        downgrade. The dashboard&apos;s billing page shows each workspace&apos;s actual tier,
+        allowance and unlimited status.
+      </DocP>
       <Next href="/docs/reference/errors" label="Errors & retries" />
     </>
   );

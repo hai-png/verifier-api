@@ -570,7 +570,11 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
+// Exported for the dashboard routes in dashboard.ts, which mount this behind
+// session auth. A second copy there would be a second definition of the
+// provider-coverage, default-link and redirect rules, and those are the rules
+// that decide whether a buyer's payment can resolve an account at confirm time.
+const patchHandler = async (req: Request, res: Response): Promise<void> => {
   const auth = getAuthContext(req);
   if (!auth) {
     res.status(401).json({ success: false, error: 'Authentication required.' });
@@ -718,9 +722,9 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     logger.error('Failed to update payment link:', error);
     res.status(500).json({ success: false, error: 'Failed to update payment link.' });
   }
-});
+};
 
-router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
+const deleteHandler = async (req: Request, res: Response): Promise<void> => {
   const auth = getAuthContext(req);
   if (!auth) {
     res.status(401).json({ success: false, error: 'Authentication required.' });
@@ -744,7 +748,10 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
 
   await prisma.paymentLink.delete({ where: { id: existing.id } });
   res.json({ success: true });
-});
+};
+
+router.patch('/:id', patchHandler);
+router.delete('/:id', deleteHandler);
 
 router.get('/:id/public', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -1459,5 +1466,7 @@ buyerPhone: true,
     res.status(500).json({ success: false, error: 'Failed to record order.' });
   }
 });
+
+export const handlers = { patch: patchHandler, delete: deleteHandler };
 
 export default router;

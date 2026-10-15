@@ -47,6 +47,22 @@ async function getWorkspaceWebhookLimit(req: Request): Promise<number> {
   return getWebhookLimit(tier, await getBillingConfig());
 }
 
+/**
+ * The workspace this request acts on, for either entry point.
+ *
+ * This router serves API-key traffic; the dashboard mounts the delivery
+ * handlers behind a session (dashboard.ts), where there is no apiKeyData and
+ * the workspace comes from req.workspaceContext. Reading only apiKeyData made
+ * the dashboard's webhook history unreachable — the query ran with `workspaceId:
+ * undefined`, which Prisma treats as "no filter".
+ */
+function resolveRequestWorkspaceId(req: Request): string | null {
+  const apiKeyData = (req as any).apiKeyData as { workspaceId?: string } | undefined;
+  if (apiKeyData?.workspaceId) return apiKeyData.workspaceId;
+  const context = (req as any).workspaceContext as { workspace?: { id?: string } } | undefined;
+  return context?.workspace?.id ?? null;
+}
+
 function buildCountMap(
   rows: Array<{ webhookId: string; _count?: { _all?: number } | true }>,
 ): Map<string, number> {
@@ -58,7 +74,11 @@ function buildCountMap(
   );
 }
 
-async function listWebhooksWithStats(workspaceId: string) {
+// Exported for the dashboard list route: the dashboard showed `_count.deliveries`
+// and nothing else, so a webhook that had been failing for a week looked
+// identical to one that had never fired. Same rows, so the two entry points
+// cannot disagree about whether a webhook is healthy.
+export async function listWebhooksWithStats(workspaceId: string) {
   const webhooks = await prisma.webhook.findMany({
     where: { workspaceId },
     orderBy: { createdAt: 'desc' },
@@ -444,14 +464,22 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
 
 // ─── GET /webhooks/:id/deliveries ─────────────────────────────────────────────
 
-router.get('/:id/deliveries', async (req: Request, res: Response): Promise<void> => {
+// Exported for the dashboard, same as above: this is the only view that says
+// *why* a delivery failed (statusCode, attempts, lastError), and without it the
+// stats on the list page are a number with no way to act on it.
+const deliveriesHandler = async (req: Request, res: Response): Promise<void> => {
   const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const page = Math.max(1, parseInt(String(req.query.page ?? '1'), 10));
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? String(DELIVERY_PAGE_SIZE)), 10)));
+  const workspaceId = resolveRequestWorkspaceId(req);
+  if (!workspaceId) {
+    res.status(401).json({ success: false, error: 'Authentication required.' });
+    return;
+  }
 
   try {
     const webhook = await prisma.webhook.findFirst({
-      where: { id, workspaceId: (req as any).apiKeyData.workspaceId },
+      where: { id, workspaceId },
       select: { id: true },
     });
     if (!webhook) {
@@ -494,19 +522,24 @@ router.get('/:id/deliveries', async (req: Request, res: Response): Promise<void>
     logger.error('Failed to list webhook deliveries:', err);
     res.status(500).json({ success: false, error: 'Failed to retrieve deliveries.' });
   }
-});
+};
+
+router.get('/:id/deliveries', deliveriesHandler);
 
 // ─── POST /webhooks/:id/retry/:deliveryId ─────────────────────────────────────
 
-router.post(
-  '/:id/retry/:deliveryId',
-  async (req: Request, res: Response): Promise<void> => {
+const retryHandler = async (req: Request, res: Response): Promise<void> => {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const deliveryId = Array.isArray(req.params.deliveryId) ? req.params.deliveryId[0] : req.params.deliveryId;
+    const workspaceId = resolveRequestWorkspaceId(req);
+    if (!workspaceId) {
+      res.status(401).json({ success: false, error: 'Authentication required.' });
+      return;
+    }
 
     try {
       const webhook = await prisma.webhook.findFirst({
-        where: { id, workspaceId: (req as any).apiKeyData.workspaceId },
+        where: { id, workspaceId },
         select: { id: true, url: true, signingSecret: true, active: true },
       });
       if (!webhook) {
@@ -544,7 +577,10 @@ router.post(
       logger.error('Failed to retry webhook delivery:', err);
       res.status(500).json({ success: false, error: 'Failed to enqueue retry.' });
     }
-  },
-);
+};
+
+router.post('/:id/retry/:deliveryId', retryHandler);
+
+export const handlers = { deliveries: deliveriesHandler, retry: retryHandler };
 
 export default router;

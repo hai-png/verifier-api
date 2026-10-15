@@ -484,7 +484,12 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
+// Exported for the dashboard routes in dashboard.ts, which mount this behind
+// session auth. Edit and deactivate had no UI at all: a merchant could sell a
+// product but never change its price, and reactivation — which this handler
+// deliberately restores on the product's links too — was unreachable without
+// poking the API by hand.
+const patchHandler = async (req: Request, res: Response): Promise<void> => {
   const auth = getAuthContext(req);
   if (!auth) {
     res.status(401).json({ success: false, error: 'Authentication required.' });
@@ -697,9 +702,11 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
     logger.error('Failed to update product:', error);
     res.status(500).json({ success: false, error: 'Failed to update product.' });
   }
-});
+};
 
-router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
+router.patch('/:id', patchHandler);
+
+const deleteHandler = async (req: Request, res: Response): Promise<void> => {
   const auth = getAuthContext(req);
   if (!auth) {
     res.status(401).json({ success: false, error: 'Authentication required.' });
@@ -735,6 +742,10 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
     logger.error('Failed to archive product:', error);
     res.status(500).json({ success: false, error: 'Failed to archive product.' });
   }
-});
+};
+
+router.delete('/:id', deleteHandler);
+
+export const handlers = { patch: patchHandler, delete: deleteHandler };
 
 export default router;

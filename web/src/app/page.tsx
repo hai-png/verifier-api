@@ -67,6 +67,12 @@ interface Workspace {
   tier: string
   verificationCredits: number
   imageCredits: number
+  /** Sent by the API; dropped from this shape, so a plan with no monthly cap rendered as a balance. */
+  verificationCreditsMonthly?: number
+  imageCreditsMonthly?: number
+  verificationCreditsUnlimited?: boolean
+  imageCreditsUnlimited?: boolean
+  paidUntil?: string | null
   createdAt: string
   role: string
   _count?: {
@@ -112,6 +118,9 @@ interface PaymentLink {
   /** The server sends this and the local shape dropped it, so expiry never rendered. */
   expiresAt?: string | null
   createdAt: string
+  /** The default link of a product: editable, but its lifecycle follows the product. */
+  isDefaultForProduct?: boolean
+  payoutAccounts?: { id: string; label: string; account: string; providersAllowed: string[] }[]
   _count?: { orders: number }
 }
 
@@ -134,9 +143,47 @@ interface Product {
   active: boolean
   acceptedProviders: string[]
   maxBuyers: number | null
+  /** Units sold, the floor for any new maxBuyers value. */
+  soldCount?: number
   createdAt: string
   payoutAccounts: { id: string; label: string }[]
   _count?: { orders: number }
+}
+
+interface WebhookDeliveryStats {
+  totalDeliveries: number
+  successRate: number | null
+  deadLetters: number
+  recoveredDeadLetters: number
+  inFlightDeliveries: number
+  succeededDeliveries: number
+  failedDeliveries: number
+  lastDeliveryAt: string | null
+  lastDeliveryStatus: string | null
+  lastDeliveryEvent: string | null
+}
+
+interface WebhookRecord {
+  id: string
+  url: string
+  events: string[]
+  active: boolean
+  createdAt: string
+  stats?: WebhookDeliveryStats
+}
+
+interface WebhookDelivery {
+  id: string
+  event: string
+  statusCode: number | null
+  success: boolean
+  status: string
+  attempts: number
+  maxAttempts: number
+  lastError: string | null
+  nextRetryAt: string | null
+  deliveredAt: string | null
+  createdAt: string
 }
 
 /**
@@ -634,7 +681,12 @@ function WorkspaceCard({ workspace, onClick }: { workspace: Workspace; onClick: 
             </div>
             <div>
               <CardTitle className="text-base">{workspace.name}</CardTitle>
-              <Badge variant="secondary" className="text-xs">{workspace.tier}</Badge>
+              <div className="flex items-center gap-1 mt-0.5">
+                <Badge variant="secondary" className="text-xs">{workspace.tier}</Badge>
+                {workspace.verificationCreditsUnlimited && (
+                  <Badge variant="outline" className="text-xs border-green-600 text-green-700">unlimited</Badge>
+                )}
+              </div>
             </div>
           </div>
           <ChevronRight className="w-5 h-5 text-muted-foreground" />
@@ -794,7 +846,10 @@ function WorkspacePage({
             <Badge variant="secondary">{workspace.tier}</Badge>
             <Badge variant="outline">{workspace.role.toLowerCase()}</Badge>
             <span className="text-sm text-muted-foreground">
-              {workspace.verificationCredits} verification credits
+              {workspace.verificationCreditsUnlimited
+                ? 'Unlimited verifications'
+                : `${workspace.verificationCredits} verification credits`}
+              {workspace.imageCreditsUnlimited && ' · unlimited images'}
             </span>
           </div>
         </div>
@@ -1733,6 +1788,20 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
     // unpayable — buyers got 422 while the UI still showed a copy button.
     payoutAccountIds: [] as string[],
   })
+  // Editing, status and delete were all reachable through the API and none of
+  // them through the UI: a merchant could create a link and then never retire it
+  // when the price changed.
+  const [editing, setEditing] = useState<PaymentLink | null>(null)
+  const [editForm, setEditForm] = useState({
+    name: '',
+    fixedAmount: 299,
+    acceptedProviders: [] as string[],
+    redirectUrl: '',
+    payoutAccountIds: [] as string[],
+  })
+  const [saving, setSaving] = useState(false)
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoadError(null)
@@ -1757,6 +1826,9 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
   // "exactly one account per provider" rule cannot be violated by the picker.
   const eligiblePayouts = payouts.filter(p =>
     form.acceptedProviders.some(pr => (p.providersAllowed as string[]).includes(pr)),
+  )
+  const eligibleEditPayouts = payouts.filter(p =>
+    editForm.acceptedProviders.some(pr => (p.providersAllowed as string[]).includes(pr)),
   )
 
   const create = async () => {
@@ -1789,6 +1861,108 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
       })
     } finally {
       setCreating(false)
+    }
+  }
+
+  const openEdit = (link: PaymentLink) => {
+    setEditing(link)
+    setEditForm({
+      name: link.name,
+      fixedAmount: link.fixedAmount,
+      acceptedProviders: [...(link.acceptedProviders ?? [])],
+      redirectUrl: link.redirectUrl ?? '',
+      // Prefilled from the server's current selection. An edit that started
+      // empty would silently replace the link's payout accounts with whatever
+      // the operator happened to tick — or with nothing, making it unpayable.
+      payoutAccountIds: (link.payoutAccounts ?? []).map(a => a.id),
+    })
+  }
+
+  const saveEdit = async () => {
+    if (!editing || saving) return
+    setSaving(true)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/payment-links/${editing.id}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editForm.name,
+          customAmount: editForm.fixedAmount,
+          acceptedProviders: editForm.acceptedProviders,
+          redirectUrl: editForm.redirectUrl || null,
+          payoutAccountIds: editForm.payoutAccountIds,
+        }),
+      })
+      const data = await readJson(res)
+      if (data.success) {
+        toast({ title: 'Payment link updated' })
+        setEditing(null)
+        load()
+      } else {
+        toast({ title: 'Could not update link', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not update link',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const toggleStatus = async (link: PaymentLink) => {
+    if (statusBusyId) return
+    const next = link.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+    setStatusBusyId(link.id)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/payment-links/${link.id}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: next }),
+      })
+      const data = await readJson(res)
+      if (data.success) {
+        toast({
+          title: next === 'ACTIVE' ? 'Link is live again' : 'Link deactivated',
+          description: next === 'ACTIVE'
+            ? undefined
+            : 'Buyers who open it now are told it is not accepting payments. Nothing else changes.',
+        })
+        load()
+      } else {
+        toast({ title: 'Could not change status', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not change status',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setStatusBusyId(null)
+    }
+  }
+
+  const removeLink = async (link: PaymentLink) => {
+    if (!confirm(`Delete "${link.name}"? Its checkout page stops working immediately. Past payments are not affected.`)) return
+    setDeletingId(link.id)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/payment-links/${link.id}`, token, { method: 'DELETE' })
+      const data = await readJson(res)
+      if (data.success) {
+        toast({ title: 'Payment link deleted' })
+        load()
+      } else {
+        toast({ title: 'Could not delete link', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not delete link',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -1850,14 +2024,19 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                       {link.fixedAmount} ETB · {link._count?.orders ?? 0} payments ·{' '}
                       {new Date(link.createdAt).toLocaleDateString()}
                     </div>
-                    <div className="flex gap-1 mt-1">
+                    <div className="flex gap-1 mt-1 flex-wrap">
                       {(link.acceptedProviders as string[]).map(pr => (
                         <Badge key={pr} variant="secondary" className="text-xs capitalize">{pr}</Badge>
                       ))}
+                      {link.payoutAccounts && link.payoutAccounts.length > 0 && (
+                        <span className="text-xs text-muted-foreground self-center">
+                          → {link.payoutAccounts.map(a => a.label).join(', ')}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1">
                     {/* Show the real status and expiry. A link that had expired was
                         indistinguishable from a live one, because the dashboard
                         list never materialises the lazy EXPIRED transition. */}
@@ -1869,7 +2048,7 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                         expires {new Date(link.expiresAt).toLocaleDateString()}
                       </span>
                     )}
-                    <code className="text-xs text-muted-foreground hidden md:block">
+                    <code className="text-xs text-muted-foreground hidden lg:block">
                       {typeof window !== 'undefined' ? `${window.location.origin}/pl/${link.id}` : `/pl/${link.id}`}
                     </code>
                   <Button
@@ -1882,6 +2061,47 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                   >
                     <Copy className="w-4 h-4" />
                   </Button>
+                  {canManage && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title={link.mode === 'CUSTOM' ? 'Edit link' : 'Edit this product link'}
+                        onClick={() => openEdit(link)}
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </Button>
+                      {/* The default link of a product cannot be deactivated or
+                          deleted on its own — the API rejects both — so the
+                          control is hidden rather than left to fail. */}
+                      {!link.isDefaultForProduct && (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={statusBusyId === link.id}
+                            title={link.status === 'ACTIVE' ? 'Deactivate — stop accepting payments' : 'Activate'}
+                            onClick={() => toggleStatus(link)}
+                          >
+                            {statusBusyId === link.id
+                              ? <Loader2 className="w-4 h-4 animate-spin" />
+                              : link.status === 'ACTIVE' ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={deletingId === link.id}
+                            title="Delete link"
+                            onClick={() => removeLink(link)}
+                          >
+                            {deletingId === link.id
+                              ? <Loader2 className="w-4 h-4 animate-spin text-destructive" />
+                              : <Trash2 className="w-4 h-4 text-destructive" />}
+                          </Button>
+                        </>
+                      )}
+                    </>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -1968,6 +2188,98 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Payment Link</DialogTitle>
+            <DialogDescription>
+              {editing?.mode === 'CUSTOM'
+                ? 'Changes take effect on the next checkout.'
+                : 'This link belongs to a product — its name and price follow the product, which you edit on the Products tab.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {editing?.mode === 'CUSTOM' && (
+              <>
+                <div className="space-y-2">
+                  <Label>Link Name</Label>
+                  <Input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Amount (ETB)</Label>
+                  <Input type="number" value={editForm.fixedAmount} onChange={e => setEditForm({ ...editForm, fixedAmount: parseInt(e.target.value) || 0 })} />
+                </div>
+              </>
+            )}
+            <div className="space-y-2">
+              <Label>Accepted Providers</Label>
+              <div className="flex flex-wrap gap-2">
+                {PROVIDERS.map(p => (
+                  <ToggleChip selected={editForm.acceptedProviders.includes(p.id)}
+                    key={p.id}
+                    onClick={() => {
+                      setEditForm({
+                        ...editForm,
+                        acceptedProviders: editForm.acceptedProviders.includes(p.id)
+                          ? editForm.acceptedProviders.filter(x => x !== p.id)
+                          : [...editForm.acceptedProviders, p.id],
+                      })
+                    }}
+                  >
+                    {p.label}
+                  </ToggleChip>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Payout accounts</Label>
+              {eligibleEditPayouts.length === 0 ? (
+                <p className="text-xs text-amber-600">
+                  No payout account covers {editForm.acceptedProviders.join(', ') || 'these providers'}.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {eligibleEditPayouts.map(p => (
+                    <ToggleChip selected={editForm.payoutAccountIds.includes(p.id)}
+                      key={p.id}
+                      onClick={() => setEditForm({
+                        ...editForm,
+                        payoutAccountIds: editForm.payoutAccountIds.includes(p.id)
+                          ? editForm.payoutAccountIds.filter(x => x !== p.id)
+                          : [...editForm.payoutAccountIds, p.id],
+                      })}
+                    >
+                      {p.label} — {p.account}
+                    </ToggleChip>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Exactly one account per accepted provider.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Redirect URL (optional)</Label>
+              <Input value={editForm.redirectUrl} onChange={e => setEditForm({ ...editForm, redirectUrl: e.target.value })} placeholder="https://yourapp.com/thank-you" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditing(null)} disabled={saving}>Cancel</Button>
+            <Button
+              onClick={saveEdit}
+              disabled={
+                saving ||
+                editForm.acceptedProviders.length === 0 ||
+                editForm.payoutAccountIds.length === 0 ||
+                (editing?.mode === 'CUSTOM' && (!editForm.name || editForm.fixedAmount <= 0))
+              }
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -1990,6 +2302,16 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
     payoutAccountIds: [] as string[],
     maxBuyers: '',
   })
+  const [editing, setEditing] = useState<Product | null>(null)
+  const [editForm, setEditForm] = useState({
+    name: '',
+    price: 299,
+    maxBuyers: '',
+    acceptedProviders: [] as string[],
+    payoutAccountIds: [] as string[],
+  })
+  const [saving, setSaving] = useState(false)
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoadError(null)
@@ -2062,6 +2384,85 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
     }
   }
 
+  const openEdit = (product: Product) => {
+    setEditing(product)
+    setEditForm({
+      name: product.name,
+      price: product.price,
+      maxBuyers: product.maxBuyers === null || product.maxBuyers === undefined ? '' : String(product.maxBuyers),
+      acceptedProviders: [...(product.acceptedProviders ?? [])],
+      payoutAccountIds: (product.payoutAccounts ?? []).map(a => a.id),
+    })
+  }
+
+  const saveEdit = async () => {
+    if (!editing || saving) return
+    setSaving(true)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/products/${editing.id}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editForm.name,
+          price: editForm.price,
+          maxBuyers: editForm.maxBuyers === '' ? null : parseInt(editForm.maxBuyers) || null,
+          acceptedProviders: editForm.acceptedProviders,
+          payoutAccountIds: editForm.payoutAccountIds,
+        }),
+      })
+      const data = await readJson(res)
+      if (data.success) {
+        toast({
+          title: 'Product updated',
+          description: 'Its payment link now uses the new name, price and providers.',
+        })
+        setEditing(null)
+        load()
+      } else {
+        toast({ title: 'Could not update product', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not update product',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const toggleActive = async (product: Product) => {
+    if (statusBusyId) return
+    const next = !product.active
+    setStatusBusyId(product.id)
+    try {
+      const res = await apiFetch(`/dashboard/${workspaceId}/products/${product.id}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: next }),
+      })
+      const data = await readJson(res)
+      if (data.success) {
+        toast({
+          title: next ? 'Product activated' : 'Product deactivated',
+          description: next
+            ? 'Its payment link is accepting payments again.'
+            : 'Its payment link is now inactive — buyers see it is not accepting payments.',
+        })
+        load()
+      } else {
+        toast({ title: 'Could not change product', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not change product',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setStatusBusyId(null)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -2127,14 +2528,120 @@ function ProductsTab({ workspaceId, canManage }: { workspaceId: string; canManag
                     </div>
                   </div>
                 </div>
-                <Badge variant={product.active ? 'default' : 'secondary'}>
-                  {product.active ? 'active' : 'inactive'}
-                </Badge>
+                <div className="flex items-center gap-1">
+                  <Badge variant={product.active ? 'default' : 'secondary'}>
+                    {product.active ? 'active' : 'inactive'}
+                  </Badge>
+                  {canManage && (
+                    <>
+                      <Button variant="ghost" size="sm" title="Edit product" onClick={() => openEdit(product)}>
+                        <Pencil className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={statusBusyId === product.id}
+                        title={product.active ? 'Deactivate product and its link' : 'Activate product'}
+                        onClick={() => toggleActive(product)}
+                      >
+                        {statusBusyId === product.id
+                          ? <Loader2 className="w-4 h-4 animate-spin" />
+                          : product.active ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                      </Button>
+                    </>
+                  )}
+                </div>
               </CardContent>
             </Card>
           ))}
         </div>
       )}
+
+      <Dialog open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Product</DialogTitle>
+            <DialogDescription>
+              The product's payment link is updated to match.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Product Name</Label>
+              <Input value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Price (ETB)</Label>
+              <Input type="number" value={editForm.price} onChange={e => setEditForm({ ...editForm, price: parseInt(e.target.value) || 0 })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Accepted Providers</Label>
+              <div className="flex flex-wrap gap-2">
+                {PROVIDERS.map(p => (
+                  <ToggleChip selected={editForm.acceptedProviders.includes(p.id)}
+                    key={p.id}
+                    onClick={() => setEditForm({
+                      ...editForm,
+                      acceptedProviders: editForm.acceptedProviders.includes(p.id)
+                        ? editForm.acceptedProviders.filter(x => x !== p.id)
+                        : [...editForm.acceptedProviders, p.id],
+                    })}
+                  >
+                    {p.label}
+                  </ToggleChip>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Payout Accounts (one per accepted provider)</Label>
+              {payouts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No payout accounts yet.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {payouts.map(a => (
+                    <ToggleChip selected={editForm.payoutAccountIds.includes(a.id)}
+                      key={a.id}
+                      onClick={() => setEditForm({
+                        ...editForm,
+                        payoutAccountIds: editForm.payoutAccountIds.includes(a.id)
+                          ? editForm.payoutAccountIds.filter(x => x !== a.id)
+                          : [...editForm.payoutAccountIds, a.id],
+                      })}
+                    >
+                      {a.label}
+                    </ToggleChip>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label>Max buyers (optional)</Label>
+              <Input
+                type="number"
+                value={editForm.maxBuyers}
+                onChange={e => setEditForm({ ...editForm, maxBuyers: e.target.value })}
+                placeholder="Unlimited"
+              />
+              {/* The server refuses a cap below what is already sold, so say so
+                  before the request rather than after a 400. */}
+              {(editing?.soldCount ?? 0) > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {editing?.soldCount} sold so far — the cap cannot go below that.
+                </p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditing(null)} disabled={saving}>Cancel</Button>
+            <Button
+              onClick={saveEdit}
+              disabled={saving || !editForm.name || editForm.price <= 0 || editForm.acceptedProviders.length === 0 || editForm.payoutAccountIds.length === 0}
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md">
@@ -2305,7 +2812,7 @@ const WEBHOOK_EVENTS = [
 function WebhooksTab({ workspaceId, canManage }: { workspaceId: string; canManage: boolean }) {
   const { token } = useAuth()
   const { toast } = useToast()
-  const [webhooks, setWebhooks] = useState<any[]>([])
+  const [webhooks, setWebhooks] = useState<WebhookRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ url: '', events: ['payment_link.paid'] })
@@ -2313,6 +2820,14 @@ const [newSecret, setNewSecret] = useState<string | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Delivery history was fetchable through the API and rendered nowhere, so the
+  // only signal a customer had that a webhook was failing was their own logs —
+  // the dashboard showed the same thing for a healthy webhook and a dead one.
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [deliveries, setDeliveries] = useState<Record<string, WebhookDelivery[]>>({})
+  const [deliveriesLoading, setDeliveriesLoading] = useState(false)
+  const [deliveriesError, setDeliveriesError] = useState<string | null>(null)
+  const [retryingId, setRetryingId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoadError(null)
@@ -2326,6 +2841,64 @@ const [newSecret, setNewSecret] = useState<string | null>(null)
   }, [token, workspaceId])
 
   useEffect(() => { load() }, [load])
+
+  const loadDeliveries = useCallback((webhookId: string) => {
+    setDeliveriesLoading(true)
+    setDeliveriesError(null)
+    apiFetch(`/dashboard/${workspaceId}/webhooks/${webhookId}/deliveries?limit=50`, token)
+      .then(readJson)
+      .then(data => {
+        if (data.success) setDeliveries(prev => ({ ...prev, [webhookId]: data.deliveries }))
+      })
+      .catch(err => setDeliveriesError(err instanceof Error ? err.message : 'Could not load deliveries.'))
+      .finally(() => setDeliveriesLoading(false))
+  }, [token, workspaceId])
+
+  const toggleDeliveries = (webhookId: string) => {
+    if (expandedId === webhookId) {
+      setExpandedId(null)
+      return
+    }
+    setExpandedId(webhookId)
+    // Always refetch on open: a cached panel showing yesterday's failures while
+    // the stats line shows new ones is worse than a spinner.
+    loadDeliveries(webhookId)
+  }
+
+  const retryDelivery = async (webhookId: string, deliveryId: string) => {
+    if (retryingId) return
+    setRetryingId(deliveryId)
+    try {
+      const res = await apiFetch(
+        `/dashboard/${workspaceId}/webhooks/${webhookId}/retry/${deliveryId}`,
+        token,
+        { method: 'POST' },
+      )
+      const data = await readJson(res)
+      if (data.success) {
+        toast({ title: 'Retry enqueued', description: data.message })
+        loadDeliveries(webhookId)
+        load()
+      } else {
+        toast({ title: 'Could not retry', description: data.error, variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Could not retry',
+        description: err instanceof Error ? err.message : 'Network error.',
+        variant: 'destructive',
+      })
+    } finally {
+      setRetryingId(null)
+    }
+  }
+
+  const deliveryBadge = (status: string) => {
+    if (status === 'SUCCEEDED') return <Badge className="bg-green-600 hover:bg-green-600 text-xs">delivered</Badge>
+    if (status === 'DEAD_LETTER') return <Badge variant="destructive" className="text-xs">dead letter</Badge>
+    if (status === 'CANCELLED') return <Badge variant="outline" className="text-xs">cancelled</Badge>
+    return <Badge variant="secondary" className="text-xs capitalize">{status.toLowerCase()}</Badge>
+  }
 
   const create = async () => {
     // This had no `else` at all: a rejected create — including the plan-limit
@@ -2453,24 +3026,122 @@ const [newSecret, setNewSecret] = useState<string | null>(null)
         <div className="space-y-2">
           {webhooks.map(wh => (
             <Card key={wh.id}>
-              <CardContent className="flex items-center justify-between py-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center">
-                    <Webhook className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <code className="text-sm">{wh.url}</code>
-                    <div className="flex gap-1 mt-1">
-                      {(wh.events as string[]).map(ev => (
-                        <Badge key={ev} variant="secondary" className="text-xs">{ev}</Badge>
-                      ))}
+              <CardContent className="py-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center shrink-0">
+                      <Webhook className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <code className="text-sm break-all">{wh.url}</code>
+                      <div className="flex gap-1 mt-1 flex-wrap">
+                        {(wh.events as string[]).map(ev => (
+                          <Badge key={ev} variant="secondary" className="text-xs">{ev}</Badge>
+                        ))}
+                        {!wh.active && <Badge variant="outline" className="text-xs">inactive</Badge>}
+                        {wh.stats && wh.stats.deadLetters > 0 && (
+                          <Badge variant="destructive" className="text-xs">
+                            {wh.stats.deadLetters} dead-lettered
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button variant="ghost" size="sm" onClick={() => toggleDeliveries(wh.id)}>
+                      <History className="w-4 h-4 mr-1" />
+                      <span className="hidden md:inline">Deliveries</span>
+                      <ChevronRight className={`w-3 h-3 transition-transform ${expandedId === wh.id ? 'rotate-90' : ''}`} />
+                    </Button>
+                    {canManage && (
+                    <Button variant="ghost" size="sm" disabled={removingId === wh.id} onClick={() => remove(wh.id)}>
+                      {removingId === wh.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
+                    </Button>
+                    )}
+                  </div>
                 </div>
-                {canManage && (
-                <Button variant="ghost" size="sm" disabled={removingId === wh.id} onClick={() => remove(wh.id)}>
-                  {removingId === wh.id ? <Loader2 className="w-4 h-4 animate-spin text-destructive" /> : <Trash2 className="w-4 h-4 text-destructive" />}
-                </Button>
+
+                {/* The stats line: what the customer cannot otherwise see. */}
+                {wh.stats && (
+                  <div className="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+                    <span>{wh.stats.totalDeliveries} deliveries</span>
+                    <span>
+                      {wh.stats.successRate === null ? 'no attempts yet' : `${wh.stats.successRate}% succeeded`}
+                    </span>
+                    {wh.stats.inFlightDeliveries > 0 && <span>{wh.stats.inFlightDeliveries} in flight</span>}
+                    {wh.stats.lastDeliveryAt && (
+                      <span>
+                        last {wh.stats.lastDeliveryEvent} {new Date(wh.stats.lastDeliveryAt).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {expandedId === wh.id && (
+                  <div className="border-t pt-3">
+                    {deliveriesLoading ? (
+                      <div className="py-4 flex justify-center"><Loader2 className="w-5 h-5 animate-spin" /></div>
+                    ) : deliveriesError ? (
+                      <div className="py-3 text-center space-y-2">
+                        <p className="text-sm text-destructive">{deliveriesError}</p>
+                        <Button variant="outline" size="sm" onClick={() => loadDeliveries(wh.id)}>Try again</Button>
+                      </div>
+                    ) : (deliveries[wh.id] ?? []).length === 0 ? (
+                      <p className="py-3 text-center text-sm text-muted-foreground">
+                        Nothing delivered yet. Events appear here as they fire.
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-left text-muted-foreground">
+                              <th className="py-1 pr-3 font-medium">Event</th>
+                              <th className="py-1 pr-3 font-medium">Status</th>
+                              <th className="py-1 pr-3 font-medium">Code</th>
+                              <th className="py-1 pr-3 font-medium">Attempts</th>
+                              <th className="py-1 pr-3 font-medium">When</th>
+                              <th className="py-1 font-medium"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(deliveries[wh.id] ?? []).map(d => (
+                              <tr key={d.id} className="border-t align-top">
+                                <td className="py-1.5 pr-3">{d.event}</td>
+                                <td className="py-1.5 pr-3">{deliveryBadge(d.status)}</td>
+                                <td className="py-1.5 pr-3 font-mono">{d.statusCode ?? '—'}</td>
+                                <td className="py-1.5 pr-3">{d.attempts}/{d.maxAttempts}</td>
+                                <td className="py-1.5 pr-3 whitespace-nowrap">{new Date(d.createdAt).toLocaleString()}</td>
+                                <td className="py-1.5">
+                                  {!d.success && canManage && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-6 px-2 text-xs"
+                                      disabled={retryingId === d.id}
+                                      onClick={() => retryDelivery(wh.id, d.id)}
+                                    >
+                                      {retryingId === d.id ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Retry'}
+                                    </Button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {/* lastError is the only place the remote's answer is
+                            recorded; without it "failed" is unfixable. */}
+                        {(deliveries[wh.id] ?? []).some(d => d.lastError) && (
+                          <div className="mt-2 space-y-1">
+                            {(deliveries[wh.id] ?? []).filter(d => d.lastError).slice(0, 3).map(d => (
+                              <p key={d.id} className="text-xs text-destructive/80 break-all">
+                                {d.event}: {d.lastError}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -2591,11 +3262,40 @@ function SettingsTab({ workspace, canManage }: { workspace: Workspace; canManage
       )}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Credits</CardTitle>
+          <CardTitle className="text-base">Plan &amp; usage</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          <div className="flex justify-between"><span className="text-muted-foreground">Verification credits</span><span className="font-bold">{workspace.verificationCredits}</span></div>
-          <div className="flex justify-between"><span className="text-muted-foreground">Image OCR credits</span><span className="font-bold">{workspace.imageCredits}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Plan</span><Badge variant="secondary">{workspace.tier}</Badge></div>
+          {workspace.paidUntil && (
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Paid until</span>
+              <span>{new Date(workspace.paidUntil).toLocaleDateString()}</span>
+            </div>
+          )}
+          {/* An unlimited grant used to render as a raw balance — "37 credits" —
+              which reads as a nearly-empty account for a workspace that cannot
+              run out. The flag is what the gates actually consult. */}
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Verifications</span>
+            <span className="font-bold">
+              {workspace.verificationCreditsUnlimited
+                ? 'Unlimited'
+                : `${workspace.verificationCredits} left${workspace.verificationCreditsMonthly ? ` of ${workspace.verificationCreditsMonthly}/mo` : ''}`}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Image verifications</span>
+            <span className="font-bold">
+              {workspace.imageCreditsUnlimited
+                ? 'Unlimited'
+                : `${workspace.imageCredits} left${workspace.imageCreditsMonthly ? ` of ${workspace.imageCreditsMonthly}/mo` : ''}`}
+            </span>
+          </div>
+          <div className="pt-2">
+            <a href="/dashboard/billing" className="text-sm underline text-muted-foreground hover:text-foreground">
+              Compare plans &amp; upgrade →
+            </a>
+          </div>
         </CardContent>
       </Card>
     </div>

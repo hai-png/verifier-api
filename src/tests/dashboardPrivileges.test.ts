@@ -53,9 +53,19 @@ const MUTATIONS: Array<[string, string]> = [
   ['PATCH', '/ws-1/payouts/pay-1'],
   ['DELETE', '/ws-1/payouts/pay-1'],
   ['POST', '/ws-1/payment-links'],
+  // Editing or retiring a live link changes where buyers' money goes, so it
+  // belongs on the same side of the boundary as creating one.
+  ['PATCH', '/ws-1/payment-links/link-1'],
+  ['DELETE', '/ws-1/payment-links/link-1'],
   ['POST', '/ws-1/webhooks'],
   ['DELETE', '/ws-1/webhooks/wh-1'],
+  ['POST', '/ws-1/webhooks/wh-1/retry/del-1'],
   ['POST', '/ws-1/products'],
+  ['PATCH', '/ws-1/products/prod-1'],
+  ['POST', '/ws-1/notifications'],
+  ['PATCH', '/ws-1/notifications/n-1'],
+  ['DELETE', '/ws-1/notifications/n-1'],
+  ['POST', '/ws-1/notifications/n-1/test'],
 ];
 
 async function serve(t: any, role: 'MEMBER' | 'ADMIN') {

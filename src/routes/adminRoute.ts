@@ -19,6 +19,11 @@ import {
     invalidateBillingConfigCache,
     updateBillingConfig,
 } from '../config/billingConfig';
+import {
+    getMonthlyImageCredits,
+    getVerificationMonthlyQuota,
+    type WorkspaceTier,
+} from '../config/plans';
 
 const router = Router();
 
@@ -307,6 +312,11 @@ router.post('/api-keys/:id/credits', checkAdminAuth as RequestHandler, async (re
 // sets `paidUntil`, after which the sync downgrades the workspace on its next
 // request. Credits added here are an immediate top-up that lasts until the
 // current period resets.
+//
+// Setting `tier` applies the new plan's allowance immediately: the balance is
+// raised to the new quota if it is below it (never lowered if above), the
+// monthly baseline is updated, and any explicit addCredits in the same call
+// land on top. Without this the upgrade was inert for up to 30 days.
 const VALID_PLAN_TIERS = ['FREE', 'PRO', 'BUSINESS'] as const;
 type PlanTier = typeof VALID_PLAN_TIERS[number];
 const MAX_CREDIT_GRANT = 10_000_000;
@@ -404,21 +414,43 @@ router.post('/workspaces/plan', checkAdminAuth as RequestHandler, async (req: Re
     data.imageCreditsResetAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
     try {
-        // updateMany so one missing id in a bulk grant cannot roll back the ones
-        // that exist — a partial grant is reported per workspace rather than
+        // One missing id in a bulk grant must not roll back the workspaces that
+        // do exist — a partial grant is reported per workspace rather than
         // failing the whole call, which is what an operator granting access to
         // several customers at once needs to see.
+        const billingConfig = tier !== undefined ? await getBillingConfig() : null;
         const found = await prisma.workspace.findMany({
             where: { id: { in: targets } },
-            select: { id: true, name: true },
+            select: {
+                id: true, name: true, grandfathered: true,
+                verificationCredits: true, imageCredits: true,
+            },
         });
         const foundIds = new Set(found.map(w => w.id));
         const missing = targets.filter(id => !foundIds.has(id));
 
-        const updated = await prisma.workspace.updateMany({
-            where: { id: { in: found.map(w => w.id) } },
-            data,
-        });
+        // Per-row updates rather than updateMany: a tier change has to raise the
+        // balance to the new plan's allowance *now*. updateMany cannot express
+        // max(balance, quota), and leaving the old balance and monthly figure in
+        // place meant a FREE->PRO upgrade granted nothing usable — the plan only
+        // took effect at the next period reset, which this same grant pushes 30
+        // days out. max(current, allowance) + explicit addition: the new plan's
+        // allowance replaces the old baseline, explicit credits stay additive,
+        // and a balance already above the allowance is never lowered mid-term.
+        let granted = 0;
+        for (const workspace of found) {
+            const rowData: Record<string, unknown> = { ...data };
+            if (tier !== undefined && billingConfig) {
+                const newQuota = getVerificationMonthlyQuota(tier as WorkspaceTier, workspace.grandfathered, billingConfig);
+                const newImageQuota = getMonthlyImageCredits(tier as WorkspaceTier, billingConfig);
+                rowData.verificationCredits = Math.max(workspace.verificationCredits, newQuota) + (addVerificationCredits ?? 0);
+                rowData.verificationCreditsMonthly = newQuota;
+                rowData.imageCredits = Math.max(workspace.imageCredits, newImageQuota) + (addImageCredits ?? 0);
+                rowData.imageCreditsMonthly = newImageQuota;
+            }
+            await prisma.workspace.update({ where: { id: workspace.id }, data: rowData });
+            granted += 1;
+        }
 
         // Plan limits are read through a cached billing config; drop it so the
         // new tier takes effect on the workspace's next request.
@@ -426,7 +458,7 @@ router.post('/workspaces/plan', checkAdminAuth as RequestHandler, async (req: Re
         logger.info(`[admin] plan grant for workspaces ${targets.join(', ')}: ${JSON.stringify({
             tier, addVerificationCredits, addImageCredits,
             unlimitedVerifications, unlimitedImages, planTermMonths, note: note.trim(),
-            granted: updated.count, missing,
+            granted, missing,
         })}`);
 
         const results = await prisma.workspace.findMany({
@@ -443,7 +475,7 @@ router.post('/workspaces/plan', checkAdminAuth as RequestHandler, async (req: Re
 
         res.json({
             success: missing.length === 0,
-            granted: updated.count,
+            granted,
             workspaces: results,
             ...(missing.length > 0 ? { missing, error: `${missing.length} workspace id(s) not found.` } : {}),
         });

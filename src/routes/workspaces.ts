@@ -42,7 +42,15 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
                         name: true,
                         tier: true,
                         verificationCredits: true,
+                        // Without these the workspace list rendered an unlimited
+                        // grant as a bare balance, identical to a nearly-empty
+                        // free plan.
+                        verificationCreditsMonthly: true,
+                        verificationCreditsUnlimited: true,
                         imageCredits: true,
+                        imageCreditsMonthly: true,
+                        imageCreditsUnlimited: true,
+                        paidUntil: true,
                         createdAt: true,
                         _count: {
                             select: {

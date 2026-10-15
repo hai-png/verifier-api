@@ -109,6 +109,34 @@ without it nothing can connect to the database.`}
         idleness is normal and should not be treated as an outage.
       </DocP>
 
+      <DocH2>Plan upgrades and unlimited grants</DocH2>
+      <DocP>
+        Upgrades are an operator action, not a self-serve checkout. The grant endpoint is{" "}
+        <Code code="POST /admin/workspaces/plan" inline /> (authenticated with{" "}
+        <Code code="x-admin-key" inline />), and the shipped wrapper performs the full upgrade a
+        paying customer gets in one call:
+      </DocP>
+      <Code
+        code={`node scripts/grant-unlimited.mjs --tier PRO --months 12 ws_abc
+# sets the tier, the term, and unlimited verifications + images at once`}
+      />
+      <DocP>
+        A tier change applies the new plan&apos;s allowance <em>immediately</em>: the balance is
+        topped up to the new quota on the spot, rather than at the next monthly reset — which the
+        same grant pushes 30 days out, leaving the upgrade inert for a month otherwise. Explicit{" "}
+        <Code code="addVerificationCredits" inline /> / <Code code="addImageCredits" inline /> land
+        on top of the allowance, and a balance already above the new allowance is never lowered
+        mid-term. Unlimited is a boolean flag, not a large number, so it survives the monthly reset
+        and a later downgrade. Without <Code code="--plan-only" inline /> the script also grants
+        both unlimited flags; <Code code="--plan-only" inline /> changes the plan and leaves the
+        flags untouched.
+      </DocP>
+      <DocP>
+        Customers see their plan, remaining allowance and unlimited status at{" "}
+        <Code code="/dashboard/billing" inline /> on the dashboard host — the page every 402 quota
+        error links to.
+      </DocP>
+
       <DocH2>Log handling</DocH2>
       <DocP>
         Redis credentials can appear inside error objects: when an <Code code="AUTH" inline /> command
