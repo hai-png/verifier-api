@@ -15,7 +15,7 @@ import { resolveAppUrl } from '../config/appUrl';
 import { Router, Request, Response, NextFunction } from 'express';
 import { runSmartVerify } from '../services/verifyUniversal';
 import { extractPaymentDetails, extractPayerAccount, maskCbeAccount, payerMatches } from '../utils/paymentMatch';
-import { checkReceiptRecipient } from '../utils/recipientCheck';
+import { checkReceiptRecipient, payoutAccountDestination } from '../utils/recipientCheck';
 import { creditedPartyFromData } from '../utils/verifyRecipient';
 import {
   isEnumValue,
@@ -1011,7 +1011,7 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
         // one of those links answers 422 forever on a payment the buyer already
         // made. There is no repair path from the API.
         where: { active: true },
-        select: { id: true, label: true, accountHolderName: true, account: true, type: true, providersAllowed: true },
+        select: { id: true, label: true, accountHolderName: true, account: true, type: true, providersAllowed: true, providerAccounts: true },
       },
     },
   });
@@ -1044,6 +1044,12 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
     });
     return;
   }
+
+  // The provider's own destination, not the record's primary account: a
+  // unified account holds a different number per provider, and comparing a
+  // CBE receipt against the Telebirr phone on the same record would reject
+  // every correct payment into that account.
+  const expectedAccount = payoutAccountDestination(payoutAccount, trimmedProvider);
 
   const existingOrder = await findOrderByReferenceCaseInsensitive(trimmedReference);
   if (existingOrder) {
@@ -1189,7 +1195,7 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
   const recipientOutcome = checkReceiptRecipient({
     foundAccount: verifiedAccount,
     foundName: creditedPartyFromData(verifyResult.data, trimmedProvider).name,
-    expectedAccount: payoutAccount.account,
+    expectedAccount,
     expectedHolderName: payoutAccount.accountHolderName,
     useCbeAccountRule: trimmedProvider === 'cbe',
   });
@@ -1205,9 +1211,9 @@ router.post('/:id/confirm', confirmThrottleMiddleware, async (req: Request, res:
       verifiedAmount,
       expectedAmount: paymentLink.fixedAmount,
       verifiedAccount,
-      expectedPayoutAccount: payoutAccount.account,
+      expectedPayoutAccount: expectedAccount,
       expectedMaskedPayoutAccount:
-        trimmedProvider === 'cbe' ? maskCbeAccount(payoutAccount.account) : null,
+        trimmedProvider === 'cbe' ? maskCbeAccount(expectedAccount) : null,
       verifiedReceiver:
         typeof verifiedRecord?.receiver === 'string' ? verifiedRecord.receiver : null,
       expectedAccountHolderName:

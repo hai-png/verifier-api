@@ -9,6 +9,7 @@ import {
   normaliseAccount,
   normaliseOptionalLabel,
   normaliseProviders,
+  resolvePayoutState,
   validatePayoutEdit,
   validatePayoutInput,
 } from '../utils/payoutInput';
@@ -112,4 +113,136 @@ test('an edit leaves untouched fields alone', () => {
     assert.equal(result.data.account, undefined);
     assert.equal(result.data.providersAllowed, undefined);
   }
+});
+
+// ─── Unified accounts ────────────────────────────────────────────────────────
+// One payout account can hold a destination per provider — a phone for the
+// wallet providers and a bank account number for a bank — so products and
+// payment links pick it as a unit while each receipt is still compared against
+// its own provider's number. resolvePayoutState is the single place that
+// decides what a create or edit results in.
+
+test('a unified create keeps one number per provider and derives UNIFIED', () => {
+  const result = resolvePayoutState(null, {
+    providersAllowed: ['Telebirr', 'CBE'],
+    providerAccounts: { telebirr: '0906422230', cbe: '1000123456789012' },
+  });
+  assert.ok('data' in result, JSON.stringify(result));
+  if (!('data' in result)) return;
+  assert.equal(result.data.type, 'UNIFIED');
+  assert.equal(result.data.account, '0906422230', 'the legacy column gets the first destination');
+  assert.deepEqual(result.data.providersAllowed, ['telebirr', 'cbe']);
+  assert.deepEqual(result.data.providerAccounts, {
+    telebirr: '0906422230',
+    cbe: '1000123456789012',
+  });
+});
+
+test('two banks coexist once each gets its own number', () => {
+  // Under the legacy shape this is the ambiguous case ("exactly one bank
+  // provider"); with an explicit number per bank there is nothing ambiguous.
+  const result = resolvePayoutState(null, {
+    providersAllowed: ['cbe', 'dashen'],
+    providerAccounts: { cbe: '1000123456789012', dashen: '2000123456789012' },
+  });
+  assert.ok('data' in result, JSON.stringify(result));
+  if (!('data' in result)) return;
+  assert.equal(result.data.type, 'BANK');
+  assert.deepEqual(result.data.providerAccounts, {
+    cbe: '1000123456789012',
+    dashen: '2000123456789012',
+  });
+});
+
+test('a single account still serves several providers of one kind', () => {
+  // The legacy shape: no map, one phone for the wallets. The map stays empty so
+  // a later `account` change is not blocked by frozen entries.
+  const result = resolvePayoutState(null, { account: '0906422230', providersAllowed: ['telebirr', 'mpesa'] });
+  assert.ok('data' in result, JSON.stringify(result));
+  if (!('data' in result)) return;
+  assert.equal(result.data.type, 'PHONE');
+  assert.equal(result.data.account, '0906422230');
+  assert.deepEqual(result.data.providerAccounts, {});
+});
+
+test('account remains the fallback for providers the map does not name', () => {
+  const result = resolvePayoutState(null, {
+    account: '0906422230',
+    providersAllowed: ['telebirr', 'mpesa'],
+    providerAccounts: { mpesa: '0911223344' },
+  });
+  assert.ok('data' in result, JSON.stringify(result));
+  if (!('data' in result)) return;
+  assert.equal(result.data.account, '0906422230');
+  assert.deepEqual(result.data.providerAccounts, { mpesa: '0911223344' });
+});
+
+test('a provider with neither a number nor a fallback is refused', () => {
+  const result = resolvePayoutState(null, {
+    providersAllowed: ['telebirr', 'cbe'],
+    providerAccounts: { telebirr: '0906422230' },
+  });
+  assert.ok('error' in result);
+  if ('error' in result) assert.match(result.error, /No account number for: cbe/);
+});
+
+test('a destination in the wrong format is refused, naming the provider', () => {
+  const badPhone = resolvePayoutState(null, {
+    providersAllowed: ['telebirr', 'mpesa'],
+    providerAccounts: { telebirr: '0906422230', mpesa: '1000123456789012' },
+  });
+  assert.ok('error' in badPhone);
+  if ('error' in badPhone) assert.match(badPhone.error, /mpesa destination must be a valid Ethiopian phone/);
+
+  const badBank = resolvePayoutState(null, {
+    providersAllowed: ['cbe', 'dashen'],
+    providerAccounts: { cbe: '1000123456789012', dashen: '0911223344' },
+  });
+  assert.ok('error' in badBank);
+  if ('error' in badBank) assert.match(badBank.error, /dashen destination must be a 13-16 digit bank account number/);
+});
+
+test('an edit changes one destination without disturbing the rest', () => {
+  const current = {
+    account: '0906422230',
+    providersAllowed: ['telebirr', 'cbebirr'],
+    providerAccounts: { telebirr: '0906422230', cbebirr: '0911223344' },
+  };
+
+  const result = resolvePayoutState(current, { providerAccounts: { cbebirr: '0911334455' } });
+  assert.ok('data' in result, JSON.stringify(result));
+  if (!('data' in result)) return;
+  assert.deepEqual(result.data.providerAccounts, { telebirr: '0906422230', cbebirr: '0911334455' });
+  assert.equal(result.data.type, 'PHONE');
+
+  // Dropping a provider drops its entry, so a later re-add starts over rather
+  // than silently inheriting a stale number.
+  const narrowed = resolvePayoutState(current, { providersAllowed: ['telebirr'] });
+  assert.ok('data' in narrowed, JSON.stringify(narrowed));
+  if (!('data' in narrowed)) return;
+  assert.deepEqual(narrowed.data.providerAccounts, { telebirr: '0906422230' });
+});
+
+test('the map is canonicalised like providersAllowed is', () => {
+  const result = resolvePayoutState(null, {
+    providersAllowed: ['M-Pesa'],
+    providerAccounts: { 'M-Pesa': '0911223344' },
+  });
+  assert.ok('data' in result, JSON.stringify(result));
+  if (!('data' in result)) return;
+  assert.deepEqual(result.data.providersAllowed, ['mpesa']);
+  assert.deepEqual(result.data.providerAccounts, { mpesa: '0911223344' });
+});
+
+test('unknown or malformed maps are refused outright', () => {
+  for (const bad of ['telebirr', 42, ['telebirr'], { awash: '0906422230' }, { telebirr: '' }, { telebirr: 42 }]) {
+    const result = resolvePayoutState(null, { providersAllowed: ['telebirr'], providerAccounts: bad });
+    assert.ok('error' in result, `map=${JSON.stringify(bad)} must be refused`);
+  }
+
+  // A provider the allow-list does not know is refused before any destination
+  // is examined, with the full list so the caller can correct the spelling.
+  const unknown = resolvePayoutState(null, { providersAllowed: ['awash'] });
+  assert.ok('error' in unknown);
+  if ('error' in unknown) assert.match(unknown.error, /unsupported providers: awash/);
 });

@@ -29,8 +29,10 @@ import {
     normaliseAccount,
     normaliseProviders as normalisePayoutProviders,
     normalisePayoutType,
+    resolvePayoutState,
     validatePayoutEdit,
     validatePayoutInput,
+    type PayoutType,
 } from '../utils/payoutInput';
 import {
     isValidPaymentAmount,
@@ -357,6 +359,7 @@ router.get('/:workspaceId/payouts', async (req: Request, res: Response): Promise
                 type: true,
                 account: true,
                 providersAllowed: true,
+                providerAccounts: true,
                 isDefault: true,
                 createdAt: true,
             },
@@ -373,12 +376,13 @@ router.get('/:workspaceId/payouts', async (req: Request, res: Response): Promise
 router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promise<void> => {
     const userId = (req as any).userId as string;
     const { workspaceId } = req.params as { workspaceId: string };
-    const { label, accountHolderName, type, account, providersAllowed } = req.body as {
+    const { label, accountHolderName, type, account, providersAllowed, providerAccounts } = req.body as {
         label?: string;
         accountHolderName?: string;
         type?: 'PHONE' | 'BANK';
         account?: string;
         providersAllowed?: string[];
+        providerAccounts?: Record<string, string>;
     };
 
     // `type` is normalised rather than truthiness-checked. The old guard was
@@ -388,11 +392,21 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
     // prisma.payoutAccount.create({ data: { type } }) as an invalid enum — a 500
     // where the caller could have been told 400, and a cheap way to fill the
     // error log.
+    //
+    // A providerAccounts map replaces the (type, account) pair — the type is
+    // derived from the provider set and account becomes the fallback — so on
+    // that branch they are not required.
+    const hasProviderAccounts = providerAccounts !== undefined;
     const payoutType = normalisePayoutType(type);
     if (typeof label !== 'string' || !label.trim()
         || typeof accountHolderName !== 'string' || !accountHolderName.trim()
-        || !payoutType || typeof account !== 'string' || !account.trim()) {
-        res.status(400).json({ success: false, error: 'label, accountHolderName, type (PHONE or BANK), and account are required.' });
+        || (!hasProviderAccounts && (!payoutType || typeof account !== 'string' || !account.trim()))) {
+        res.status(400).json({
+            success: false,
+            error: hasProviderAccounts
+                ? 'label and accountHolderName are required.'
+                : 'label, accountHolderName, type (PHONE or BANK), and account are required.',
+        });
         return;
     }
     // VARCHAR(191) columns. Uncapped, an over-length value is a 500 from Prisma.
@@ -412,11 +426,29 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
         // validated. An account with a malformed phone number could be saved here,
         // then be offered as the expected recipient and quietly never match a
         // receipt. Same validation as POST /payouts now.
-        const providers = normalisePayoutProviders(providersAllowed ?? ['telebirr']);
-        const problem = validatePayoutInput(payoutType, normaliseAccount(account), providers);
-        if (problem) {
-            res.status(400).json({ success: false, error: problem });
-            return;
+        let destination;
+        if (hasProviderAccounts) {
+            const resolved = resolvePayoutState(null, { account, providersAllowed, providerAccounts });
+            if ('error' in resolved) {
+                res.status(400).json({ success: false, error: resolved.error });
+                return;
+            }
+            destination = resolved.data;
+        } else {
+            const providers = normalisePayoutProviders(providersAllowed ?? ['telebirr']);
+            const problem = validatePayoutInput(payoutType as PayoutType, normaliseAccount(account), providers);
+            if (problem) {
+                res.status(400).json({ success: false, error: problem });
+                return;
+            }
+            destination = {
+                // Non-null: the guard above requires it whenever no
+                // providerAccounts map was supplied.
+                type: payoutType as PayoutType,
+                account: normaliseAccount(account),
+                providersAllowed: providers,
+                providerAccounts: {},
+            };
         }
 
         // First account in a workspace becomes the default, matching POST /payouts.
@@ -427,9 +459,7 @@ router.post('/:workspaceId/payouts', async (req: Request, res: Response): Promis
                 workspaceId,
                 label: label.trim(),
                 accountHolderName: accountHolderName.trim(),
-                type: payoutType,
-                account: normaliseAccount(account),
-                providersAllowed: providers,
+                ...destination,
                 isDefault: existing === 0,
                 active: true,
             },
@@ -459,14 +489,48 @@ router.patch('/:workspaceId/payouts/:payoutId', async (req: Request, res: Respon
 
         const current = await prisma.payoutAccount.findFirst({
             where: { id: payoutId, workspaceId, active: true },
-            select: { id: true, type: true, account: true, providersAllowed: true, isDefault: true },
+            select: { id: true, type: true, account: true, providersAllowed: true, providerAccounts: true, isDefault: true },
         });
         if (!current) {
             res.status(404).json({ success: false, error: 'Payout account not found.' });
             return;
         }
 
-        const validated = validatePayoutEdit({ type: current.type }, body);
+        // A unified account — or any edit that supplies a providerAccounts map
+        // — resolves its whole destination state in one go (providers,
+        // per-provider numbers, fallback account, derived type), so a number
+        // change cannot be half-applied. Text fields keep the same rules as
+        // every other edit by going through validatePayoutEdit for those alone.
+        let validated;
+        if (body.providerAccounts !== undefined || current.type === 'UNIFIED') {
+            const textFields = validatePayoutEdit(
+                { type: current.type as PayoutType },
+                { label: body.label, accountHolderName: body.accountHolderName },
+            );
+            if ('error' in textFields) {
+                res.status(400).json({ success: false, error: textFields.error });
+                return;
+            }
+            const resolved = resolvePayoutState(
+                { account: current.account, providersAllowed: current.providersAllowed, providerAccounts: current.providerAccounts },
+                { account: body.account, providersAllowed: body.providersAllowed, providerAccounts: body.providerAccounts },
+            );
+            if ('error' in resolved) {
+                res.status(400).json({ success: false, error: resolved.error });
+                return;
+            }
+            validated = {
+                data: {
+                    ...textFields.data,
+                    type: resolved.data.type,
+                    account: resolved.data.account,
+                    providersAllowed: resolved.data.providersAllowed,
+                    providerAccounts: resolved.data.providerAccounts,
+                },
+            };
+        } else {
+            validated = validatePayoutEdit({ type: current.type as PayoutType }, body);
+        }
         if ('error' in validated) {
             res.status(400).json({ success: false, error: validated.error });
             return;

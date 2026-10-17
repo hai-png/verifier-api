@@ -101,10 +101,22 @@ interface PayoutAccount {
   id: string
   label: string
   accountHolderName: string
-  type: 'PHONE' | 'BANK'
+  type: 'PHONE' | 'BANK' | 'UNIFIED'
   account: string
   providersAllowed: string[]
+  /**
+   * provider → the number payments through that provider must reach. Empty on
+   * single-account records, which fall back to `account`. A unified account
+   * carries an entry per provider, so the card shows each provider's own
+   * number rather than one primary.
+   */
+  providerAccounts?: Record<string, string>
   isDefault: boolean
+}
+
+/** The number a given provider's payments must reach on this account. */
+function payoutDestination(p: Pick<PayoutAccount, 'account' | 'providerAccounts'>, provider: string): string {
+  return (p.providerAccounts && p.providerAccounts[provider]) || p.account
 }
 
 interface PaymentLink {
@@ -1245,7 +1257,13 @@ function ApiKeysTab({ workspaceId, canManage }: { workspaceId: string; canManage
                     <SelectContent>
                       <SelectItem value="">No account — recipient unchecked</SelectItem>
                       {payouts.map(p => (
-                        <SelectItem key={p.id} value={p.id}>{p.label} — {p.account}</SelectItem>
+                        <SelectItem
+                          key={p.id}
+                          value={p.id}
+                          title={(p.providersAllowed as string[]).map(pr => `${pr}: ${payoutDestination(p, pr)}`).join(' · ')}
+                        >
+                          {p.label}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -1306,13 +1324,20 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
   const [removingId, setRemovingId] = useState<string | null>(null)
-  const [form, setForm] = useState({
+  // A payout account is a list of providers plus a destination for each. Most
+  // accounts have one number serving every provider (a phone for the wallet
+  // providers), so "shared" is the default and the per-provider inputs only
+  // appear when it is switched off — which is what a unified account (a phone
+  // for the wallets, a bank account number for a bank) needs.
+  const emptyPayoutForm = () => ({
     label: '',
     accountHolderName: '',
-    type: 'PHONE' as 'PHONE' | 'BANK',
-    account: '',
-    providersAllowed: [] as string[],
+    providers: [] as string[],
+    shared: true,
+    sharedAccount: '',
+    perProvider: {} as Record<string, string>,
   })
+  const [form, setForm] = useState(emptyPayoutForm)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -1339,22 +1364,27 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
 
   const openCreate = () => {
     setEditingId(null)
-    setForm({ label: '', accountHolderName: '', type: 'PHONE', account: '', providersAllowed: [] })
+    setForm(emptyPayoutForm())
     setCreateOpen(true)
   }
 
-  // Editing reuses the same dialog rather than duplicating the field layout, and
-  // type is deliberately not editable: a PHONE account's providers and validity
-  // rules differ from a BANK account's, and the API keys them together. Changing
-  // it means creating a replacement.
+  // Editing reuses the same dialog rather than duplicating the field layout.
+  // The providers and their destinations are prefilled from the stored record
+  // so a rename cannot silently strip the account of its numbers.
   const openEdit = (p: PayoutAccount) => {
     setEditingId(p.id)
+    const perProvider: Record<string, string> = {}
+    for (const provider of p.providersAllowed as string[]) {
+      perProvider[provider] = payoutDestination(p, provider)
+    }
+    const values = [...new Set(Object.values(perProvider))]
     setForm({
       label: p.label,
       accountHolderName: p.accountHolderName || '',
-      type: p.type,
-      account: p.account,
-      providersAllowed: [...(p.providersAllowed as string[])],
+      providers: [...(p.providersAllowed as string[])],
+      shared: values.length <= 1,
+      sharedAccount: values.length <= 1 ? (values[0] ?? '') : '',
+      perProvider,
     })
     setCreateOpen(true)
   }
@@ -1366,12 +1396,22 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
     if (saving) return
     setSaving(true)
     try {
+      // The server derives type and the fallback account from this map, so the
+      // form sends exactly what it showed: a destination per selected provider.
+      const destinationFor = (provider: string) =>
+        (form.shared ? form.sharedAccount : (form.perProvider[provider] ?? '')).trim()
+      const payload = {
+        label: form.label,
+        accountHolderName: form.accountHolderName,
+        providersAllowed: form.providers,
+        providerAccounts: Object.fromEntries(form.providers.map(provider => [provider, destinationFor(provider)])),
+      }
       const res = await apiFetch(
         isEdit ? `/dashboard/${workspaceId}/payouts/${editingId}` : `/dashboard/${workspaceId}/payouts`,
         token,
         {
           method: isEdit ? 'PATCH' : 'POST',
-          body: JSON.stringify(form),
+          body: JSON.stringify(payload),
         },
       )
       const data = await readJson(res)
@@ -1379,7 +1419,7 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
         toast({ title: isEdit ? 'Payout account updated' : 'Payout account created' })
         setCreateOpen(false)
         setEditingId(null)
-        setForm({ label: '', accountHolderName: '', type: 'PHONE', account: '', providersAllowed: [] })
+        setForm(emptyPayoutForm())
         load()
       } else {
         toast({ title: 'Error', description: data.error, variant: 'destructive' })
@@ -1470,9 +1510,10 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
         )}
       </div>
       <p className="text-sm text-muted-foreground">
-        These are the bank accounts / phone numbers where payments should be sent.
-        When a buyer pays, the platform checks that the money went to one of these accounts.
-        Pick one on the verify page, or bind it to an API key to have every verification checked.
+        These are the bank accounts / phone numbers where payments should be sent — one account
+        can hold a different destination for each provider it accepts. When a buyer pays, the
+        platform checks that the money went to the number registered for that provider.
+        Pick an account on the verify page, or bind one to an API key to have every verification checked.
       </p>
       {!canManage && <ReadOnlyNotice what="adding, editing or deleting accounts" />}
 
@@ -1506,11 +1547,17 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
                       {p.isDefault && <Badge variant="secondary" className="text-xs">default</Badge>}
                     </div>
                     <div className="text-sm text-muted-foreground">
-                      {p.accountHolderName} · {p.type === 'PHONE' ? '📱' : '🏦'} {p.account}
+                      {p.accountHolderName} · {p.type === 'PHONE' ? '📱' : p.type === 'BANK' ? '🏦' : '🔗'} {p.type.toLowerCase()}
                     </div>
-                    <div className="flex gap-1 mt-1">
+                    {/* Per provider, because a unified account has no single
+                        "the account number" — showing the record's primary
+                        would name the wrong destination for every other
+                        provider on it. */}
+                    <div className="flex flex-wrap gap-1 mt-1">
                       {(p.providersAllowed as string[]).map(pr => (
-                        <Badge key={pr} variant="secondary" className="text-xs capitalize">{pr}</Badge>
+                        <Badge key={pr} variant="secondary" className="text-xs capitalize">
+                          {pr} · {payoutDestination(p, pr)}
+                        </Badge>
                       ))}
                     </div>
                     {/* The API refers to this account by id, and it is a cuid —
@@ -1585,34 +1632,17 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
               <Input value={form.accountHolderName} onChange={e => setForm({ ...form, accountHolderName: e.target.value })} placeholder="Your name" />
             </div>
             <div className="space-y-2">
-              <Label>Type</Label>
-              <Select
-                value={form.type}
-                disabled={editingId !== null}
-                onValueChange={(v) => setForm({ ...form, type: v as 'PHONE' | 'BANK', providersAllowed: [] })}
-              >                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="PHONE">📱 Phone (Telebirr / CBE Birr / M-Pesa)</SelectItem>
-                  <SelectItem value="BANK">🏦 Bank (CBE / Dashen / Abyssinia)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>{form.type === 'PHONE' ? 'Phone Number' : 'Account Number'}</Label>
-              <Input value={form.account} onChange={e => setForm({ ...form, account: e.target.value })} placeholder={form.type === 'PHONE' ? '09xxxxxxxx' : 'Bank account number'} />
-            </div>
-            <div className="space-y-2">
               <Label>Accepted Providers</Label>
               <div className="flex flex-wrap gap-2">
-                {PROVIDERS.filter(p => p.type === form.type).map(p => (
-                  <ToggleChip selected={form.providersAllowed.includes(p.id)}
+                {PROVIDERS.map(p => (
+                  <ToggleChip selected={form.providers.includes(p.id)}
                     key={p.id}
                     onClick={() => {
                       setForm({
                         ...form,
-                        providersAllowed: form.providersAllowed.includes(p.id)
-                          ? form.providersAllowed.filter(x => x !== p.id)
-                          : [...form.providersAllowed, p.id],
+                        providers: form.providers.includes(p.id)
+                          ? form.providers.filter(x => x !== p.id)
+                          : [...form.providers, p.id],
                       })
                     }}
                   >
@@ -1620,11 +1650,60 @@ function PayoutsTab({ workspaceId, canManage }: { workspaceId: string; canManage
                   </ToggleChip>
                 ))}
               </div>
+              <p className="text-xs text-muted-foreground">
+                One account can cover several providers — a phone for the wallet providers and a
+                bank account number for a bank. Products and payment links then select it as one
+                account.
+              </p>
             </div>
+            {form.providers.length > 0 && (
+              <div className="space-y-2">
+                <Label>Destination{form.shared ? '' : 's'}</Label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={form.shared}
+                    onChange={e => setForm({ ...form, shared: e.target.checked })}
+                  />
+                  Use the same account for all selected providers
+                </label>
+                {form.shared ? (
+                  <Input
+                    value={form.sharedAccount}
+                    onChange={e => setForm({ ...form, sharedAccount: e.target.value })}
+                    placeholder={form.providers.every(p => PROVIDERS.find(x => x.id === p)?.type === 'PHONE') ? '09xxxxxxxx' : 'Phone or bank account number'}
+                  />
+                ) : (
+                  <div className="space-y-3">
+                    {PROVIDERS.filter(p => form.providers.includes(p.id)).map(p => (
+                      <div key={p.id} className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">{p.label}</Label>
+                        <Input
+                          value={form.perProvider[p.id] ?? ''}
+                          onChange={e => setForm({ ...form, perProvider: { ...form.perProvider, [p.id]: e.target.value } })}
+                          placeholder={p.type === 'PHONE' ? '09xxxxxxxx' : '13–16 digit account number'}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => { setCreateOpen(false); setEditingId(null) }}>Cancel</Button>
-            <Button onClick={save} disabled={!form.label || !form.accountHolderName || !form.account || form.providersAllowed.length === 0}>
+            <Button
+              onClick={save}
+              disabled={
+                !form.label ||
+                !form.accountHolderName ||
+                form.providers.length === 0 ||
+                form.providers.some(provider =>
+                  !(form.shared ? form.sharedAccount : (form.perProvider[provider] ?? '')).trim()
+                )
+              }
+            >
               {editingId ? 'Save changes' : 'Create'}
             </Button>
           </DialogFooter>
@@ -2156,7 +2235,7 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                   {eligiblePayouts.map(p => (
                     <ToggleChip selected={form.payoutAccountIds.includes(p.id)}
                       key={p.id}
-                      title={`${p.accountHolderName || ''} ${p.account}`}
+                      title={(p.providersAllowed as string[]).map(pr => `${pr}: ${payoutDestination(p, pr)}`).join(' · ')}
                       onClick={() => setForm({
                         ...form,
                         payoutAccountIds: form.payoutAccountIds.includes(p.id)
@@ -2164,14 +2243,15 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                           : [...form.payoutAccountIds, p.id],
                       })}
                     >
-                      {p.label} — {p.account}
+                      {p.label}
                     </ToggleChip>
                   ))}
                 </div>
               )}
               <p className="text-xs text-muted-foreground">
-                Exactly one account per accepted provider. The link verifies that the payment reached
-                the account you pick here.
+                Each accepted provider needs exactly one selected account, and one account can cover
+                several providers when it holds a destination for each. The link verifies that the
+                payment reached the account you pick here.
               </p>
             </div>
 
@@ -2243,6 +2323,7 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                   {eligibleEditPayouts.map(p => (
                     <ToggleChip selected={editForm.payoutAccountIds.includes(p.id)}
                       key={p.id}
+                      title={(p.providersAllowed as string[]).map(pr => `${pr}: ${payoutDestination(p, pr)}`).join(' · ')}
                       onClick={() => setEditForm({
                         ...editForm,
                         payoutAccountIds: editForm.payoutAccountIds.includes(p.id)
@@ -2250,13 +2331,13 @@ function PaymentLinksTab({ workspaceId, canManage }: { workspaceId: string; canM
                           : [...editForm.payoutAccountIds, p.id],
                       })}
                     >
-                      {p.label} — {p.account}
+                      {p.label}
                     </ToggleChip>
                   ))}
                 </div>
               )}
               <p className="text-xs text-muted-foreground">
-                Exactly one account per accepted provider.
+                Each accepted provider needs exactly one selected account; one account can cover several.
               </p>
             </div>
             <div className="space-y-2">

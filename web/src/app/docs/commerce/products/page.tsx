@@ -25,8 +25,9 @@ export default function Products() {
   }'`}
       />
       <DocP>
-        <code>payoutAccountIds</code> must cover every accepted provider exactly once — one account
-        per provider, so buyer payments match unambiguously. <code>maxBuyers</code> caps sales
+        <code>payoutAccountIds</code> must cover every accepted provider exactly once — each provider
+        matched by exactly one selected account, though one <em>unified</em> account can cover
+        several providers when it stores a destination for each. <code>maxBuyers</code> caps sales
         (sold-out links return 409).
       </DocP>
       <Next href="/docs/commerce/payout-accounts" label="Payout accounts" />

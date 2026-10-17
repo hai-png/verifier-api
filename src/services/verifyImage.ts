@@ -9,6 +9,7 @@ import dotenv from "dotenv";
 import {
     checkReceiptRecipient,
     payoutAccountAllowsProvider,
+    payoutAccountDestination,
 } from "../utils/recipientCheck";
 import { checkAmount, noteSuccessfulVerification } from "../utils/verificationGuards";
 import { resolveAmountBasis, resolveAmounts } from "../utils/amountBasis";
@@ -117,6 +118,7 @@ interface PayoutAccountLike {
     account: string;
     accountHolderName: string | null;
     providersAllowed: unknown;
+    providerAccounts?: unknown;
 }
 
 /**
@@ -174,7 +176,7 @@ async function resolvePayoutAccount(
 
     const account = await prisma.payoutAccount.findFirst({
         where: { id: payoutAccountId.trim(), workspaceId, active: true },
-        select: { id: true, label: true, account: true, accountHolderName: true, providersAllowed: true },
+        select: { id: true, label: true, account: true, accountHolderName: true, providersAllowed: true, providerAccounts: true },
     });
 
     if (!account) {
@@ -358,9 +360,15 @@ function enforceRecipient(params: {
     // reached by accident.
     if (!payoutAccount) return true;
 
+    // The destination for the provider this receipt actually names. A unified
+    // payout account carries one number per provider; comparing a `cbe-birr`
+    // receipt against the record's primary Telebirr phone would reject correct
+    // payments. normaliseProviderForPayout translates the one spelling the OCR
+    // vocabulary uses and the payout map does not (`cbe-birr` → `cbebirr`).
+    const expectedAccount = payoutAccountDestination(payoutAccount, normaliseProviderForPayout(providerType));
     const outcome = checkReceiptRecipient({
         foundAccount,
-        expectedAccount: payoutAccount.account,
+        expectedAccount,
         expectedHolderName: payoutAccount.accountHolderName,
         foundName,
         useCbeAccountRule,

@@ -54,6 +54,32 @@ export function payoutAccountAllowsProvider(providersAllowed: unknown, provider:
 }
 
 /**
+ * The destination a payout account names for one provider.
+ *
+ * A unified account stores a number per provider — a phone for the wallet
+ * providers, a bank account number for a bank — so the comparison must use the
+ * entry for the provider the buyer actually paid through, not the record's
+ * primary `account`. Records with no entry for the provider (including every
+ * legacy row, whose map is `{}`) fall back to `account`, which is the single
+ * number they were created with.
+ *
+ * Both JSON columns are read defensively: a hand-edited row or a row written
+ * before this column existed must not throw here, because this runs on the
+ * confirm path of a payment the buyer has already made.
+ */
+export function payoutAccountDestination(
+    payoutAccount: { account: string; providerAccounts?: unknown },
+    provider: string,
+): string {
+    const map = payoutAccount.providerAccounts;
+    if (map && typeof map === 'object' && !Array.isArray(map)) {
+        const value = (map as Record<string, unknown>)[provider.trim().toLowerCase()];
+        if (typeof value === 'string' && value.trim() !== '') return value.trim();
+    }
+    return payoutAccount.account;
+}
+
+/**
  * True when the printed account is only partly legible — banks commonly show
  * `5155*******11`, `5155 – 11` or `5155###11` rather than the whole number.
  * The glyph set is deliberately wide: a mask character we do not recognise is

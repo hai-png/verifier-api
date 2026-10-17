@@ -28,6 +28,7 @@ const payoutAccountSelect = Prisma.validator<Prisma.PayoutAccountSelect>()({
   account: true,
   type: true,
   providersAllowed: true,
+  providerAccounts: true,
   isDefault: true,
 });
 

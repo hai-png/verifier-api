@@ -401,11 +401,16 @@ enum PaymentLinkCreator {
 // Saved destinations where the merchant's payments land. Reusable across
 // CheckoutSessions and Products. When verifying, the system finds the user's
 // active PayoutAccount whose `providersAllowed` includes the provider the
-// buyer paid through, and matches against its `account`.
+// buyer paid through, and matches against that provider's destination: its
+// entry in `providerAccounts`, or `account` when it has none.
 
 enum PayoutAccountType {
     PHONE
     BANK
+    /// The record holds destinations for providers of both kinds, and the
+    /// providers do not share one account number. Derived, never accepted from
+    /// a client: `providerAccounts` decides it on write.
+    UNIFIED
 }
 
 model PayoutAccount {
@@ -416,6 +421,15 @@ model PayoutAccount {
     accountHolderName String?
     type              PayoutAccountType
     account           String
+    /// provider → the account number payments through that provider must reach,
+    /// for records that are not one-number-fits-all. `{}` for legacy records:
+    /// every provider in `providersAllowed` then falls back to `account`. A
+    /// "unified" account carries one entry per provider — a phone for the
+    /// wallet providers and a bank account number for a bank provider, say — so
+    /// one record can be selected as a unit by products and payment links while
+    /// the confirm path still compares each receipt against its own provider's
+    /// destination.
+    providerAccounts  Json              @default("{}")
     providersAllowed  Json              @default("[]")
     isDefault         Boolean           @default(false)
     active            Boolean           @default(true)

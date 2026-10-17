@@ -18,6 +18,7 @@ import {
   normaliseOptionalLabel,
   normalisePayoutType,
   normaliseProviders,
+  resolvePayoutState,
   type PayoutType,
   validatePayoutInput,
 } from '../utils/payoutInput';
@@ -33,6 +34,7 @@ const payoutAccountSelect = Prisma.validator<Prisma.PayoutAccountSelect>()({
   type: true,
   account: true,
   providersAllowed: true,
+  providerAccounts: true,
   isDefault: true,
   createdAt: true,
   active: true,
@@ -110,23 +112,44 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const type = normalisePayoutType(req.body?.type);
-  if (!type) {
-    res.status(400).json({ success: false, error: 'type must be PHONE or BANK.' });
-    return;
-  }
+  // A supplied `providerAccounts` map switches this to the unified shape: one
+  // record holding a destination per provider, so a phone can serve the wallet
+  // providers and a bank account number can serve a bank without three records
+  // that links would have to select one by one. `type` and `account` are then
+  // derived (and `account` becomes the fallback for providers without an
+  // entry), which is why they are no longer required on this branch.
+  let destination;
+  if (req.body?.providerAccounts !== undefined) {
+    const resolved = resolvePayoutState(null, {
+      account: req.body?.account,
+      providersAllowed: req.body?.providersAllowed,
+      providerAccounts: req.body?.providerAccounts,
+    });
+    if ('error' in resolved) {
+      res.status(400).json({ success: false, error: resolved.error });
+      return;
+    }
+    destination = resolved.data;
+  } else {
+    const type = normalisePayoutType(req.body?.type);
+    if (!type) {
+      res.status(400).json({ success: false, error: 'type must be PHONE or BANK.' });
+      return;
+    }
 
-  const account = normaliseAccount(req.body?.account);
-  if (account === 'invalid') {
-    res.status(400).json({ success: false, error: 'account is required.' });
-    return;
-  }
+    const account = normaliseAccount(req.body?.account);
+    if (account === 'invalid') {
+      res.status(400).json({ success: false, error: 'account is required.' });
+      return;
+    }
 
-  const providersAllowed = normaliseProviders(req.body?.providersAllowed);
-  const validationError = validatePayoutInput(type, account, providersAllowed);
-  if (validationError) {
-    res.status(400).json({ success: false, error: validationError });
-    return;
+    const providersAllowed = normaliseProviders(req.body?.providersAllowed);
+    const validationError = validatePayoutInput(type, account, providersAllowed);
+    if (validationError) {
+      res.status(400).json({ success: false, error: validationError });
+      return;
+    }
+    destination = { type, account, providersAllowed, providerAccounts: {} };
   }
 
   try {
@@ -139,9 +162,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
         workspaceId: auth.workspaceId,
         label,
         accountHolderName,
-        type,
-        account,
-        providersAllowed,
+        ...destination,
         isDefault: existingCount === 0,
       },
       select: payoutAccountSelect,
@@ -186,34 +207,68 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const hasProvidersAllowed = req.body?.providersAllowed !== undefined;
-    const providersAllowed = hasProvidersAllowed
-      ? normaliseProviders(req.body?.providersAllowed)
-      : (Array.isArray(current.providersAllowed) ? current.providersAllowed as string[] : []);
+    // A unified account (or any edit that supplies a providerAccounts map) is
+    // resolved as one state: providers, per-provider destinations and the
+    // fallback `account` all move together, so a number change cannot be
+    // half-applied. Everything else keeps the legacy single-account rules.
+    let destination: Record<string, unknown>;
+    if (req.body?.providerAccounts !== undefined || current.type === 'UNIFIED') {
+      const resolved = resolvePayoutState(
+        {
+          account: current.account,
+          providersAllowed: current.providersAllowed,
+          providerAccounts: current.providerAccounts,
+        },
+        {
+          account: req.body?.account,
+          providersAllowed: req.body?.providersAllowed,
+          providerAccounts: req.body?.providerAccounts,
+        },
+      );
+      if ('error' in resolved) {
+        res.status(400).json({ success: false, error: resolved.error });
+        return;
+      }
+      destination = {
+        type: resolved.data.type,
+        account: resolved.data.account,
+        providersAllowed: resolved.data.providersAllowed,
+        providerAccounts: resolved.data.providerAccounts,
+      };
+    } else {
+      const hasProvidersAllowed = req.body?.providersAllowed !== undefined;
+      const providersAllowed = hasProvidersAllowed
+        ? normaliseProviders(req.body?.providersAllowed)
+        : (Array.isArray(current.providersAllowed) ? current.providersAllowed as string[] : []);
 
-    // `account` is now honoured.
-    //
-    // It was silently dropped: the handler read `label`, `accountHolderName`,
-    // `providersAllowed` and `isDefault` and never `account`, so a merchant
-    // rotating a compromised Telebirr number got `200 {"success": true}` with the
-    // OLD number and every subsequent confirmation matched against the account
-    // they believed they had retired. A false success on the one field where that
-    // is a security incident is worse than a rejection, so the alternative would
-    // have been to 400 on it — accepting it is better, but it must be real.
-    const hasAccount = req.body?.account !== undefined;
-    const accountInput = hasAccount ? normaliseAccount(req.body?.account) : null;
-    if (hasAccount && accountInput === 'invalid') {
-      res.status(400).json({ success: false, error: 'account must be a non-empty string.' });
-      return;
-    }
-    const nextAccount = hasAccount ? (accountInput as string) : current.account;
+      // `account` is now honoured.
+      //
+      // It was silently dropped: the handler read `label`, `accountHolderName`,
+      // `providersAllowed` and `isDefault` and never `account`, so a merchant
+      // rotating a compromised Telebirr number got `200 {"success": true}` with the
+      // OLD number and every subsequent confirmation matched against the account
+      // they believed they had retired. A false success on the one field where that
+      // is a security incident is worse than a rejection, so the alternative would
+      // have been to 400 on it — accepting it is better, but it must be real.
+      const hasAccount = req.body?.account !== undefined;
+      const accountInput = hasAccount ? normaliseAccount(req.body?.account) : null;
+      if (hasAccount && accountInput === 'invalid') {
+        res.status(400).json({ success: false, error: 'account must be a non-empty string.' });
+        return;
+      }
+      const nextAccount = hasAccount ? (accountInput as string) : current.account;
 
-    // The (type, account, providers) triple has to stay consistent, so validate
-    // against the account this edit actually results in rather than the stored one.
-    const validationError = validatePayoutInput(current.type as PayoutType, nextAccount, providersAllowed);
-    if (validationError) {
-      res.status(400).json({ success: false, error: validationError });
-      return;
+      // The (type, account, providers) triple has to stay consistent, so validate
+      // against the account this edit actually results in rather than the stored one.
+      const validationError = validatePayoutInput(current.type as PayoutType, nextAccount, providersAllowed);
+      if (validationError) {
+        res.status(400).json({ success: false, error: validationError });
+        return;
+      }
+      destination = {
+        ...(hasAccount ? { account: nextAccount } : {}),
+        ...(hasProvidersAllowed ? { providersAllowed } : {}),
+      };
     }
 
     const nextLabel = labelInput ?? current.label;
@@ -235,8 +290,7 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
             isDefault: true,
             label: nextLabel,
             accountHolderName: nextAccountHolderName,
-            ...(hasAccount ? { account: nextAccount } : {}),
-            ...(hasProvidersAllowed ? { providersAllowed } : {}),
+            ...destination,
           },
         }),
       ]);
@@ -246,8 +300,7 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
         data: {
           label: nextLabel,
           accountHolderName: nextAccountHolderName,
-          ...(hasAccount ? { account: nextAccount } : {}),
-          ...(hasProvidersAllowed ? { providersAllowed } : {}),
+          ...destination,
         },
       });
     }

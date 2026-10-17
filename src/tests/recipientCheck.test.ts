@@ -22,6 +22,7 @@ import {
   checkReceiptRecipient,
   maskedAccountMatches,
   payoutAccountAllowsProvider,
+  payoutAccountDestination,
   receiverNameMatches,
 } from '../utils/recipientCheck';
 
@@ -163,6 +164,38 @@ test('providersAllowed is read defensively, because it is a Json column', () => 
   for (const junk of [null, undefined, 'telebirr', 42, {}, [['telebirr']]]) {
     assert.equal(payoutAccountAllowsProvider(junk, 'telebirr'), false, `junk=${JSON.stringify(junk)}`);
   }
+});
+
+test('a provider gets its own destination from a unified account', () => {
+  const account = {
+    account: '0906000000',
+    providerAccounts: { telebirr: '0906000000', cbebirr: '0911223344', cbe: '1000123456789012' },
+  };
+
+  assert.equal(payoutAccountDestination(account, 'cbebirr'), '0911223344');
+  assert.equal(payoutAccountDestination(account, 'cbe'), '1000123456789012');
+  assert.equal(payoutAccountDestination(account, 'telebirr'), '0906000000');
+  // A provider the map says nothing about falls back to the record's account
+  // rather than comparing receipts against an empty string.
+  assert.equal(payoutAccountDestination(account, 'mpesa'), '0906000000');
+});
+
+test('providerAccounts is read defensively, because it is a Json column', () => {
+  // Every legacy row has an empty map, and a hand-edited row could hold
+  // anything. None of these may throw on the confirm path of a paid order.
+  for (const junk of [undefined, null, 'telebirr', 42, [], ['telebirr']]) {
+    assert.equal(
+      payoutAccountDestination({ account: '0906000000', providerAccounts: junk }, 'telebirr'),
+      '0906000000',
+      `junk=${JSON.stringify(junk)}`,
+    );
+  }
+
+  // An explicitly blank entry is not a destination either.
+  assert.equal(
+    payoutAccountDestination({ account: '0906000000', providerAccounts: { telebirr: '   ' } }, 'telebirr'),
+    '0906000000',
+  );
 });
 
 // ─── Masked account numbers ──────────────────────────────────────────────────

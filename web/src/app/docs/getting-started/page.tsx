@@ -15,7 +15,9 @@ export default function GettingStarted() {
       <DocH2>2. Add a payout account</DocH2>
       <DocP>
         In your workspace, open <strong>Payouts</strong> and add where your money lands (e.g. your
-        Telebirr number or CBE account). Use exactly one payout account per provider so incoming
+        Telebirr number or CBE account). Each provider must be covered by exactly one payout
+        account; a single account can cover several providers when it stores a destination for
+        each — a phone for the wallet providers and a bank account number for a bank — so incoming
         payments can be matched unambiguously.
       </DocP>
       <DocP>

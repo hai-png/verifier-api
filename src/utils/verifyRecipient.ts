@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import { prisma } from './prisma';
-import { checkReceiptRecipient, payoutAccountAllowsProvider } from './recipientCheck';
+import { checkReceiptRecipient, payoutAccountAllowsProvider, payoutAccountDestination } from './recipientCheck';
 import { extractPaymentDetails } from './paymentMatch';
 
 /**
@@ -34,6 +34,7 @@ interface PayoutAccountRow {
   account: string;
   accountHolderName: string | null;
   providersAllowed: unknown;
+  providerAccounts?: unknown;
 }
 
 /**
@@ -61,7 +62,7 @@ export async function resolveRecipientPayoutAccount(
   if (requested) {
     return prisma.payoutAccount.findFirst({
       where: { id: requested, workspaceId, active: true },
-      select: { id: true, label: true, account: true, accountHolderName: true, providersAllowed: true },
+      select: { id: true, label: true, account: true, accountHolderName: true, providersAllowed: true, providerAccounts: true },
     });
   }
 
@@ -159,10 +160,14 @@ export function applyRecipientCheck(params: {
   }
 
   const { account, name } = creditedParty(result, slug);
+  // The provider's own destination. A unified account holds a different
+  // number per provider, so `payoutAccount.account` is only correct for
+  // records whose map has nothing to say about this provider.
+  const expectedAccount = payoutAccountDestination(payoutAccount, slug);
   const outcome = checkReceiptRecipient({
     foundAccount: account,
     foundName: name,
-    expectedAccount: payoutAccount.account,
+    expectedAccount,
     expectedHolderName: payoutAccount.accountHolderName,
     useCbeAccountRule: slug === 'cbe',
   });
@@ -184,7 +189,7 @@ export function applyRecipientCheck(params: {
   }
 
   return {
-    result: mismatch(result, payoutAccount, outcome.reason!, outcome.error!)
+    result: mismatch(result, payoutAccount, outcome.reason!, outcome.error!, expectedAccount)
       .result,
     checked: true,
     reason: outcome.reason,
@@ -196,6 +201,7 @@ function mismatch(
   payoutAccount: PayoutAccountRow,
   reason: string,
   error: string,
+  expectedAccount: string = payoutAccount.account,
 ): RecipientCheckOutcome {
   return {
     result: {
@@ -207,7 +213,7 @@ function mismatch(
       reason,
       error,
       recipientChecked: true,
-      expectedAccount: payoutAccount.account,
+      expectedAccount,
       payoutAccountId: payoutAccount.id,
       payoutAccountLabel: payoutAccount.label,
     },

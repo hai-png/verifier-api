@@ -198,6 +198,36 @@ test('CBE Birr is spelled cbebirr in the payout vocabulary', () => {
   assert.equal(outcome.result.success, true, 'the vocabulary difference must not read as not-allowed');
 });
 
+test('a unified account is checked against the destination for the provider paid', () => {
+  // One record, two wallet numbers: Telebirr on the primary account, CBE Birr
+  // on its own. A CBE Birr receipt into 0911… must pass even though the
+  // record's `account` is the 0906… number.
+  const unified = account({
+    account: '0906422230',
+    providersAllowed: ['telebirr', 'cbebirr'],
+    providerAccounts: { telebirr: '0906422230', cbebirr: '0911223344' },
+  });
+
+  const ok = applyRecipientCheck({
+    result: { success: true, data: { creditAccount: '0911223344' }, provider: 'CBE_BIRR' },
+    payoutAccount: unified,
+    provider: 'CBE_BIRR',
+  });
+  assert.equal(ok.result.success, true, 'the CBE Birr destination must be used, not the primary account');
+  assert.equal(ok.result.recipientChecked, true);
+
+  // The same receipt against the other provider's number is a mismatch, and the
+  // response names the destination that was actually expected.
+  const wrongProviderNumber = applyRecipientCheck({
+    result: { success: true, data: { creditAccount: '0906422230' }, provider: 'CBE_BIRR' },
+    payoutAccount: unified,
+    provider: 'CBE_BIRR',
+  });
+  assert.equal(wrongProviderNumber.result.success, false);
+  assert.equal(wrongProviderNumber.result.reason, 'RECIPIENT_MISMATCH');
+  assert.equal(wrongProviderNumber.result.expectedAccount, '0911223344');
+});
+
 test('a failed provider verification is left alone', () => {
   // Nothing was confirmed, so there is no recipient to disagree with.
   const original = { success: false, error: 'Receipt not found.', httpStatus: 404 };
