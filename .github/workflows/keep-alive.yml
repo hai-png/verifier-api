@@ -2,31 +2,74 @@ name: keep-alive
 
 # External uptime monitor for the Render free-tier instance.
 #
-# Render free instances spin down after 15 min of inactivity (~30s cold start).
-# The in-process pinger in src/index.ts only runs while the instance is awake,
-# so it cannot wake a fully-slept instance. This workflow runs on GitHub's
-# infrastructure every 5 minutes and hits /ready (which does a SELECT 1), keeping
-# both the Render instance AND the TiDB Serverless database warm between users.
+# Two lanes, two different jobs:
 #
-# GitHub Actions can delay scheduled jobs by a few minutes; a 5-min schedule still
-# lands well inside Render's 15-min inactivity window. Once this workflow is
-# merged, check it ran: https://github.com/hai-png/verifier-api/actions/workflows/keep-alive.yml
+# 1. `health` (every 5 minutes) hits /health only. This keeps the Render free
+#    instance awake — Render counts any inbound HTTP for keep-alive. It never
+#    touches the database, so TiDB stays cold and idle-cost-free between real
+#    requests. Failures in this lane are not alerted: Render's own health
+#    metrics surface downtime already, and a failed probe during a normal
+#    deploy window would be noise.
+#
+# 2. `db-ready` (a few times a day, and on demand) hits /ready, which performs
+#    a live single-flight `SELECT 1` against TiDB. This is the end-to-end
+#    readiness probe for the HTTP -> TiDB path. A failure (curl -f exits
+#    non-zero on HTTP != 2xx or connection error) marks the run failed, and
+#    GitHub emails the workflow committer. Each probe cold-starts one
+#    connection (~1-3 RU); at this cadence it is negligible against the
+#    50M/month free quota.
+#
+# Why the cadence differs from the old design: TiDB Serverless meters RUs for
+# keeping connections/import slots warm, NOT just per query (see the flat
+# ~30 RU/s while a client is connected). Pinging /ready at 5-min intervals
+# kept the database billed as "warm" 24/7 (~2.5M RU/day), which exhausted the
+# free quota with zero traffic. Keep the DB probe rare; keep the HTTP ping
+# cheap.
+#
+# GitHub Actions can delay scheduled jobs by several minutes; the 5-min
+# schedule still lands well inside Render's 15-min inactivity window.
+# Check runs: https://github.com/hai-png/verifier-api/actions/workflows/keep-alive.yml
 
 on:
   schedule:
-    # every 5 minutes
+    # health lane: every 5 minutes
     - cron: "*/5 * * * *"
-  workflow_dispatch: {}
+    # db-ready lane: 3x/day (00:00, 08:00, 16:00 UTC)
+    - cron: "0 */8 * * *"
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: "probe: 'health' (default) or 'db' to force a /ready check"
+        required: false
+        default: "health"
+        type: choice
+        options: [health, db]
 
 permissions:
   contents: read
 
 jobs:
-  ping:
+  health:
+    # health lane: every 5-min cron trigger, or an explicit 'health' dispatch
+    if: github.event_name == 'schedule' && github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch' && inputs.probe != 'db'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Ping API
+      - name: Ping /health (no DB)
+        continue-on-error: true
         run: |
-          curl -fsS --max-time 45 -o /tmp/keepalive.out -w "HTTP %{http_code} in %{time_total}s\n" \
+          curl -fsS --max-time 45 -o /tmp/health.out -w "HTTP %{http_code} in %{time_total}s\n" \
+            https://verify.noveld.com.et/health
+          cat /tmp/health.out
+
+  db-ready:
+    # db lane: 3x daily cron trigger, or an explicit 'db' dispatch
+    if: github.event_name == 'schedule' && github.event.schedule == '0 */8 * * *' || github.event_name == 'workflow_dispatch' && inputs.probe == 'db'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe /ready (live TiDB check; alert on failure)
+        run: |
+          curl -fsS --max-time 60 -o /tmp/ready.out -w "HTTP %{http_code} in %{time_total}s\n" \
             https://verify.noveld.com.et/ready
+          cat /tmp/ready.out
