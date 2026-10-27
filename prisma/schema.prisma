@@ -58,6 +58,12 @@ model User {
     email         String?   @unique
     emailVerified DateTime?
     image         String?
+    /// Telegram account id, as reported by the signed Login Widget / MiniApp
+    /// payload on POST /auth/telegram. Unique so one Telegram account maps to
+    /// one dashboard user; nullable so existing email/password users are
+    /// untouched. A Telegram sign-in with an unseen id creates a user with no
+    /// password and no email — they can only ever come back via Telegram.
+    telegramId   String?   @unique
     accounts      Account[]
     sessions      Session[]
     role          Role      @default(USER)
@@ -76,6 +82,14 @@ model Workspace {
     id        String   @id @default(cuid())
     name      String
     createdAt DateTime @default(now())
+
+    /// The calling partner's own identifier for this workspace, set once by
+    /// POST /internal/provision. Unique across the deployment: the partner
+    /// routes its later /internal/workspaces/:externalId calls through it.
+    externalId String?  @unique
+    /// Which partner provisioned this workspace (e.g. "eshishop"). Read-only
+    /// bookkeeping: the provisioning API is the only writer.
+    partner     String?
 
     tier                       ApiTier   @default(FREE)
     verificationCredits        Int       @default(0)
@@ -120,6 +134,10 @@ model Workspace {
     orders               Order[]
     billingPayments      BillingPayment[]
     betaAccessRequest    BetaAccessRequest?
+
+    // Provisioned workspaces are looked up by (partner, externalId) on every
+    // partner API call, so the pair carries an index of its own.
+    @@index([partner, externalId])
 }
 
 enum WorkspaceRole {
@@ -190,6 +208,9 @@ model ApiKey {
     key          String?       @unique
     keyHash      String?       @unique
     prefix       String?
+    /// Human label ("eshishop-auto", the dashboard's key name). Display-only;
+    /// the credential itself is only ever the returned plaintext.
+    name         String?
     workspaceId  String
     workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
     createdAt    DateTime      @default(now())

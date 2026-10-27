@@ -47,6 +47,9 @@ import { prisma, disconnectPrisma } from './utils/prisma';
 import authRouter from './routes/auth';
 import workspacesRouter from './routes/workspaces';
 import dashboardRouter from './routes/dashboard';
+// Partner provisioning (Bearer PARTNER_SECRET) — session-agnostic, mounted
+// before apiKeyAuth like the other non-API-key surfaces.
+import internalProvisionRouter from './routes/internalProvision';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -426,6 +429,14 @@ app.use('/dashboard', dashboardRouter);
 
 // Signed status probes bypass customer auth, quotas, records, and delivery hooks.
 app.use('/internal/status', internalStatusRouter);
+
+// Partner provisioning API — guarded by its own Bearer PARTNER_SECRET (checked
+// inside the router with a timing-safe compare). Mounted BEFORE apiKeyAuth so
+// partner calls do not need a workspace API key; every route in it authenticates
+// itself and fails closed while PARTNER_SECRET is unset. /internal/status above
+// is untouched: this router has no /status route, so unmatched paths fall
+// through to the next mount.
+app.use('/internal', internalProvisionRouter);
 
 // Public status summary (no auth — liveness + config flags only, no live probes).
 app.use('/status', publicStatusRouter);

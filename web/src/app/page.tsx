@@ -18,7 +18,7 @@
 
 'use client'
 
-import { useState, useEffect, createContext, useContext, useCallback } from 'react'
+import { useState, useEffect, useRef, createContext, useContext, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -250,8 +250,9 @@ const AuthContext = createContext<{
   loading: boolean
   login: (email: string, password: string) => Promise<boolean>
   signup: (email: string, password: string, name: string) => Promise<boolean>
+  loginWithSession: (token: string, user: User) => void
   logout: () => void
-}>(null as unknown as { user: User | null; token: string | null; loading: boolean; login: (e: string, p: string) => Promise<boolean>; signup: (e: string, p: string, n: string) => Promise<boolean>; logout: () => void })
+}>(null as unknown as { user: User | null; token: string | null; loading: boolean; login: (e: string, p: string) => Promise<boolean>; signup: (e: string, p: string, n: string) => Promise<boolean>; loginWithSession: (t: string, u: User) => void; logout: () => void })
 
 function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({
@@ -321,13 +322,23 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  /**
+   * Adopt a session the API already minted (Telegram sign-in). Stores the
+   * token exactly where login() does, so every other part of the dashboard —
+   * /auth/me on boot, apiFetch, logout — behaves identically.
+   */
+  const loginWithSession = (token: string, user: User) => {
+    localStorage.setItem('noveld_token', token)
+    setState({ user, token, loading: false })
+  }
+
   const logout = () => {
     localStorage.removeItem('noveld_token')
     setState({ user: null, token: null, loading: false })
   }
 
   return (
-    <AuthContext.Provider value={{ ...state, login, signup, logout }}>
+    <AuthContext.Provider value={{ ...state, login, signup, loginWithSession, logout }}>
       {children}
     </AuthContext.Provider>
   )
@@ -376,6 +387,80 @@ async function readJson(res: Response): Promise<any> {
     throw new Error(message)
   }
   return body
+}
+
+// ─── Telegram sign-in ──────────────────────────────────────────────────────────
+
+/**
+ * Baked in at build time, like NEXT_PUBLIC_API_URL. Unset -> the button stays
+ * hidden and nothing about Telegram is rendered, so a deployment without a bot
+ * shows exactly the sign-in page it had before.
+ */
+const TELEGRAM_BOT_USERNAME = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || ''
+
+/**
+ * The official Telegram Login Widget. The script is injected client-side with
+ * data-onauth naming a global callback, which the widget invokes with the
+ * signed user object — the exact Login-Widget payload POST /auth/telegram
+ * verifies. On success the returned session token is stored exactly where the
+ * email login stores it (localStorage "noveld_token"), so the rest of the
+ * dashboard cannot tell the two apart.
+ */
+function TelegramLoginButton({ onAuthenticated }: { onAuthenticated: (token: string, user: User) => void }) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [error, setError] = useState('')
+  const authenticatedRef = useRef(onAuthenticated)
+  authenticatedRef.current = onAuthenticated
+
+  useEffect(() => {
+    if (!TELEGRAM_BOT_USERNAME || !containerRef.current) return
+
+    ;(window as any).onTelegramAuth = async (user: Record<string, unknown>) => {
+      try {
+        const res = await fetch(`${API_BASE}/auth/telegram`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(user),
+        })
+        const data = await res.json()
+        if (data.success && data.token) {
+          authenticatedRef.current(data.token, data.user as User)
+        } else {
+          setError(data.error || 'Telegram sign-in failed.')
+        }
+      } catch {
+        setError('Telegram sign-in failed. Check your connection and try again.')
+      }
+    }
+
+    const script = document.createElement('script')
+    script.src = 'https://telegram.org/js/telegram-widget.js?22'
+    script.async = true
+    script.setAttribute('data-telegram-login', TELEGRAM_BOT_USERNAME)
+    script.setAttribute('data-size', 'large')
+    script.setAttribute('data-userpic', 'false')
+    script.setAttribute('data-request-access', 'write')
+    script.setAttribute('data-onauth', 'onTelegramAuth(user)')
+    containerRef.current.appendChild(script)
+
+    return () => {
+      delete (window as any).onTelegramAuth
+    }
+  }, [])
+
+  if (!TELEGRAM_BOT_USERNAME) return null
+
+  return (
+    <div className="pt-2">
+      <div ref={containerRef} className="flex justify-center min-h-[40px]" />
+      {error && (
+        <div className="flex items-center gap-2 text-sm text-destructive mt-2">
+          <AlertCircle className="w-4 h-4" />
+          {error}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ─── Pages ──────────────────────────────────────────────────────────────────
@@ -503,7 +588,7 @@ function AuthPage() {
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const { login, signup } = useAuth()
+  const { login, signup, loginWithSession } = useAuth()
   const { toast } = useToast()
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -588,6 +673,24 @@ function AuthPage() {
                   {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
                   {mode === 'login' ? 'Login' : 'Create Account'}
                 </Button>
+                {TELEGRAM_BOT_USERNAME && (
+                  <>
+                    <div className="relative">
+                      <div className="absolute inset-0 flex items-center">
+                        <span className="w-full border-t" />
+                      </div>
+                      <div className="relative flex justify-center text-xs uppercase">
+                        <span className="bg-card px-2 text-muted-foreground">or</span>
+                      </div>
+                    </div>
+                    <TelegramLoginButton
+                      onAuthenticated={(token, user) => {
+                        loginWithSession(token, user)
+                        toast({ title: 'Welcome back!' })
+                      }}
+                    />
+                  </>
+                )}
                 {mode === 'login' && (
                   <div className="text-center text-sm">
                     <a href="/forgot-password" className="text-muted-foreground underline hover:text-foreground">

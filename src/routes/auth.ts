@@ -1,14 +1,19 @@
 /**
- * Auth routes — email/password signup + login + session management.
+ * Auth routes — email/password signup + login + Telegram sign-in + session management.
  *
  * POST   /auth/signup   — create user + default workspace, return session token
  * POST   /auth/login    — validate credentials, return session token
+ * POST   /auth/telegram — verify a signed Telegram payload (Login Widget or
+ *                          Mini App initData), find-or-create the user, return
+ *                          the same kind of session token
  * GET    /auth/me       — get current user + workspaces (requires session token)
  * POST   /auth/logout   — invalidate session
  *
- * Session tokens are HMAC-signed with DASHBOARD_SECRET and stored in the
+ * Session tokens are HMAC-signed with DASHBOARD_SECRET and stored as sha256 in the
  * Session table. A valid signature is not enough on its own: every request also
  * re-checks the row, so logout and the 30-day expiry really revoke access.
+ * The token format + storage rule live in utils/sessionToken.ts, shared by every
+ * session issuer (email login, signup, Telegram sign-in).
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -17,82 +22,21 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../utils/prisma';
 import { resolveAppUrl } from '../config/appUrl';
 import logger from '../utils/logger';
-import { safeSecretEquals } from '../utils/secretCompare';
 import { MemoryWindowCounter } from '../utils/expiringStore';
 import { getRequestIp } from '../utils/requestIp';
 import { isResetEmailConfigured, sendPasswordResetEmail } from '../utils/passwordResetEmail';
+import {
+    hashSessionToken,
+    issueSession,
+    verifySessionToken,
+} from '../utils/sessionToken';
+import {
+    telegramDisplayName,
+    verifyTelegramAuthPayload,
+} from '../utils/telegramAuth';
+import { isWithinByteLimit, MYSQL_VARCHAR_BYTES } from '../utils/fieldLimits';
 
 const router = Router();
-
-const SESSION_TTL_DAYS = 30;
-const TOKEN_PREFIX = 'nvd_sess_';
-
-/**
- * The value stored in `Session.sessionToken`.
- *
- * sha256 of the bearer token, not the token itself. The column is the indexed
- * lookup key for every authenticated request, so storing the credential meant any
- * read of the table — a backup, a replica, a `mysqldump`, a SQL injection
- * elsewhere, a leaked `.sql` — yielded immediately usable 30-day sessions for
- * every logged-in user, with nothing to crack.
- *
- * ApiKey already stored `keyHash` for exactly this reason; Session did not.
- * Lookup is by hash, so the hash is the whole key space: there is no need to
- * also index the raw token, and no reason to keep it.
- *
- * sha256 rather than bcrypt/bcrypt-like work factors because the input is 24
- * bytes of `crypto.randomBytes` — there is no dictionary to search, so a slow
- * KDF buys nothing and costs a round trip per request.
- */
-function hashSessionToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
-}
-
-/**
- * Create a signed session token: nvd_sess_<random>.<hmac>
- * The HMAC binds the token to DASHBOARD_SECRET so it can't be forged.
- */
-function createSessionToken(userId: string): string {
-    const random = crypto.randomBytes(24).toString('hex');
-    const payload = `${userId}.${random}`;
-    const hmac = signSessionPayload(payload);
-    return `${TOKEN_PREFIX}${payload}.${hmac}`;
-}
-
-/**
- * Sign a session payload. Fails closed when DASHBOARD_SECRET is unset: a
- * published fallback key would let anyone mint a token for any userId, so
- * there is deliberately no default here.
- */
-function signSessionPayload(payload: string): string {
-    const secret = process.env.DASHBOARD_SECRET;
-    if (!secret) {
-        throw new Error('DASHBOARD_SECRET is required to issue session tokens.');
-    }
-    return crypto.createHmac('sha256', secret).update(payload).digest('hex');
-}
-
-/**
- * Verify a session token. Returns userId if valid, null otherwise.
- *
- * The HMAC only proves the token was minted by this server with the current
- * secret. It is not sufficient on its own: the token must also still exist and
- * not be expired. `requireSession` enforces both against the Session table.
- */
-function verifySessionToken(token: string): { userId: string } | null {
-    if (!token.startsWith(TOKEN_PREFIX)) return null;
-    const rest = token.slice(TOKEN_PREFIX.length);
-    const lastDot = rest.lastIndexOf('.');
-    if (lastDot === -1) return null;
-    const payload = rest.slice(0, lastDot);
-    const hmac = rest.slice(lastDot + 1);
-    if (!/^[a-f0-9]{64}$/.test(hmac)) return null;
-    if (!process.env.DASHBOARD_SECRET) return null;
-    const expectedHmac = signSessionPayload(payload);
-    if (!safeSecretEquals(hmac, expectedHmac)) return null;
-    const [userId] = payload.split('.');
-    return { userId };
-}
 
 /**
  * Hash a password with bcrypt (cost factor 10 — ~100ms per hash, good balance).
@@ -207,16 +151,8 @@ router.post('/signup', async (req: Request, res: Response): Promise<void> => {
             }),
         ]);
 
-        // Create session
-        const token = createSessionToken(userId);
-        const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
-        await prisma.session.create({
-            data: {
-                sessionToken: hashSessionToken(token),
-                userId,
-                expires: expiresAt,
-            },
-        });
+        // Create session (token format + sha256-at-rest storage in utils/sessionToken.ts)
+        const token = await issueSession(userId);
 
         logger.info(`New user signed up: ${email}`);
 
@@ -285,16 +221,8 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
             return;
         }
 
-        // Create session
-        const token = createSessionToken(user.id);
-        const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
-        await prisma.session.create({
-            data: {
-                sessionToken: hashSessionToken(token),
-                userId: user.id,
-                expires: expiresAt,
-            },
-        });
+        // Create session (token format + sha256-at-rest storage in utils/sessionToken.ts)
+        const token = await issueSession(user.id);
 
         logger.info(`User logged in: ${email}`);
 
@@ -310,6 +238,168 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     } catch (err) {
         logger.error('Login error:', err);
         res.status(500).json({ success: false, error: 'Failed to login.' });
+    }
+});
+
+// ─── Telegram sign-in ────────────────────────────────────────────────────────
+
+/**
+ * POST /auth/telegram — sign in (or register) with a Telegram account.
+ *
+ * The body is one of the two shapes Telegram itself produces, both verified per
+ * Telegram's own algorithms (utils/telegramAuth.ts):
+ *
+ *   a) Login Widget callback JSON: { id, first_name?, last_name?, username?,
+ *      photo_url?, auth_date, hash } — the shape the dashboard's
+ *      "Continue with Telegram" button posts.
+ *   b) Mini App initData: { initData: "<raw query string>" } — lets a Telegram
+ *      Mini App SSO a merchant into this dashboard by forwarding its own
+ *      initData. EshiShop uses this to hand merchants a Noveld session.
+ *
+ * On success the response mirrors POST /auth/login (same nvd_sess_ session
+ * token, same user shape) plus `created`, so a caller can tell a first sign-in
+ * from a repeat one. auth_date must be within 24 hours.
+ */
+const telegramThrottle = new MemoryWindowCounter({ maxEntries: 20_000 });
+const telegramAccountThrottle = new MemoryWindowCounter({ maxEntries: 20_000 });
+const TELEGRAM_WINDOW_MS = 15 * 60 * 1000;
+const TELEGRAM_MAX_PER_IP = 30;
+const TELEGRAM_MAX_PER_ACCOUNT = 10;
+
+function telegramIpAllowed(ip: string): boolean {
+    return telegramThrottle.increment(`ip:${ip}`, TELEGRAM_WINDOW_MS).count <= TELEGRAM_MAX_PER_IP;
+}
+
+function telegramAccountAllowed(telegramId: string): boolean {
+    return telegramAccountThrottle.increment(`tg:${telegramId}`, TELEGRAM_WINDOW_MS).count <= TELEGRAM_MAX_PER_ACCOUNT;
+}
+
+/**
+ * VARCHAR(191) in *bytes* (Amharic names are multi-byte and common here), cut on
+ * a code-point boundary so a truncated name is never invalid UTF-8.
+ */
+function truncateToBytes(value: string, maxBytes: number = MYSQL_VARCHAR_BYTES): string {
+    let out = '';
+    for (const ch of value) {
+        if (Buffer.byteLength(out + ch, 'utf8') > maxBytes) break;
+        out += ch;
+    }
+    return out;
+}
+
+router.post('/telegram', async (req: Request, res: Response): Promise<void> => {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) {
+        // Disabled rather than broken: with no bot token nothing can be
+        // verified, so the route says so instead of accepting or guessing.
+        res.status(503).json({
+            success: false,
+            error: 'Telegram sign-in is not configured on this server. Set TELEGRAM_BOT_TOKEN to enable it.',
+        });
+        return;
+    }
+
+    if (!telegramIpAllowed(getRequestIp(req))) {
+        res.status(429).json({ success: false, error: 'Too many Telegram sign-in attempts. Try again later.' });
+        return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const verified = verifyTelegramAuthPayload(body, botToken);
+    if (!verified.ok) {
+        res.status(401).json({ success: false, error: verified.error });
+        return;
+    }
+
+    const telegramUser = verified.user;
+    if (!telegramAccountAllowed(telegramUser.id)) {
+        res.status(429).json({ success: false, error: 'Too many Telegram sign-in attempts. Try again later.' });
+        return;
+    }
+
+    try {
+        const displayName = truncateToBytes(telegramDisplayName(telegramUser));
+        // Telegram photo URLs are https and can exceed the column width; the
+        // picture is optional, so drop it rather than 500 on the insert.
+        const photoUrl = telegramUser.photoUrl && isWithinByteLimit(telegramUser.photoUrl)
+            ? telegramUser.photoUrl
+            : undefined;
+
+        let created = false;
+        let user: { id: string; email: string | null; name: string | null; image: string | null; telegramId: string | null };
+
+        const existing = await prisma.user.findUnique({
+            where: { telegramId: telegramUser.id },
+            select: { id: true, email: true, name: true, image: true, telegramId: true },
+        });
+
+        if (existing) {
+            // Repeat sign-in. Never overwrite a name the user set themselves;
+            // refresh the photo when Telegram reports a different one.
+            const patch: { name?: string; image?: string } = {};
+            if (!existing.name && displayName) patch.name = displayName;
+            if (photoUrl && photoUrl !== existing.image) patch.image = photoUrl;
+            if (Object.keys(patch).length > 0) {
+                await prisma.user.update({ where: { id: existing.id }, data: patch });
+            }
+            // The NextAuth-shaped Account row keeps the provider linkage even
+            // for users provisioned elsewhere; upsert is idempotent on
+            // (provider, providerAccountId).
+            await prisma.account.upsert({
+                where: { provider_providerAccountId: { provider: 'telegram', providerAccountId: telegramUser.id } },
+                update: {},
+                create: {
+                    id: `acc_${crypto.randomBytes(12).toString('hex')}`,
+                    userId: existing.id,
+                    type: 'oauth',
+                    provider: 'telegram',
+                    providerAccountId: telegramUser.id,
+                },
+            });
+            user = existing;
+        } else {
+            // First sign-in: a user with no email and no password — there is
+            // nothing to log in with except Telegram itself.
+            const userId = `usr_${crypto.randomBytes(12).toString('hex')}`;
+            user = await prisma.user.create({
+                data: {
+                    id: userId,
+                    name: displayName || null,
+                    image: photoUrl ?? null,
+                    telegramId: telegramUser.id,
+                    accounts: {
+                        create: {
+                            id: `acc_${crypto.randomBytes(12).toString('hex')}`,
+                            type: 'oauth',
+                            provider: 'telegram',
+                            providerAccountId: telegramUser.id,
+                        },
+                    },
+                },
+                select: { id: true, email: true, name: true, image: true, telegramId: true },
+            });
+            created = true;
+        }
+
+        // Same token, storage and expiry as email login (utils/sessionToken.ts).
+        const token = await issueSession(user.id);
+
+        logger.info(`Telegram user ${telegramUser.id} signed in${created ? ' (new account)' : ''}`);
+
+        res.json({
+            success: true,
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                name: user.name,
+                image: user.image,
+            },
+            created,
+        });
+    } catch (err) {
+        logger.error('Telegram sign-in error:', err);
+        res.status(500).json({ success: false, error: 'Failed to sign in with Telegram.' });
     }
 });
 

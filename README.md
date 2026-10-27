@@ -581,6 +581,141 @@ Retrieve usage statistics:
 
 ---
 
+## ✈️ Telegram Sign-in
+
+`POST /auth/telegram` signs a user in with a Telegram account, verified against
+Telegram's own signed-payload algorithms. It accepts **both** shapes Telegram
+produces:
+
+- **Login Widget** (what the dashboard's "Continue with Telegram" button posts):
+
+```json
+{
+  "id": 424242,
+  "first_name": "Marta",
+  "last_name": "Bekele",
+  "username": "marta_bekele",
+  "photo_url": "https://t.me/i/userpic/320/marta.jpg",
+  "auth_date": 1735689600,
+  "hash": "<hmac-sha256 hex per the Login Widget spec>"
+}
+```
+
+- **Mini App `initData`** (forward the raw query string a Telegram Mini App gives you,
+  e.g. to SSO a merchant into this dashboard):
+
+```json
+{
+  "initData": "auth_date=1735689600&query_id=AAF...&user=%7B%22id%22%3A424242%2C...%7D&hash=<hmac-sha256 hex per the WebApps spec>"
+}
+```
+
+Verification follows the official specs exactly — `sha256(bot_token)` as the HMAC
+key for the widget shape, `HMAC_SHA256(bot_token, "WebAppData")` for the Mini App
+shape — and `auth_date` must be within 24 hours. On success the response is the
+same shape as email login, plus `created`, and the token is the same `nvd_sess_`
+session token used everywhere else:
+
+```bash
+curl -X POST https://verify.example.com/auth/telegram \
+  -H 'Content-Type: application/json' \
+  -d '{"id":424242,"first_name":"Marta","auth_date":1735689600,"hash":"..."}'
+```
+
+```json
+{
+  "success": true,
+  "token": "nvd_sess_usr_...",
+  "user": { "id": "usr_...", "email": null, "name": "Marta", "image": "https://t.me/..." },
+  "created": true
+}
+```
+
+Use the returned `token` as `Authorization: Bearer <token>` on `/auth/me`,
+`/workspaces` and `/dashboard/*`. A first sign-in creates the user (no email, no
+password — Telegram is the only way back in); a repeat one reuses it.
+
+**Configuration:** `TELEGRAM_BOT_TOKEN` (unset → the route answers `503` and the
+dashboard hides the button). Optional `TELEGRAM_BOT_USERNAME`; the dashboard reads
+the same bot via `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME`. Rate-limited per IP and per
+Telegram account.
+
+---
+
+## 🤝 Partner Provisioning API
+
+`POST /internal/provision` lets a partner platform provision a merchant's
+**entire setup in one call**: workspace + owner user + API key + payout account.
+Every route below is guarded by `Authorization: Bearer <PARTNER_SECRET>` and is
+disabled (401 on everything) while `PARTNER_SECRET` is unset.
+
+```bash
+curl -X POST https://verify.example.com/internal/provision \
+  -H "Authorization: Bearer $PARTNER_SECRET" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "externalId": "shop-1",
+    "partner": "eshishop",
+    "workspaceName": "Hanna Boutique",
+    "ownerName": "Hanna Tesfaye",
+    "ownerTelegramId": "556677",
+    "plan": "free",
+    "payout": {
+      "label": "Main account",
+      "accountHolderName": "Hanna Tesfaye",
+      "providersAllowed": ["telebirr", "cbe"],
+      "providerAccounts": { "telebirr": "0911223344", "cbe": "1000123456789012" }
+    }
+  }'
+```
+
+`201` on first provisioning, `200` on every replay — the call is **idempotent on
+`(partner, externalId)`**: an existing workspace is reused, its name updated, a
+**fresh API key always minted**, and the payout account upserted by label:
+
+```json
+{
+  "ok": true,
+  "workspaceId": "ws_...",
+  "apiKey": "sk_live_...",
+  "apiKeyId": "...",
+  "payoutAccountId": "...",
+  "payoutAccounts": [ { "id": "...", "label": "Main account", "accountHolderName": "Hanna Tesfaye", "providersAllowed": ["telebirr", "cbe"], "providerAccounts": { "telebirr": "0911223344", "cbe": "1000123456789012" } } ],
+  "created": true
+}
+```
+
+The `apiKey` plaintext appears **only** in this response — store it then; only its
+sha256 is kept server-side. The owner resolves by `ownerEmail` then
+`ownerTelegramId`, otherwise a synthetic `partner+<externalId>@partners.local`
+user is created with a random password (never logged in by password). When
+`ownerTelegramId` is supplied, that Telegram account can sign the owner straight
+into the dashboard via `POST /auth/telegram`.
+
+Companion routes:
+
+```bash
+# Mint another API key
+curl -X POST https://verify.example.com/internal/workspaces/shop-1/api-keys \
+  -H "Authorization: Bearer $PARTNER_SECRET"
+# -> 201 { "ok": true, "apiKey": "sk_live_...", "apiKeyId": "..." }
+
+# Workspace summary — no secrets
+curl https://verify.example.com/internal/workspaces/shop-1 \
+  -H "Authorization: Bearer $PARTNER_SECRET"
+# -> 200 { "ok": true, "workspaceId": "...", "name": "...",
+#          "apiKeys": [ { "id", "name", "prefix", "createdAt", "lastUsedAt" } ],
+#          "payoutAccounts": [ ... ] }
+```
+
+Errors: `401 {"error":"unauthorized"}` (bad/missing secret),
+`422 {"error":"invalid_request","message":"..."}` (validation — including a
+`partner` outside `PARTNER_ALLOWED`), `404 {"error":"not_found", ...}` on the
+workspace routes. `PARTNER_ALLOWED` (comma list, e.g. `eshishop`) restricts which
+partner slugs may provision; unset accepts any `^[a-z0-9-]+$` slug ≤32 chars.
+
+---
+
 ## 🔐 Environment Variables
 
 Create a `.env` file in the root directory with the following variables:
@@ -613,6 +748,15 @@ TELEBIRR_TOTAL_TIMEOUT_MS=20000
 # Independent, observational timeout used by status checks. Status probes
 # never open or close customer-traffic circuits.
 STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS=18000
+# Telegram sign-in (POST /auth/telegram): the bot token from @BotFather and its
+# public username. Unset token -> route answers 503; dashboard hides the button.
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_BOT_USERNAME=
+# Partner provisioning API (/internal/provision): shared bearer secret and the
+# comma-separated allow-list of partner slugs. Unset secret -> every partner
+# route answers 401 (the surface is disabled, not open).
+PARTNER_SECRET=
+PARTNER_ALLOWED=eshishop
 ```
 
 **Configure at least two relays.** With a single relay, `TELEBIRR_HEDGE_DELAY_MS`,
@@ -648,6 +792,10 @@ LOG_LEVEL=debug
 
 | Method | Endpoint            | Auth | Description                                      |
 | ------ | ------------------- | ---- | ------------------------------------------------ |
+| POST   | `/auth/telegram`    | –   | Telegram sign-in (Login Widget or MiniApp initData) |
+| POST   | `/internal/provision` | Bearer `PARTNER_SECRET` | One-call workspace + key + payout provisioning |
+| POST   | `/internal/workspaces/:externalId/api-keys` | Bearer `PARTNER_SECRET` | Mint another key |
+| GET    | `/internal/workspaces/:externalId` | Bearer `PARTNER_SECRET` | Provisioned workspace summary (no secrets) |
 | POST   | `/verify-cbe`       | ✅   | CBE transaction by reference + suffix            |
 | POST   | `/verify-telebirr`  | ✅   | Telebirr receipt by reference                    |
 | POST   | `/verify-dashen`    | ✅   | Dashen bank transaction by reference             |
