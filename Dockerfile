@@ -11,10 +11,13 @@ RUN corepack enable && corepack prepare pnpm@11.0.0 --activate
 # browser into node_modules during pnpm install.
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 
-# Install Chromium dependencies for Puppeteer + Chromium browser
+# redis-server runs embedded in the container (127.0.0.1 only) so the BullMQ
+# webhook/notification queues never talk to a metered Redis provider again —
+# see scripts/docker-entrypoint.sh for why this replaced the Upstash REDIS_URL.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
+    redis-server \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -113,6 +116,8 @@ USER app
 # SKIP_SCHEMA_PUSH=true after the first successful deploy (render.yaml) so cold
 # starts skip DDL entirely.
 #
-# Signals: `exec` keeps node as PID 1 so Render's SIGTERM reaches the process
-# (graceful shutdown drains the write-behind buffers and closes the browser).
-CMD ["sh", "-c", "if [ \"$SKIP_SCHEMA_PUSH\" != \"true\" ]; then npx prisma db push --skip-generate || echo 'WARNING: prisma db push failed - starting the API anyway; apply the schema manually'; fi; exec node dist/index.js"]
+# Signals: `exec` inside scripts/docker-entrypoint.sh keeps node as PID 1 so
+# Render's SIGTERM reaches the process (graceful shutdown drains the
+# write-behind buffers and closes the browser). The entrypoint also boots the
+# embedded Redis when REDIS_URL targets the container's own loopback.
+CMD ["sh", "scripts/docker-entrypoint.sh"]

@@ -226,7 +226,15 @@ What a working proxy looks like:
    - `TELEBIRR_PROXY_KEY` → the key you set in verify.php (Step 2b)
    - `MPESA_FALLBACK_URL` → `https://proxy.noveld.com.et/mpesa.php`
    - `MPESA_PROXY_KEY` → the key you set in mpesa.php (Step 2c)
-   - `REDIS_URL` → (leave empty — not needed for verifications, only for webhooks)
+    - `REDIS_URL` → `redis://127.0.0.1:6379`
+      - The image ships an embedded redis-server (see
+        `scripts/docker-entrypoint.sh`). Loopback = queues enabled, zero
+        external service, nothing metered.
+      - Leave it empty to disable webhook + notification queues (verifications
+        and the dashboard never touch Redis); do **not** set an Upstash URL —
+        BullMQ idles at ~34k commands/day for two workers, which repeatedly
+        blew the free tier (`Fixed plan limits` throttles) and was the reason
+        the value was emptied in the first place.
    - `CORS_ALLOWED_ORIGINS` → the dashboard's origin, comma-separated for
      several. **Required if the dashboard is on a different host than the API**,
      which it is by default (`web/src/lib/api.ts` calls

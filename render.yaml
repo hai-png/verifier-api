@@ -136,7 +136,10 @@ services:
       - key: KEEP_ALIVE_URL
         value: https://verify.noveld.com.et
       # Redis (optional — only needed for webhook delivery, not for verifications)
-      # If you want webhooks, get free Redis from Upstash and set this:
+      # The image carries an embedded redis-server; point this at the container's
+      # own loopback to enable the queues free of any metered provider:
+      #   redis://127.0.0.1:6379
+      # scripts/docker-entrypoint.sh boots it only when this is a loopback URL.
       - key: REDIS_URL
         sync: false
       # Status monitor (optional)
