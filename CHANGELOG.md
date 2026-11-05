@@ -25,6 +25,13 @@ All notable changes to this project will be documented in this file.
 - `REDIS_URL` empty still means queues disabled (verifications never touch Redis), and the
   DEPLOYMENT.md now records the whole tradeoff table. Render env: `REDIS_URL` is a 22-char
   loopback URL, not a credential; the 64-char Upstash one stays only in local dev.
+- **Stress-validated in production (same free instance):** 1,200 seeded deliveries drained
+  through the embedded-Redis pipeline while 4,713 anonymous ingress requests completed with
+  zero errors; ~108 rps ingress peak, p95 886 ms at c=40, CPU 10–15% of the free instance,
+  memory 168→199 MB of 512 MB, no restarts, `/ready` green throughout, and every exhausted
+  delivery landed in `DEAD_LETTER` through code retry scheduling instead of being lost. The
+  periodic `Possible SECURITY ATTACK` Redis log is platform HTTP noise and is documented as
+  benign (DEPLOYMENT.md now has a "Log noise you can ignore" section).
 
 ### ✈️ Telegram sign-in
 

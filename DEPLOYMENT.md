@@ -741,6 +741,38 @@ reconciler's next pass (up to 60s late by design, 100/pass on a healthy schedule
   TiDB delivery rows are the observability surface; Redis CLI access is SSH-specific
   (`render ssh` → `redis-cli -h 127.0.0.1`).
 
+### Measured under load (5 Nov 2026 stress run)
+
+One production round against the live free-tier instance, receiver = webhook.site
+(anonymous quota throttled us mid-run — receiver-side, not ours):
+
+- 1,200 seeded 1 KB deliveries pushed through the reconcile pump (100 rows/pass, 60 s
+  staleness gate) while a separate ingress run issued **4,713 anonymous requests**
+  (health/root/ready/auth-403) peaking at ~108 rps with **zero request errors**.
+- Ingres latency profile: p50 ~112–199 ms at all concurrencies; p95 degrades grace-
+  fully from 141 ms (c=10) → 488 ms (c=20) → 886 ms (c=40). CPU stayed 10–15% of the
+  0.5-core instance; memory rose 168 MB → 199 MB (of 512 MB) and held; **zero instance
+  or worker restarts**; `/ready` stayed green with both workers connected throughout.
+- The failure path got a full workout on ~1,100 rows: 429s were classified as HTTP
+  errors, scheduled through the 5 s/15 s/45 s delays, and every exhausted row landed
+  in `DEAD_LETTER` with accurate `attempts` and stored error bodies — no stuck rows,
+  no undispatched jobs, queue counts back to zero.
+- Enumeration nuance worth knowing: the delivery processor's retry cap is the code
+  constant `MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1` (= 4 for both queues); the
+  row's `maxAttempts` column is honored only by the reconciler's exhaustion gate
+  (`webhookQueue.ts` ~line 626), not by the processor itself.
+
+### Log noise you can ignore
+
+`Possible SECURITY ATTACK detected. It looks like somebody is sending POST or Host:
+commands to Redis.` — repeats roughly every 60 s. Redis only logs this at most once
+per 60 s (its `securityWarningCommand` rate-limits), so the actual frequency of the
+HTTP-speaking probe is higher than the log suggests. It is benign here: Redis listens
+on loopback only inside this container, Redis aborts the offending connection, ioredis
+connections are unaffected, and — as observed during boots where the app refused to
+start at all — the prober is not part of this container's code. Do not chase it, and
+do not "fix" it by binding Redis beyond loopback.
+
 ---
 
 ## Supported providers
