@@ -684,6 +684,65 @@ For a low-traffic payment verification API (a few hundred verifications/month), 
 
 ---
 
+## The embedded Redis queue backend
+
+Webhook and notification delivery are queued through BullMQ, and since 2026-11 the
+queue's Redis is **a redis-server process that ships inside the same Docker image**
+and listens on `127.0.0.1:6379`, not an external Redis provider.
+
+| | External Redis (Upstash, before) | Embedded Redis (now) |
+|---|---|---|
+| Idle cost | ~34k commands/day for two BullMQ workers — blew the 10k/day free tier | zero, nothing is metered |
+| Delivery cost | per command | zero |
+| Survives restarts | yes (queue state was durable) | **no** — queue state is RAM-only |
+| Multi-instance | shared queue | **not supported** — one instance per Redis |
+
+### How it works
+
+`scripts/docker-entrypoint.sh` runs the boot in three steps: `prisma db push`, then a
+supervisor loop that starts `redis-server` bound to loopback (persistence and snapshotting
+disabled, 128 MB `maxmemory`, `noeviction`), then `exec node dist/index.js` as PID 1. The
+entrypoint only starts Redis when `REDIS_URL` is a loopback URL — pointing `REDIS_URL` at
+any external Redis still works; it just re-introduces cost. The pulse:
+
+- `REDIS_URL=redis://127.0.0.1:6379` → queues enabled, zero external service.
+- `REDIS_URL` empty → queues disabled, verifications unaffected (the pre-Nov-2026 mode).
+- **Never** set `REDIS_URL` to an Upstash free-tier URL again. BullMQ idles by design
+  (a blocking `BZPOPMIN` + `moveToActive` cycle capped at 10s by `maximumBlockTimeout`
+  in worker.js) — 5 s default drain costs about 34k commands/day for the two workers and
+  reliably trips Upstash's free-limit throttle, which the repo has already lived through.
+
+### Why losing queue state is safe
+
+Nothing durable lives in Redis. Every delivery that matters has a `WebhookDelivery` or
+`NotificationDelivery` row in TiDB, and both queue modules reconcile on a 60s timer plus
+on boot: stale rows (older than 60s, still QUEUED/PROCESSING/RETRYING) are re-enqueued
+by `reconcileWebhookDeliveries()` / `reconcileNotificationDeliveries()` (100 rows per pass).
+Losing the in-memory queue on a deploy, a spin-up spin-down, or an OOM means delayed
+delivery at worst — the reconciler re-derives pending work from the database. The one
+honest gap: a row left `PROCESSING` mid-flight by a hard kill has to age out into the
+reconciler's next pass (up to 60s late by design, 100/pass on a healthy schedule).
+
+### Known limits (the honest list)
+
+- **`numInstances` must stay 1.** Two instances means two private Redis instances and
+  two reconcilers re-enqueueing the same TiDB rows — duplicate deliveries, and neither
+  worker can see the other's queue. If you need horizontal scale, that is the trigger
+  to move queues to an external Redis (paid Upstash, Redis Cloud paid — with TLS — or
+  self-hosted) and delete the entrypoint loop.
+- **Redis crash ≠ app crash.** The supervisor loop restarts redis within ~5 s and ioredis
+  reconnects through its quadratic backoff; deliveries in flight at the moment of the
+  crash become reconcile work, retries as usual.
+- **Memory is shared with Chromium and Node.** `maxmemory=128mb` with `noeviction` fails
+  enqueues with OOM errors (request paths answer 503) rather than silently dropping
+  queue state. This is only reachable during bulk bursts; the default concurrencies move
+  ~100 jobs/min through the reconciler path without nearing it.
+- **No queue introspection from outside the container.** `/ready`'s queue health and the
+  TiDB delivery rows are the observability surface; Redis CLI access is SSH-specific
+  (`render ssh` → `redis-cli -h 127.0.0.1`).
+
+---
+
 ## Supported providers
 
 | Provider | Method | Needs Ethiopian IP? |

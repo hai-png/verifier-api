@@ -6,6 +6,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 🐘 Embedded Redis: the queues stopped renting a Redis they idled out
+
+- **`redis-server` now ships inside the Docker image and the BullMQ `REDIS_URL` points at
+  the container's own loopback (`redis://127.0.0.1:6379`)** — `scripts/docker-entrypoint.sh`
+  boots it (persistence off, 128 MB `maxmemory`, `noeviction`) before `exec node`. The Upstash
+  free tier is gone from prod entirely: BullMQ's blocking poll (~34k commands/day for the two
+  workers, cap blocked at `maximumBlockTimeout = 10s` in worker.js) had pushed ~60k commands
+  through a 10k/day free database to the point Upstash throttled with `Fixed plan limits` —
+  for zero deliveries. Embedded means no meter, nothing metered, no idle burn; delivery state
+  never leaves TiDB.
+- **Delivery durability moved from Redis to the reconcilers.** Queue state is RAM-only now;
+  `reconcileWebhookDeliveries()` / `reconcileNotificationDeliveries()` (both existed already)
+  re-enqueue stale QUEUED/PROCESSING/RETRYING rows from TiDB 100/pass on a 60s timer, so a
+  deploy or OOM costs delayed delivery, not lost delivery. The change that is accepted, not
+  fixed: this design tops out at **one instance** — two containers each get a private Redis
+  and would double-reconcile the same rows into duplicate deliveries.
+- `REDIS_URL` empty still means queues disabled (verifications never touch Redis), and the
+  DEPLOYMENT.md now records the whole tradeoff table. Render env: `REDIS_URL` is a 22-char
+  loopback URL, not a credential; the 64-char Upstash one stays only in local dev.
+
 ### ✈️ Telegram sign-in
 
 - **`POST /auth/telegram` signs a user in with a Telegram account**, verified against Telegram's own signed-payload algorithms and nothing else. Both shapes Telegram produces are accepted: the Login Widget's flat JSON (`{id, first_name?, last_name?, username?, photo_url?, auth_date, hash}`, verified with `HMAC_SHA256(sha256(bot_token), data_check_string)`) and a Mini App's raw `initData` query string (`{initData: "..."}`, verified with `HMAC_SHA256(HMAC_SHA256(bot_token, "WebAppData"), data_check_string)`). `auth_date` must be within 24 hours; a captured payload stops working a day later. Every verification lives in `utils/telegramAuth.ts`, Prisma- and Express-free, so `telegramAuth.test.ts` drives it with a fixed bot token and hashes constructed in-test.
