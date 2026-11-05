@@ -769,9 +769,22 @@ commands to Redis.` — repeats roughly every 60 s. Redis only logs this at most
 per 60 s (its `securityWarningCommand` rate-limits), so the actual frequency of the
 HTTP-speaking probe is higher than the log suggests. It is benign here: Redis listens
 on loopback only inside this container, Redis aborts the offending connection, ioredis
-connections are unaffected, and — as observed during boots where the app refused to
+ connections are unaffected, and — as observed during boots where the app refused to
 start at all — the prober is not part of this container's code. Do not chase it, and
 do not "fix" it by binding Redis beyond loopback.
+
+### Render environment variables: two gotchas found the hard way (5 Nov 2026)
+
+- **Changing env vars via the Render API/dashboard does not deploy.** The service's
+  autoDeploy fires on commits only — after an env-var change, create the deploy
+  manually (dashboard: Deploy → Deploy latest commit, or the `POST /v1/services/:id/deploys`
+  API) or the running container keeps the old values until the next push.
+- **Never paste dotenv-style quotes into values.** Values are read verbatim; a value
+  stored as `"https://proxy.example/verify.php?reference="` is not a URL and broke
+  Telebirr with a blanket 502 — `FALLBACK_PROXIES contains an invalid relay URL.`
+  (`buildTelebirrProxyUrl` validates every entry with `new URL()` and demands
+  http/https). Entry `FALLBACK_PROXIES` was re-set unquoted on 5 Nov and verified
+  end-to-end: an actual receipt flowed through both the primary path and the relay.
 
 ---
 
