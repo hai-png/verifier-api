@@ -762,6 +762,36 @@ One production round against the live free-tier instance, receiver = webhook.sit
   row's `maxAttempts` column is honored only by the reconciler's exhaustion gate
   (`webhookQueue.ts` ~line 626), not by the processor itself.
 
+### Real-reference burst (5 Nov 2026)
+
+Same live free-tier instance, but now 80 real Telebirr verifications against one
+actual receipt (`DI65HDUOOR`) — 4 waves of 20 concurrent calls, 65 s apart — while
+a separate ingress soak pushed 6,143 anonymous requests (0 errors, peak ~144 rps
+at concurrency 40, p95 495 ms). The classify/cache/new-format stack under fire:
+
+- **80/80 calls returned HTTP 200.** Latency across all 80: p50 1054 ms,
+  p95 2063 ms, p99 2185 ms, max 2185 ms. No 429s (20/min < the 60/min pro cap),
+  no 5xx, no exceptions; `/ready` green end to end; zero restarts.
+- **Cache + single-flight coalescing behave exactly as designed:** the
+  `Successfully extracted Telebirr data from primary source.` log line appears
+  exactly once per wave — 4 live provider fetches total for 80 calls. Callers that
+  arrive while a fetch is in flight await the leader (so their `provider;dur`
+  still reads large — see the measurement trap below); calls that arrive after
+  the value is settled hit the 60 s result cache (X-Verify-Cache: hit,
+  provider 0.1 ms, ~100 ms total response time).
+- **Measurement trap:** Server-Timing's `provider;dur` measures the whole
+  `cache.run()` span (pipeline line ~179), not the outbound provider bytes, so a
+  coalesced follower reports a large duration. Classify cache behavior from the
+  `X-Verify-Cache` response header + logs, not the timing entry.
+- **Charging stayed exact:** `apiKey.usageCount = 80`, `usageLog = 80` rows all
+  `POST /verify#200` (write-behind flushed per wave), workspace credits
+  2000 → 1920. Instance CPU peaked at 0.075 core (~15% of the 0.5-core free
+  plan) during the busiest wave minute; memory rose 163.7 → 179 MB of 512 MB
+  and held (recovered toward its pre-run level afterward).
+- A webhook registered mid-run delivered `verification.success` to the receiver
+  on the first attempt (HTTP 200) while the soak was still running.
+
+
 ### Log noise you can ignore
 
 `Possible SECURITY ATTACK detected. It looks like somebody is sending POST or Host:
