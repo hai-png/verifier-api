@@ -2991,6 +2991,8 @@ const WEBHOOK_EVENTS = [
   'verification.failed',
   'product.sold_out',
   'webhook.dead_letter',
+  'payout.succeeded',
+  'payout.failed',
 ]
 
 function WebhooksTab({ workspaceId, canManage }: { workspaceId: string; canManage: boolean }) {

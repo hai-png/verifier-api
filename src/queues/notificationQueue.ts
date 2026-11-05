@@ -45,6 +45,8 @@ export type NotificationEventName =
   | 'verification.success'
   | 'verification.failed'
   | 'webhook.dead_letter'
+  | 'payout.succeeded'
+  | 'payout.failed'
   | 'notification.test';
 
 export interface NotificationPayload {
@@ -143,6 +145,10 @@ function buildEventTitle(event: NotificationEventName): string {
       return 'Verification failed';
     case 'webhook.dead_letter':
       return 'Webhook needs attention';
+    case 'payout.succeeded':
+      return 'Payout completed';
+    case 'payout.failed':
+      return 'Payout failed';
     case 'notification.test':
       return 'Notification channel test';
   }
@@ -176,6 +182,18 @@ function buildEventMessage(event: NotificationEventName, payload: NotificationPa
       return [
         `A webhook delivery reached dead letter${payload.webhookUrl ? ` for ${String(payload.webhookUrl)}.` : '.'}`,
         payload.lastError ? `Error: ${String(payload.lastError)}.` : null,
+      ].filter(Boolean).join(' ');
+    case 'payout.succeeded':
+      return [
+        `A payout succeeded to ${String(payload.destination ?? 'the destination')}.`,
+        payload.amount ? `Amount: ${String(payload.amount)} ETB.` : null,
+        payload.providerRef ? `Confirmation: ${String(payload.providerRef)}.` : null,
+      ].filter(Boolean).join(' ');
+    case 'payout.failed':
+      return [
+        `A payout to ${String(payload.destination ?? 'the destination')} failed.`,
+        payload.amount ? `Amount: ${String(payload.amount)} ETB.` : null,
+        payload.lastError ? `Reason: ${String(payload.lastError)}.` : null,
       ].filter(Boolean).join(' ');
     case 'notification.test':
       return 'Your Veritas notification channel is configured and receiving queued deliveries.';

@@ -9,6 +9,8 @@ export const WORKSPACE_EVENTS = [
     'verification.success',
     'verification.failed',
     'webhook.dead_letter',
+    'payout.succeeded',
+    'payout.failed',
 ] as const;
 
 export type WorkspaceEventName = (typeof WORKSPACE_EVENTS)[number];

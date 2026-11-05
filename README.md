@@ -716,6 +716,59 @@ partner slugs may provision; unset accepts any `^[a-z0-9-]+$` slug ≤32 chars.
 
 ---
 
+## 💸 Payout transfers (USSD device agents)
+
+`POST /payout-transfers` creates an **instruction record** to pay out money — to
+the same wallets and banks the verification stack already recognises — and an
+Android device agent fleet executes every instruction over the provider's own
+USSD menu (`telebirr` on `*127#`, `cbebirr` on `*848#`, `dashen`/HelloCash on
+`*644#`, CBE bank accounts through CBE's USSD menu; `GET
+/payout-transfers/providers` is the live list). Creating an intent never moves
+money by itself; outcomes arrive from the agent and fan out as
+`payout.succeeded` / `payout.failed` workspace events.
+
+```bash
+curl -X POST https://verify.example.com/payout-transfers \
+  -H "x-api-key: sk_live_..." \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "provider": "telebirr",
+    "destination": "0911223344",
+    "amount": 150.0,
+    "reference": "refund-1248",
+    "accountHolderName": "Hanna Tesfaye"
+  }'
+# -> 201 { "ok": true, "transfer": { "id": "pti_…", "status": "PENDING", … } }
+```
+
+- **Idempotent on `(workspace, reference)`** — a replay with the same payload
+  returns the original row (`created: false`); a replay with a different
+  amount/destination answers `409`.
+- **Status machine:** `PENDING → CLAIMED → CONFIRMING → SUCCEEDED | FAILED`
+  (+ `CANCELED`, while still PENDING). A claim the device never reports is
+  re-queued by a reconciler on a 60 s timer and re-dialed until the attempt cap
+  (`maxAttempts`, default 3, per row). Cancelling only works while PENDING.
+- **Dashboard rituals stay intact:** destination fields on responses are masked
+  (`0911**44`); the full number lives on the row for the agent to dial.
+
+The agent side (`POST /internal/payout-agent/poll|result`, `GET …/status`)
+authenticates with `Bearer PAYOUT_AGENT_KEY` — same failing-closed pattern as
+`PARTNER_SECRET` (unset → 401 everywhere). Poll claims up to N typed intents
+with the provider's dial spec; results accept
+
+```json
+{ "id": "pti_…", "status": "succeeded", "providerRef": "TB-8871…", "rawText": "…menu dump…", "device": "telebirr-slot-1" }
+```
+
+with `status`: `succeeded` / `failed` / `retry` / `confirming`. A reported
+**success settles the row from any live state** — money may already have moved,
+so a late success is never dropped in favour of a re-dial (double-payout
+guard). Env sizing: `PAYOUT_AGENT_CLAIM_TIMEOUT_MS`
+(10 min), `PAYOUT_AGENT_CONFIRM_TIMEOUT_MS` (5 min),
+`PAYOUT_RECONCILE_INTERVAL_MS` (60 s), `PAYOUT_USSD_MAX_AMOUNT_ETB` (100,000).
+
+---
+
 ## 🔐 Environment Variables
 
 Create a `.env` file in the root directory with the following variables:

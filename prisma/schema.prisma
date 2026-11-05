@@ -129,6 +129,7 @@ model Workspace {
     webhooks             Webhook[]
     notificationChannels NotificationChannel[]
     payoutAccounts       PayoutAccount[]
+    payoutIntents        PayoutIntent[]
     products             Product[]
     paymentLinks         PaymentLink[]
     orders               Order[]
@@ -460,6 +461,61 @@ model PayoutAccount {
     defaultForApiKeys ApiKey[]          @relation("ApiKeyDefaultPayoutAccount")
 
     @@index([workspaceId])
+}
+
+// ─── Payout transfers (disbursements executed by a USSD device agent) ────────
+//
+// A PayoutIntent is one "send this much to that wallet/account" instruction.
+// Money movement itself never comes from a public API call: an Android device
+// agent (SIM in the wallet the workspace funded) dials the provider's USSD menu,
+// executes the transfer, and reports the outcome back through the
+// /internal/payout-agent routes. The status machine is database-driven —
+// PENDING rows are claimed by an agent, CONFIRMING is the dialling stage, and a
+// reconciler re-queues claims the device abandoned. Merchant-side funds stay
+// the merchant's own; this record is the instruction and its audit trail.
+model PayoutIntent {
+    id            String             @id @default(cuid())
+    workspaceId   String
+    workspace     Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+    provider      String
+    destination   String
+    accountHolder String?
+    amount        Float
+
+    /// Customer-supplied idempotency key, unique per workspace. A replay with
+    /// the same key returns the original intent instead of creating another.
+    reference     String
+
+    status        PayoutIntentStatus @default(PENDING)
+    /// Provider confirmation (transaction id / receipt number) once reported.
+    providerRef   String?
+    attempts      Int                @default(0)
+    maxAttempts   Int                @default(3)
+    lastError     String?            @db.Text
+    /// Which agent slot claimed it; audit only.
+    deviceHint    String?
+    /// Dial-session notes the agent appends (menus seen, SMS confirmations).
+    events        Json               @default("[]")
+    /// api key that created the row, "DASHBOARD", or producer's own tag.
+    createdBy     String?
+
+    createdAt     DateTime           @default(now())
+    claimedAt     DateTime?
+    settledAt     DateTime?
+
+    @@unique([workspaceId, reference])
+    @@index([workspaceId, status])
+    @@index([status, claimedAt])
+    @@index([status, createdAt])
+}
+
+enum PayoutIntentStatus {
+    PENDING
+    CLAIMED
+    CONFIRMING
+    SUCCEEDED
+    FAILED
+    CANCELED
 }
 
 // ─── Products & Orders ───────────────────────────────────────────────────────
