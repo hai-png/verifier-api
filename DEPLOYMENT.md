@@ -818,6 +818,54 @@ do not "fix" it by binding Redis beyond loopback.
 
 ---
 
+## Partner provisioning and Telegram sign-in (operational)
+
+Shipped by `feat: telegram sign-in + partner provisioning API` (934285b, 27 Oct
+2026) and live on this deployment. The API surface is documented in the README;
+here is what actually operates on Render:
+
+**Environment variables (Render → Environment):**
+
+- `TELEGRAM_BOT_TOKEN` — BotFather token for `POST /auth/telegram`. Unset → the
+  route answers `503` and the dashboard hides the Telegram button; no other
+  surface is affected.
+- `TELEGRAM_BOT_USERNAME` — public bot name; the dashboard reads
+  `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` (a Cloudflare-Pages build-time variable,
+  so changing it requires a Pages rebuild, not an API restart).
+- `PARTNER_SECRET` — bearer secret for `/internal/provision` and the
+  `/internal/workspaces/:externalId` routes. Unset → every partner route
+  answers `401` (disabled, not open).
+- `PARTNER_ALLOWED` — comma-separated partner slugs allowed to provision.
+  Unset accepts any `^[a-z0-9-]+$` slug ≤32 chars; on this deployment it is
+  pinned to one slug.
+
+**Provisioning semantics verified against the live service (5 Nov 2026):**
+
+- `POST /internal/provision` is idempotent on `(partner, externalId)`: first
+  call `201`, replays `200`. A replay **minted a fresh API key but did NOT
+  change the workspace tier** — plan changes need a separate call with the new
+  `plan` on an unprovisioned externalId, or the DB-side upgrade script.
+- The returned `apiKey` plaintext is shown **once**; only its sha256 is stored.
+  Partner-minted keys carry permissions `['verify','webhooks']` — batch and
+  image verification answer `403 "does not have the 'verify-batch'
+  permission"` for them.
+- The owner resolves by `ownerEmail`, then `ownerTelegramId`, else a synthetic
+  `partner+<externalId>@partners.local` user is created whose password is
+  never used — Telegram sign-in (Mini App flow → `POST /auth/telegram`) or a
+  password reset are the only ways into that account.
+- Payout accounts arrive inside the same call (`payout.label` +
+  `providerAccounts`); Telegram login rounds them fine. Notification channel
+  limits remain plan-bound (pro ships 0 channels; business 20) — partners
+  wanting partner-level notification need the business tier.
+
+**Sign-in flow on the dashboard:** the Login Widget posts the signed Telegram
+payload to this service; first sign-in finds or creates the user by
+`telegramId` and returns the same `nvd_sess_` token as email login. Rate
+limited per IP and per Telegram account. Bot photos refresh automatically on
+later sign-ins.
+
+---
+
 ## Supported providers
 
 | Provider | Method | Needs Ethiopian IP? |
