@@ -31,6 +31,26 @@ export default function Authentication() {
         <code>x-admin-key</code> unlocks <code>/admin/*</code> (workspace tiers, credit overrides,
         assisted password resets). Never ship it to browsers or client apps.
       </DocP>
+
+      <DocH2>Telegram sign-in</DocH2>
+      <DocP>
+        Users can sign in with Telegram instead of email: the dashboard&apos;s &quot;Continue
+        with Telegram&quot; button and Telegram Mini App single sign-on both call{" "}
+        <code>POST /auth/telegram</code>. The signed payload Telegram produces is verified
+        against Telegram&apos;s own algorithms and must be no older than 24 hours.
+      </DocP>
+      <Endpoint method="POST" path="/auth/telegram" desc="Sign in (or register) with a Telegram payload; returns the same nvd_sess_ session token as email login." />
+      <DocP>
+        Two payload shapes are accepted. The Login Widget posts the user object directly —{" "}
+        <Code inline code={`{"id":424242,"first_name":"Marta","username":"marta_bekele","auth_date":1735689600,"hash":"…"}`} />
+        . A Mini App forwards its raw <code>initData</code> query string —{" "}
+        <Code inline code={`{"initData":"auth_date=…&user=…&hash=…"}`} />. On success the
+        response is the email-login shape plus <code>&quot;created&quot;</code>: the first sign-in
+        creates the account with no email and no password — Telegram is then the only way back
+        in (a password can be added later through password reset). The Telegram sign-in is
+        rate-limited per IP and per Telegram account; if the server has no bot token configured
+        it answers <code>503</code>.
+      </DocP>
       <Next href="/docs/verification" label="Single & universal verification" />
     </>
   );

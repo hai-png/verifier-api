@@ -7,6 +7,7 @@ const SECTIONS: { title: string; links: { href: string; label: string }[] }[] = 
       { href: "/docs", label: "Overview" },
       { href: "/docs/getting-started", label: "Getting started" },
       { href: "/docs/authentication", label: "Authentication" },
+      { href: "/docs/partners", label: "Partner provisioning" },
     ],
   },
   {
