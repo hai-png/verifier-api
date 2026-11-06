@@ -50,8 +50,6 @@ import dashboardRouter from './routes/dashboard';
 // Partner provisioning (Bearer PARTNER_SECRET) — session-agnostic, mounted
 // before apiKeyAuth like the other non-API-key surfaces.
 import internalProvisionRouter from './routes/internalProvision';
-import internalPayoutAgentRouter, { startPayoutIntentReconciler } from './routes/internalPayoutAgent';
-import payoutTransfersRouter from './routes/payoutTransfers';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -314,12 +312,6 @@ async function initializeRuntime(): Promise<void> {
             logger.warn('REDIS_URL not set — skipping webhook + notification queue workers. Verifications will work; webhook delivery is disabled.');
         }
 
-        // The USSD payout-agent reconciler reads only the database (claims,
-        // confirming states and exhausted intents), so it runs regardless of
-        // Redis/queue availability. Duplicating installs is a no-op.
-        startPayoutIntentReconciler();
-        logger.info('Payout intent reconciler started');
-
         startupState.initializing = false;
         // Only claim readiness when the database answered. Everything else about
         // the boot can succeed without it, and `/ready` independently re-probes,
@@ -446,10 +438,6 @@ app.use('/internal/status', internalStatusRouter);
 // through to the next mount.
 app.use('/internal', internalProvisionRouter);
 
-// USSD device agent — same failing-closed bearer pattern as partner
-// provisioning (PAYOUT_AGENT_KEY), declared before /internal falls through.
-app.use('/internal/payout-agent', internalPayoutAgentRouter);
-
 // Public status summary (no auth — liveness + config flags only, no live probes).
 app.use('/status', publicStatusRouter);
 
@@ -488,7 +476,6 @@ app.use('/verify', universalRouter);
 app.use('/products', permissionGate('webhooks'), productsRouter);
 app.use('/orders', permissionGate('webhooks'), ordersRouter);
 app.use('/payouts', permissionGate('webhooks'), payoutsRouter);
-app.use('/payout-transfers', permissionGate('webhooks'), payoutTransfersRouter);
 app.use('/payment-links', permissionGate('webhooks'), paymentLinksRouter);
 // Webhook/channel mutations must invalidate the "this workspace has no delivery
 // targets" cache used by emitWorkspaceEvent.

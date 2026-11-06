@@ -32,8 +32,6 @@ const VALID_EVENTS = [
   'verification.failed',
   'product.sold_out',
   'webhook.dead_letter',
-  'payout.succeeded',
-  'payout.failed',
 ] as const;
 type WebhookEvent = (typeof VALID_EVENTS)[number];
 type DeliveryStatus = 'QUEUED' | 'PROCESSING' | 'RETRYING' | 'SUCCEEDED' | 'DEAD_LETTER' | 'CANCELLED';

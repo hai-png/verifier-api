@@ -34,8 +34,6 @@ const NOTIFICATION_EVENTS = [
   'verification.failed',
   'product.sold_out',
   'webhook.dead_letter',
-  'payout.succeeded',
-  'payout.failed',
 ]
 
 interface NotificationChannel {

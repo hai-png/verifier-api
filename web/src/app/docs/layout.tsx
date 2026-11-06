@@ -23,7 +23,6 @@ const SECTIONS: { title: string; links: { href: string; label: string }[] }[] = 
     links: [
       { href: "/docs/commerce/products", label: "Products" },
       { href: "/docs/commerce/payout-accounts", label: "Payout accounts" },
-      { href: "/docs/commerce/payout-transfers", label: "Payout transfers" },
       { href: "/docs/commerce/payment-links", label: "Payment links" },
       { href: "/docs/commerce/orders", label: "Orders" },
     ],
